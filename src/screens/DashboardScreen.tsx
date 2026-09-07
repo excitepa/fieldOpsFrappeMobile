@@ -126,9 +126,19 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
     setPendingCampaign(null);
   };
 
-  const nextStopOutlet = state.outlets.find((o) => o.status === 'pending');
   const todaySalesTotal = state.sales.reduce((sum, s) => sum + s.total, 0);
   const myLocation = useCurrentLocation();
+  const pendingOutlets = state.outlets.filter((o) => o.status === 'pending');
+  // Nearest un-visited outlet by real distance when GPS is available — falls back to
+  // array order (whatever the backend returned first) only when location isn't known yet.
+  const nextStopOutlet = myLocation
+    ? pendingOutlets.reduce<{ outlet: typeof pendingOutlets[number]; dist: number } | null>((best, o) => {
+        const coords = parseGps(o.gps);
+        if (!coords) return best;
+        const dist = distanceMeters(myLocation, coords);
+        return !best || dist < best.dist ? { outlet: o, dist } : best;
+      }, null)?.outlet ?? pendingOutlets[0]
+    : pendingOutlets[0];
   const nextStopCoords = nextStopOutlet ? parseGps(nextStopOutlet.gps) : null;
   const nextStopDistanceM = myLocation && nextStopCoords ? distanceMeters(myLocation, nextStopCoords) : null;
 

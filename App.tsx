@@ -165,6 +165,11 @@ function AppInner() {
 
   const handleClockInComplete = (selectedCampaign: Campaign) => {
     setActiveCampaign(selectedCampaign);
+    // A fresh clock-in means a new work day — start every outlet back at
+    // "pending" rather than carrying over whatever was visited/skipped
+    // last time this agent worked (SET_OUTLETS otherwise preserves that
+    // across refetches so it survives normal in-day navigation).
+    dispatch({ type: 'RESET_OUTLET_VISIT_STATUS' });
     historyRef.current = [];
     setAppStage('app');
     setRoute('home');

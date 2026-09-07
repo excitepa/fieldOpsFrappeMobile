@@ -292,7 +292,7 @@ export const getCampaignInventory = async (campaignId: string): Promise<Product[
     const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_campaign_inventory?campaign_id=${encodeURIComponent(campaignId)}`);
     const raw = data?.message ?? data?.data ?? data;
     const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapItem);
+    return flattenInventoryResponse(list);
   } catch (e: any) {
     if (e instanceof AuthError) throw e;
     return [];
@@ -702,7 +702,7 @@ export const skipOutletVisit = async (outletId: string, campaignId: string, reas
   await authFetch('/api/method/fieldops.api.mobile_api.skip_outlet_visit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ outlet: outletId, campaign: campaignId, reason }),
+    body: JSON.stringify({ outlet: outletId, outlet_id: outletId, campaign: campaignId, reason, skip_reason: reason }),
   });
 };
 
@@ -724,7 +724,10 @@ export const submitEodReport = async (date: string, summary: string, expenses?: 
 
 const mapItem = (raw: any): Product => {
   const price = Number(raw?.rate ?? raw?.standard_rate ?? raw?.selling_price ?? raw?.price) || 0;
-  const stock = Number(raw?.actual_qty ?? raw?.available_qty ?? raw?.stock_qty ?? raw?.stock) || 0;
+  // current_stock/on_hand/qty are the field names the backend documented for get_items/
+  // get_my_inventory/get_campaign_inventory as of the 2026-09-07 contract update — checked
+  // ahead of the older actual_qty/available_qty/stock_qty aliases this app already handled.
+  const stock = Number(raw?.current_stock ?? raw?.on_hand ?? raw?.qty ?? raw?.actual_qty ?? raw?.available_qty ?? raw?.stock_qty ?? raw?.stock) || 0;
   return {
     id: raw?.item_code || raw?.name || String(raw?.id || ''),
     name: raw?.item_name || raw?.name || raw?.item_code || 'Unknown Item',
@@ -738,6 +741,19 @@ const mapItem = (raw: any): Product => {
     description: raw?.description || undefined,
     unit: raw?.stock_uom || raw?.unit || undefined,
   };
+};
+
+/**
+ * get_my_inventory/get_campaign_inventory return an array of inventory *documents*
+ * (id/inventory_date/status), each carrying a nested `items` child array with the
+ * actual per-product stock lines — not a flat item list like get_items. Detects
+ * which shape came back (rather than assuming) so a future flat response still works.
+ */
+const flattenInventoryResponse = (raw: any[]): Product[] => {
+  if (raw.length > 0 && Array.isArray(raw[0]?.items)) {
+    return raw.flatMap((rec: any) => (Array.isArray(rec.items) ? rec.items.map(mapItem) : []));
+  }
+  return raw.map(mapItem);
 };
 
 /** Fetch the product catalog via the RPC contract (`get_items`). Falls back to an empty array on error. */
@@ -923,7 +939,7 @@ export const getMyInventory = async (): Promise<Product[]> => {
     const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_inventory');
     const raw = data?.message ?? data?.data ?? data;
     const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapItem);
+    return flattenInventoryResponse(list);
   } catch (e: any) {
     if (e instanceof AuthError) throw e;
     return [];
@@ -942,9 +958,13 @@ export const submitStockRequest = async (
   purpose?: string
 ): Promise<{ ref: string }> => {
   const body = {
+    // The documented contract field is `campaign_id` (not `campaign`, which this app
+    // uses elsewhere for other endpoints) — sending both since an extra unrecognized
+    // key is harmless but a missing required one silently drops the campaign link.
+    campaign_id: campaignId,
     campaign: campaignId,
     items: lines.map((l) => ({ item_code: l.itemCode, qty: l.qty })),
-    purpose: purpose || 'Field Replenishment',
+    notes: purpose || 'Field Replenishment',
   };
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_stock_request', {
     method: 'POST',
@@ -954,6 +974,42 @@ export const submitStockRequest = async (
   const result = data?.message ?? data?.data ?? data;
   const ref = result?.request_id || result?.name || result?.id || '';
   return { ref: String(ref) };
+};
+
+export interface StockRequestSummary {
+  id: string;
+  status: string;
+  createdAt: string;
+  note?: string;
+  items: { itemCode: string; itemName: string; qty: number }[];
+}
+
+const mapStockRequest = (raw: any): StockRequestSummary => {
+  const items = Array.isArray(raw?.items) ? raw.items : [];
+  return {
+    id: raw?.name || raw?.id || '',
+    status: raw?.status || 'Pending',
+    createdAt: raw?.createdAt || raw?.created_at || raw?.creation || '',
+    note: raw?.note || raw?.notes || undefined,
+    items: items.map((it: any) => ({
+      itemCode: it?.item_code || '',
+      itemName: it?.item_name || it?.item_code || 'Item',
+      qty: Number(it?.quantity ?? it?.qty) || 0,
+    })),
+  };
+};
+
+/** Fetch this agent's submitted stock requests and their approval status via `get_my_stock_requests`. */
+export const getMyStockRequests = async (): Promise<StockRequestSummary[]> => {
+  try {
+    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_stock_requests');
+    const raw = data?.message ?? data?.data ?? data;
+    const list = Array.isArray(raw) ? raw : [];
+    return list.map(mapStockRequest);
+  } catch (e: any) {
+    if (e instanceof AuthError) throw e;
+    return [];
+  }
 };
 
 export interface ReconciliationLine {

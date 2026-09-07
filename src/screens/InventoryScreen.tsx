@@ -6,14 +6,14 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getMyInventory, submitStockRequest, NetworkError } from '../services/api';
+import { getMyInventory, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
 import { RouteName } from '../types';
 
 interface InventoryScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
 }
 
-type MainTab = 'request' | 'stock';
+type MainTab = 'request' | 'stock' | 'requests';
 type StockView = 'list' | 'basket' | 'review';
 interface BasketQty { cases: number; units: number }
 
@@ -32,6 +32,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   const [submitting, setSubmitting] = useState(false);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
+  const [stockRequests, setStockRequests] = useState<StockRequestSummary[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [requestsError, setRequestsError] = useState('');
 
   const fetchInventory = useCallback(async () => {
     setLoadingInventory(true);
@@ -50,7 +53,23 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     }
   }, [dispatch]);
 
+  const fetchStockRequests = useCallback(async () => {
+    setLoadingRequests(true);
+    setRequestsError('');
+    try {
+      const fetched = await getMyStockRequests();
+      setStockRequests(fetched);
+    } catch (e: any) {
+      setRequestsError(e?.message || 'Could not load your stock requests.');
+    } finally {
+      setLoadingRequests(false);
+    }
+  }, []);
+
   useEffect(() => { fetchInventory(); }, [fetchInventory]);
+  useEffect(() => {
+    if (mainTab === 'requests') fetchStockRequests();
+  }, [mainTab, fetchStockRequests]);
 
   const categories = ['All', ...Array.from(new Set(products.map((p) => p.category).filter(Boolean) as string[]))];
 
@@ -110,6 +129,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     setNote('');
     setView('list');
     setMainTab('request');
+    fetchStockRequests();
     Alert.alert('Request Submitted', 'Your stock request has been sent for approval.');
   };
 
@@ -124,7 +144,11 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     }
     return {
       title: 'Stock Request',
-      subtitle: mainTab === 'request' ? 'Request more stock to sell in the field' : `${products.length} products · ${lowStockItems.length} low stock`,
+      subtitle: mainTab === 'request'
+        ? 'Request more stock to sell in the field'
+        : mainTab === 'stock'
+          ? `${products.length} products · ${lowStockItems.length} low stock`
+          : `${stockRequests.length} request${stockRequests.length === 1 ? '' : 's'} submitted`,
       onBackPress: undefined,
     };
   })();
@@ -158,6 +182,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
           </Pressable>
           <Pressable onPress={() => setMainTab('stock')} style={[styles.segment, mainTab === 'stock' && styles.segmentActive]}>
             <Text style={[styles.segmentText, mainTab === 'stock' && styles.segmentTextActive]}>My Stock</Text>
+          </Pressable>
+          <Pressable onPress={() => setMainTab('requests')} style={[styles.segment, mainTab === 'requests' && styles.segmentActive]}>
+            <Text style={[styles.segmentText, mainTab === 'requests' && styles.segmentTextActive]}>My Requests</Text>
           </Pressable>
         </View>
       )}
@@ -297,6 +324,55 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
         </ScrollView>
       )}
 
+      {/* ── My Requests ──────────────────────────────────────────── */}
+      {view === 'list' && mainTab === 'requests' && (
+        <ScrollView style={styles.flex1} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          {loadingRequests && (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator size="small" color={theme.colors.navy} />
+              <Text style={styles.loadingText}>Loading your requests…</Text>
+            </View>
+          )}
+          {!loadingRequests && requestsError !== '' && (
+            <View style={styles.errorRow}>
+              <Icon name="alert-circle" size={14} color={theme.colors.red} />
+              <Text style={styles.errorText}>{requestsError}</Text>
+            </View>
+          )}
+          {!loadingRequests && requestsError === '' && stockRequests.length === 0 && (
+            <Text style={styles.emptyText}>You haven't submitted any stock requests yet.</Text>
+          )}
+          {stockRequests.map((r) => {
+            const statusLower = r.status.toLowerCase();
+            const statusStyle = statusLower.includes('approv')
+              ? { bg: theme.colors.visitedBg, text: theme.colors.visitedText }
+              : statusLower.includes('reject') || statusLower.includes('cancel')
+                ? { bg: theme.colors.redLight, text: theme.colors.red }
+                : { bg: theme.colors.skippedBg, text: theme.colors.skippedText };
+            return (
+              <Card key={r.id} style={styles.requestCard}>
+                <View style={styles.requestTopRow}>
+                  <View style={styles.flex1}>
+                    <Text style={styles.requestId}>{r.id}</Text>
+                    {r.createdAt ? <Text style={styles.productMeta}>{r.createdAt}</Text> : null}
+                  </View>
+                  <View style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}>
+                    <Text style={[styles.statusBadgeText, { color: statusStyle.text }]}>{r.status}</Text>
+                  </View>
+                </View>
+                {r.items.map((it, idx) => (
+                  <View key={`${it.itemCode}-${idx}`} style={styles.requestLineRow}>
+                    <Text style={styles.requestLineName}>{it.itemName}</Text>
+                    <Text style={styles.requestLineQty}>{it.qty}</Text>
+                  </View>
+                ))}
+                {r.note ? <Text style={styles.requestNote}>{r.note}</Text> : null}
+              </Card>
+            );
+          })}
+        </ScrollView>
+      )}
+
       {/* ── Basket ───────────────────────────────────────────────── */}
       {view === 'basket' && (
         <ScrollView style={styles.flex1} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
@@ -432,6 +508,15 @@ const createStyles = (theme: any) => StyleSheet.create({
     backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.md, padding: theme.spacing.md,
   },
   lowStockBannerText: { flex: 1, fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.textDark },
+  requestCard: { gap: theme.spacing.xs },
+  requestTopRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  requestId: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.textDark },
+  statusBadge: { borderRadius: theme.radius.full, paddingHorizontal: 10, paddingVertical: 4 },
+  statusBadgeText: { fontFamily: theme.fonts.bold, fontSize: 11 },
+  requestLineRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  requestLineName: { fontFamily: theme.fonts.regular, fontSize: 13, color: theme.colors.textDark, flex: 1 },
+  requestLineQty: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textMuted },
+  requestNote: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 2, fontStyle: 'italic' },
   myStockCard: { gap: 0 },
   myStockQtyCol: { alignItems: 'flex-end' },
   myStockQty: { fontFamily: theme.fonts.display, fontSize: 20, color: theme.colors.textDark },

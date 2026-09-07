@@ -48,6 +48,7 @@ type Action =
   | { type: 'SET_ATTENDANCE_STATUS'; clockedIn: boolean; attendanceId?: string }
   | { type: 'SET_CAMPAIGN_SELECTED'; value: boolean }
   | { type: 'SET_OUTLETS'; outlets: Outlet[] }
+  | { type: 'RESET_OUTLET_VISIT_STATUS' }
   | { type: 'ADD_OUTLET'; outlet: Outlet }
   | { type: 'UPDATE_OUTLET'; outlet: Outlet }
   | { type: 'MARK_OUTLET_VISITED'; outletId: string }
@@ -86,8 +87,26 @@ function reducer(state: FieldState, action: Action): FieldState {
     case 'SET_CAMPAIGN_SELECTED':
       return { ...state, campaignSelected: action.value };
 
-    case 'SET_OUTLETS':
-      return { ...state, outlets: action.outlets };
+    case 'SET_OUTLETS': {
+      // The backend's outlet `status` field means Active/Inactive record state, not
+      // "visited today" — mapOutlet (api.ts) always maps it to 'pending' since the
+      // server never actually sends "Visited"/"Skipped". Refetches happen on almost
+      // every screen mount (Dashboard, Customers, Sync), so a blind replace here was
+      // silently wiping the agent's own today's-visit/skip progress back to pending
+      // every time they navigated away and back — this is what made "Next Stop" and
+      // the Customers list look like they were showing the wrong outlets. Preserving
+      // any locally-tracked non-pending status across a refetch fixes that; it gets
+      // cleared for real on the next clock-in via RESET_OUTLET_VISIT_STATUS.
+      const localStatusById = new Map(state.outlets.map((o) => [o.id, o.status]));
+      const merged = action.outlets.map((o) => {
+        const localStatus = localStatusById.get(o.id);
+        return localStatus && localStatus !== 'pending' ? { ...o, status: localStatus } : o;
+      });
+      return { ...state, outlets: merged };
+    }
+
+    case 'RESET_OUTLET_VISIT_STATUS':
+      return { ...state, outlets: state.outlets.map((o) => ({ ...o, status: 'pending' as const })) };
 
     case 'ADD_OUTLET':
       return { ...state, outlets: [action.outlet, ...state.outlets] };
