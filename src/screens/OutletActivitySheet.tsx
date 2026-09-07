@@ -7,6 +7,7 @@ import {
   Pressable,
   TouchableWithoutFeedback,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Icon } from '../components/Icon';
 import { CampaignModule } from '../types';
@@ -30,6 +31,7 @@ export const OutletActivitySheet: React.FC<OutletActivitySheetProps> = ({
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+  const insets = useSafeAreaInsets();
   const showSale = enabledModules.includes('sales');
   // "New Order" never appears in quick actions — outlet orders are placed
   // from the Orders module, not this sheet, matching the reference flow.
@@ -47,7 +49,7 @@ export const OutletActivitySheet: React.FC<OutletActivitySheetProps> = ({
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: theme.spacing.xxl + 10 + insets.bottom }]}>
               <View style={styles.dragHandle} />
               <Text style={styles.title}>Quick actions</Text>
 

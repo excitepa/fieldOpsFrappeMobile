@@ -33,6 +33,7 @@ export const OptionPickerSheet: React.FC<OptionPickerSheetProps> = ({
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+  const insets = useSafeAreaInsets();
 
   const initialMulti = Array.isArray(selected) ? selected : [];
   const [draftSelection, setDraftSelection] = useState<string[]>(initialMulti);
@@ -70,7 +71,7 @@ export const OptionPickerSheet: React.FC<OptionPickerSheetProps> = ({
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: theme.spacing.xxl + insets.bottom }]}>
               <View style={styles.dragHandle} />
               <Text style={styles.title}>{title}</Text>
               {searchable && <Text style={styles.searchHint}>Search and pick the closest match.</Text>}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Modal, Pressable, TouchableWithoutFeedback } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Icon, IconName } from './Icon';
 
@@ -16,6 +17,7 @@ export const LeadQuickActionsSheet: React.FC<LeadQuickActionsSheetProps> = ({
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+  const insets = useSafeAreaInsets();
 
   const actions: { label: string; icon: IconName; onPress: () => void }[] = [
     { label: 'Edit Lead', icon: 'edit', onPress: onEditLead },
@@ -28,7 +30,7 @@ export const LeadQuickActionsSheet: React.FC<LeadQuickActionsSheetProps> = ({
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: theme.spacing.xxl + insets.bottom }]}>
               <View style={styles.dragHandle} />
               <Text style={styles.title}>Quick actions</Text>
 

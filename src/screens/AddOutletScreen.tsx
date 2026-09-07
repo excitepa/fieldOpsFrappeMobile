@@ -19,21 +19,23 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { OptionPickerSheet } from '../components/OptionPickerSheet';
 import { useFieldStore } from '../store/useFieldStore';
-import { createOutlet, NetworkError } from '../services/api';
+import { createOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
 import { RouteName, Outlet } from '../types';
 
 interface AddOutletScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
 }
 
-const OUTLET_CHANNELS = [
+// Fallback lists used only if the live `get_outlet_channels`/`get_outlet_sub_channels`
+// fetch fails or returns nothing (e.g. offline) — so the picker is never empty.
+const FALLBACK_OUTLET_CHANNELS = [
   'Supermarket', 'Mini Mart', 'Kiosk', 'Pharmacy', 'Open Market Stall', 'Wholesaler',
   'Distributor', 'Convenience Store', 'Provision Store', 'Cosmetics Shop',
   'Restaurant', 'Bar / Lounge', 'Hotel', 'Bakery', 'Fuel Station Shop',
   'Beauty Salon', 'Electronics Shop', 'Mobile Money Agent', 'POS Agent', 'Filling Station',
   'School Canteen', 'Hospital Store', 'Cold Room', 'Poultry Shop', 'Table Top Seller',
 ];
-const OUTLET_SUB_CHANNELS = ['Modern Trade', 'Traditional Trade', 'Wholesale', 'Distributor', 'Pharmacy', 'HORECA', 'Key Account'];
+const FALLBACK_OUTLET_SUB_CHANNELS = ['Modern Trade', 'Traditional Trade', 'Wholesale', 'Distributor', 'Pharmacy', 'HORECA', 'Key Account'];
 
 export const AddOutletScreen: React.FC<AddOutletScreenProps> = ({ onNavigate }) => {
 const theme = useTheme();  const styles = createStyles(theme);
@@ -44,6 +46,13 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [showChannelPicker, setShowChannelPicker] = useState(false);
   const [subChannel, setSubChannel] = useState('');
   const [showSubChannelPicker, setShowSubChannelPicker] = useState(false);
+  const [outletChannels, setOutletChannels] = useState<string[]>(FALLBACK_OUTLET_CHANNELS);
+  const [outletSubChannels, setOutletSubChannels] = useState<string[]>(FALLBACK_OUTLET_SUB_CHANNELS);
+
+  useEffect(() => {
+    getOutletChannels().then((list) => { if (list.length > 0) setOutletChannels(list); }).catch(() => {});
+    getOutletSubChannels().then((list) => { if (list.length > 0) setOutletSubChannels(list); }).catch(() => {});
+  }, []);
   const [outletName, setOutletName] = useState('QuickShop Express');
   const [phone, setPhone] = useState('+234 801 000 0000');
   const [ownerName, setOwnerName] = useState('Mr. Emeka Obi');
@@ -153,6 +162,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       const created = await createOutlet(activeCampaignId, {
         name: outletName.trim(),
         type: outletType,
+        subChannel: subChannel || undefined,
         address: address.trim(),
         phone: phone.trim() || undefined,
         ownerName: ownerName.trim() || undefined,
@@ -305,7 +315,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       <OptionPickerSheet
         visible={showChannelPicker}
         title="Select outlet channel"
-        options={OUTLET_CHANNELS}
+        options={outletChannels}
         selected={outletType}
         searchable
         searchPlaceholder="Search outlet channel"
@@ -316,7 +326,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       <OptionPickerSheet
         visible={showSubChannelPicker}
         title="Select outlet category"
-        options={OUTLET_SUB_CHANNELS}
+        options={outletSubChannels}
         selected={subChannel || null}
         onConfirm={(v) => setSubChannel(v as string)}
         onClose={() => setShowSubChannelPicker(false)}

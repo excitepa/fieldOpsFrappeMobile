@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable, TextInput, TouchableWithoutFeedback, KeyboardAvoidingView, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Icon } from '../components/Icon';
 import { Button } from '../components/Button';
@@ -19,6 +20,7 @@ interface StockAdjustmentSheetProps {
 export const StockAdjustmentSheet: React.FC<StockAdjustmentSheetProps> = ({ visible, product, onClose }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+  const insets = useSafeAreaInsets();
   const { dispatch } = useFieldStore();
 
   const [direction, setDirection] = useState<Direction>('out');
@@ -60,7 +62,7 @@ export const StockAdjustmentSheet: React.FC<StockAdjustmentSheetProps> = ({ visi
         <View style={styles.overlay}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%' }}>
             <TouchableWithoutFeedback>
-              <View style={styles.sheetContainer}>
+              <View style={[styles.sheetContainer, { paddingBottom: theme.spacing.xxl + insets.bottom }]}>
                 <View style={styles.headerRow}>
                   <View style={styles.flex1}>
                     <Text style={styles.title}>Adjust stock</Text>

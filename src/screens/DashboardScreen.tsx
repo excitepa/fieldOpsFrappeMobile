@@ -7,7 +7,7 @@ import {
   Pressable,
   Modal,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Icon, IconName } from '../components/Icon';
 import { Card } from '../components/Card';
@@ -28,6 +28,7 @@ interface DashboardScreenProps {
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+  const insets = useSafeAreaInsets();
   // Reads/writes the shared store directly so every screen (Attendance,
   // Outlet Activity's module gating) sees the same active campaign.
   const { state, dispatch } = useFieldStore();
@@ -298,7 +299,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
         {/* ── Campaign Switch Modal ─────────────────────────────────── */}
         <Modal visible={showSwitchModal} transparent animationType="slide">
           <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
+            <View style={[styles.modalCard, { paddingBottom: 40 + insets.bottom }]}>
               <View style={styles.sheetHandle} />
               <Text style={styles.modalTitle}>Switch Campaign Drive</Text>
               <Text style={styles.modalSub}>Select active campaign to update assigned target drive:</Text>
@@ -332,7 +333,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
             so it's confirmed before committing rather than switching instantly. */}
         <Modal visible={!!pendingCampaign} transparent animationType="slide">
           <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
+            <View style={[styles.modalCard, { paddingBottom: 40 + insets.bottom }]}>
               <View style={styles.sheetHandle} />
               <Text style={styles.modalTitle}>Do you want to switch campaign?</Text>
               <Text style={styles.modalSub}>

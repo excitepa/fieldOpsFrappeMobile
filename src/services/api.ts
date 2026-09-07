@@ -574,9 +574,52 @@ export const getOutlets = async (campaignId: string): Promise<Outlet[]> => {
   }
 };
 
+/**
+ * `master_data.py`'s endpoints wrap responses as `{success, data, meta, message}` —
+ * unlike the rest of the mobile API, `message` here is a literal status string
+ * ("Success"), not the payload, so the usual `data?.message ?? data?.data ?? data`
+ * unwrap would grab that string instead of the real array. This unwraps the RPC
+ * envelope first, then reaches into that inner `.data` specifically.
+ */
+const unwrapMasterDataList = (data: any): any[] => {
+  const outer = data?.message ?? data?.data ?? data;
+  const inner = Array.isArray(outer) ? outer : outer?.data;
+  return Array.isArray(inner) ? inner : [];
+};
+
+/** Fetch the master list of outlet channels via `get_outlet_channels`. */
+export const getOutletChannels = async (): Promise<string[]> => {
+  try {
+    const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_channels');
+    return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
+  } catch (e: any) {
+    if (e instanceof AuthError) throw e;
+    return [];
+  }
+};
+
+/** Fetch the master list of outlet sub-channels via `get_outlet_sub_channels`. */
+export const getOutletSubChannels = async (): Promise<string[]> => {
+  try {
+    const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_sub_channels');
+    return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
+  } catch (e: any) {
+    if (e instanceof AuthError) throw e;
+    return [];
+  }
+};
+
 export interface CreateOutletPayload {
   name: string;
   type: string;
+  /**
+   * Sent as `category` — the one free-text field `submit_outlet` actually stores
+   * (`outlet_doc.category = outlet_data.get("category") or ...`), unlike `type`
+   * which the backend force-matches into just Retail/Wholesale/Distributor/Other
+   * (substring match — most real channel names collapse to "Other" server-side,
+   * a backend-side limitation, not something fixable from here).
+   */
+  subChannel?: string;
   address: string;
   phone?: string;
   ownerName?: string;
@@ -601,6 +644,7 @@ export const createOutlet = async (campaignId: string, payload: CreateOutletPayl
     owner_name: payload.ownerName,
     owner_phone: payload.ownerPhone,
   };
+  if (payload.subChannel) fields.category = payload.subChannel;
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
 
@@ -632,6 +676,7 @@ export const createOutlet = async (campaignId: string, payload: CreateOutletPayl
     name: outletId,
     outlet_name: payload.name,
     outlet_type: payload.type,
+    category: payload.subChannel,
     address: payload.address,
     phone_number: payload.phone,
     owner_name: payload.ownerName,
@@ -645,6 +690,7 @@ export const createOutlet = async (campaignId: string, payload: CreateOutletPayl
 export interface UpdateOutletPayload {
   name?: string;
   type?: string;
+  subChannel?: string;
   address?: string;
   phone?: string;
   ownerName?: string;
@@ -666,6 +712,11 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
   };
   if (payload.name !== undefined) fields.outlet_name = payload.name;
   if (payload.type !== undefined) fields.outlet_type = payload.type;
+  // NOTE: as of the branch this was checked against, update_outlet's Outlet-record
+  // branch never actually reads/persists `category` (unlike submit_outlet, which
+  // does) — sending it anyway in case that's added server-side later, but editing
+  // an existing outlet's sub-channel currently has no effect.
+  if (payload.subChannel !== undefined) fields.category = payload.subChannel;
   if (payload.address !== undefined) fields.address = payload.address;
   if (payload.phone !== undefined) fields.phone_number = payload.phone;
   if (payload.ownerName !== undefined) fields.owner_name = payload.ownerName;
@@ -811,37 +862,21 @@ export const submitFieldSale = async (
  * Submit a pending order via the RPC contract (`submit_sales_order`). There's no
  * delivery-date picker on the Order flow yet, so `delivery_date` defaults to today.
  *
- * IMPORTANT (flagged, not silently worked around): `submit_sales_order`'s handler only
- * reads a single product off the top level (`productId`/`qty`/`unitPrice`/`outletId`/
- * `campaignId`) — it never loops over an `items` array the way `submit_field_sale` and
- * `submit_stock_request` do. So only the FIRST cart line is ever actually recorded
- * server-side; any additional lines in a multi-product order are silently dropped by
- * the backend today. `items` is still sent in case that's fixed server-side later, and
- * the first line's fields are also sent under the top-level keys the handler currently
- * reads, so single-product orders (and the first line of multi-product ones) at least
- * link the right outlet/product/qty/price instead of the previous outlet-less,
- * product-less, qty-defaults-to-1, price-defaults-to-0 record.
+ * `submit_sales_order` now loops over a real `items[]` array (backend fix confirmed
+ * 2026-09-07 — previously it only read a single product off the top level, silently
+ * dropping every line past the first). Sends `productId`/`qty`/`unitPrice` per line,
+ * matching the field names the backend documented for this.
  */
 export const submitSalesOrder = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[]
 ): Promise<{ ref: string }> => {
-  const first = lines[0];
   const body = {
-    customer: outletId,
-    outlet: outletId,
     outletId,
-    campaign: campaignId,
     campaignId,
-    items: lines.map((l) => ({ item_code: l.itemCode, qty: l.qty, rate: l.rate })),
-    productId: first?.itemCode,
-    qty: first?.qty,
-    quantity: first?.qty,
-    unitPrice: first?.rate,
-    payment_mode: 'Cash',
-    delivery_date: new Date().toISOString().slice(0, 10),
     deliveryDate: new Date().toISOString().slice(0, 10),
+    items: lines.map((l) => ({ productId: l.itemCode, qty: l.qty, unitPrice: l.rate })),
   };
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_sales_order', {
     method: 'POST',
