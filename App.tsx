@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, ActivityIndicator, BackHandler } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
@@ -98,6 +98,15 @@ function AppInner() {
 
   const [appStage, setAppStage] = useState<'splash' | 'login' | 'campaignSelect' | 'app'>('splash');
   const [route, setRoute] = useState<RouteName>('home');
+
+  // Re-check the day lock periodically so an agent who leaves the app open
+  // past midnight sees it unlock on its own, without needing to relaunch.
+  const [, forceDayLockRecheck] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forceDayLockRecheck((n) => n + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
+  const dayLocked = !!state.dayLockedUntil && Date.now() < new Date(state.dayLockedUntil).getTime();
   const [routeData, setRouteData] = useState<any>(null);
   const [leadsList, setLeadsList] = useState<Lead[]>([]);
   const [splashDone, setSplashDone] = useState(false);
@@ -175,11 +184,40 @@ function AppInner() {
     setRoute('home');
   };
 
+  const handleDayComplete = () => {
+    logout();
+    dispatch({ type: 'SET_USER', user: mockUser });
+    const nextMidnight = new Date();
+    nextMidnight.setHours(24, 0, 0, 0);
+    dispatch({ type: 'SET_DAY_LOCK', until: nextMidnight.toISOString() });
+    historyRef.current = [];
+    setAppStage('login');
+    setRoute('home');
+  };
+
   if (!fontsLoaded) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={theme.colors.primaryLight} />
       </View>
+    );
+  }
+
+  // 0. Day-Complete Lock — takes priority over every other stage. Set on a real
+  // EOD submit (see handleDayComplete below); the agent is logged out at that
+  // point too, so there is no live session underneath this screen to interact
+  // with even if this check were somehow bypassed.
+  if (dayLocked) {
+    return (
+      <>
+        <View style={styles.lockedContainer}>
+          <Text style={styles.lockedTitle}>You're done for today</Text>
+          <Text style={styles.lockedSub}>
+            Your end-of-day report has been submitted. The app unlocks automatically at 12:00 AM.
+          </Text>
+        </View>
+        <StatusBar style={statusBarStyle} />
+      </>
     );
   }
 
@@ -210,7 +248,15 @@ function AppInner() {
           onSuccess={(user) => {
             if (user) dispatch({ type: 'SET_USER', user });
             historyRef.current = [];
-            setAppStage('campaignSelect');
+            if (state.attendanceStatus.clockedIn) {
+              // Already clocked in today (e.g. the agent logged out mid-day without
+              // actually clocking out) — don't make them clock in again just to log
+              // back in, go straight to the app like the splash-resume flow does.
+              setRoute('home');
+              setAppStage('app');
+            } else {
+              setAppStage('campaignSelect');
+            }
           }}
           onNavigate={navigate}
         />
@@ -354,8 +400,11 @@ function AppInner() {
             onLogout={() => {
               logout();
               dispatch({ type: 'SET_USER', user: mockUser });
-              dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
-              dispatch({ type: 'SET_CAMPAIGN_SELECTED', value: false });
+              // Logging out is not clocking out — attendance/campaign state reflects
+              // the agent's real-world work day and must survive a plain logout, or
+              // logging back in the same day would wrongly force them through
+              // campaign-select + clock-in again (see LoginScreen onSuccess above,
+              // which checks this same flag to skip straight back into the app).
               historyRef.current = [];
               setAppStage('login');
               setRoute('home');
@@ -365,7 +414,7 @@ function AppInner() {
       case 'profileDetail':
         return <ProfileDetailScreen onNavigate={navigate} />;
       case 'eodSummary':
-        return <EODSummaryScreen onNavigate={navigate} leadsList={leadsList} />;
+        return <EODSummaryScreen onNavigate={navigate} leadsList={leadsList} onDayComplete={handleDayComplete} />;
       default:
         return <DashboardScreen onNavigate={navigate} />;
     }
@@ -393,5 +442,26 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   screenArea: {
     flex: 1,
+  },
+  lockedContainer: {
+    flex: 1,
+    backgroundColor: theme.colors.darkBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    gap: 12,
+  },
+  lockedTitle: {
+    fontFamily: theme.fonts.bold,
+    fontSize: 20,
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  lockedSub: {
+    fontFamily: theme.fonts.regular,
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.75)',
+    textAlign: 'center',
+    lineHeight: 20,
   },
 });

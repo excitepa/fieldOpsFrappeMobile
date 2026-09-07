@@ -1,11 +1,13 @@
-import React from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView, Pressable } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { RouteName } from '../types';
+import { getSurveysForCampaign, getSurveyDetail, getMySurveys } from '../services/api';
+import { RouteName, CampaignSurveyConfig } from '../types';
 
 interface OutletSurveysScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -20,15 +22,49 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
   const outlet = state.outlets.find((o) => o.id === outletId);
   const activeCampaign = state.activeCampaign;
 
-  const surveyConfigs = (activeCampaign?.surveys || []).filter((s) => s.module === 'surveys');
-  const submittedSurveys = outletId ? getSurveysForOutlet(outletId) : [];
+  const [surveyConfigs, setSurveyConfigs] = useState<CampaignSurveyConfig[]>([]);
+  const [submittedSurveyIds, setSubmittedSurveyIds] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const submittedLocally = outletId ? getSurveysForOutlet(outletId) : [];
+
+  const fetchSurveys = useCallback(async () => {
+    if (!activeCampaign?.id) {
+      setSurveyConfigs([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const [list, mySurveys] = await Promise.all([
+        getSurveysForCampaign(activeCampaign.id),
+        getMySurveys(activeCampaign.id),
+      ]);
+      const details = await Promise.all(list.map((s) => getSurveyDetail(s.id)));
+      setSurveyConfigs(details.filter((d): d is CampaignSurveyConfig => !!d));
+      setSubmittedSurveyIds(new Set(mySurveys.filter((r) => r.status === 'Submitted').map((r) => r.surveyId)));
+    } catch (e: any) {
+      setError(e?.message || 'Could not load surveys.');
+    } finally {
+      setLoading(false);
+    }
+  }, [activeCampaign?.id]);
+
+  useEffect(() => {
+    fetchSurveys();
+  }, [fetchSurveys]);
 
   const rows = surveyConfigs.map((survey) => {
     const sections = survey.sections || [];
     const questionCount = sections.length > 0
       ? sections.reduce((sum, s) => sum + s.questions.length, 0)
       : survey.questions.length;
-    const completed = submittedSurveys.some((s) => s.surveyConfigId === survey.id);
+    // Submitted-for-this-campaign (server) OR submitted-for-this-outlet-this-session (local) —
+    // the backend has no outlet dimension on survey responses, so the local record is what
+    // actually distinguishes "done for this outlet" (see submitSurveyResponse's doc comment).
+    const completed = submittedSurveyIds.has(survey.id) || submittedLocally.some((s) => s.surveyConfigId === survey.id);
     return { survey, questionCount, completed };
   });
   const pendingCount = rows.filter((r) => !r.completed).length;
@@ -50,15 +86,23 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
     <SafeAreaView style={styles.container}>
       <Header
         title="Surveys"
-        subtitle={`${pendingCount} pending · ${completedCount} completed`}
+        subtitle={loading ? 'Loading...' : `${pendingCount} pending · ${completedCount} completed`}
         onNavigate={onNavigate}
         onBackPress={() => onNavigate('outletDetail', { outletId: outlet.id })}
       />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {rows.length === 0 && (
+        {loading && (
+          <View style={styles.centerBox}>
+            <ActivityIndicator color={theme.colors.navy} />
+          </View>
+        )}
+        {!loading && error ? (
+          <Text style={styles.emptyText}>{error}</Text>
+        ) : null}
+        {!loading && !error && rows.length === 0 && (
           <Text style={styles.emptyText}>No surveys are configured for this campaign yet.</Text>
         )}
-        {rows.map(({ survey, questionCount, completed }) => (
+        {!loading && rows.map(({ survey, questionCount, completed }) => (
           <Pressable key={survey.id} onPress={() => onNavigate('outletSurveyForm', { outletId: outlet.id, survey })}>
             <Card style={styles.card}>
               <View style={styles.row}>
@@ -100,6 +144,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   content: { padding: theme.spacing.lg, paddingBottom: 60, gap: theme.spacing.sm },
   missingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md, padding: theme.spacing.xl },
   missingTitle: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark, textAlign: 'center' },
+  centerBox: { paddingVertical: theme.spacing.xl, alignItems: 'center' },
   emptyText: { fontFamily: theme.fonts.regular, fontSize: 13, color: theme.colors.textMuted, textAlign: 'center', paddingVertical: theme.spacing.xl },
   card: { gap: 0 },
   row: { flexDirection: 'row', gap: theme.spacing.sm },

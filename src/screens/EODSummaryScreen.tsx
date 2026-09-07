@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
@@ -13,6 +14,10 @@ import { RouteName, Lead } from '../types';
 interface EODSummaryScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
   leadsList?: Lead[];
+  /** Called instead of navigating home after a successful EOD submit — the agent is
+   *  done for the day, so this logs them out and locks the app until midnight rather
+   *  than returning them to a normal, still-usable Home screen. */
+  onDayComplete?: () => void;
 }
 
 const isToday = (timestamp: string) => {
@@ -21,7 +26,7 @@ const isToday = (timestamp: string) => {
   return d.toDateString() === new Date().toDateString();
 };
 
-export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, leadsList = [] }) => {
+export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, leadsList = [], onDayComplete }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
@@ -82,8 +87,8 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
     setSubmitting(false);
     Alert.alert(
       'End of Day Submitted',
-      isClockedIn ? 'Your daily summary has been recorded and you have been clocked out.' : 'Your daily summary has been recorded.',
-      [{ text: 'OK', onPress: () => onNavigate('home') }]
+      'Your daily summary has been recorded. You\'re done for today — the app will lock until 12:00 AM tomorrow.',
+      [{ text: 'OK', onPress: () => onDayComplete?.() }]
     );
   };
 

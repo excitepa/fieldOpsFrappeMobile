@@ -10,7 +10,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, OutletOrder, OutletSale, RouteAssignment, NotificationItem } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
 export class AuthError extends Error {}
@@ -789,7 +789,11 @@ export const submitFieldSale = async (
   const body = {
     outlet: outletId,
     campaign: campaignId,
-    items: lines.map((l) => ({ item_code: l.itemCode, qty: l.qty, rate: l.rate })),
+    // submit_field_sale's item-append loop reads `item`/`quantity` (not `item_code`/`qty`,
+    // which this app's other endpoints use) — confirmed by reading the actual handler.
+    // Sending both key sets so a real product/qty always lands regardless of which the
+    // server reads.
+    items: lines.map((l) => ({ item: l.itemCode, item_code: l.itemCode, quantity: l.qty, qty: l.qty, rate: l.rate })),
     payment_type: 'Cash',
     amount_paid: amountPaid,
   };
@@ -806,18 +810,38 @@ export const submitFieldSale = async (
 /**
  * Submit a pending order via the RPC contract (`submit_sales_order`). There's no
  * delivery-date picker on the Order flow yet, so `delivery_date` defaults to today.
+ *
+ * IMPORTANT (flagged, not silently worked around): `submit_sales_order`'s handler only
+ * reads a single product off the top level (`productId`/`qty`/`unitPrice`/`outletId`/
+ * `campaignId`) — it never loops over an `items` array the way `submit_field_sale` and
+ * `submit_stock_request` do. So only the FIRST cart line is ever actually recorded
+ * server-side; any additional lines in a multi-product order are silently dropped by
+ * the backend today. `items` is still sent in case that's fixed server-side later, and
+ * the first line's fields are also sent under the top-level keys the handler currently
+ * reads, so single-product orders (and the first line of multi-product ones) at least
+ * link the right outlet/product/qty/price instead of the previous outlet-less,
+ * product-less, qty-defaults-to-1, price-defaults-to-0 record.
  */
 export const submitSalesOrder = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[]
 ): Promise<{ ref: string }> => {
+  const first = lines[0];
   const body = {
     customer: outletId,
+    outlet: outletId,
+    outletId,
     campaign: campaignId,
+    campaignId,
     items: lines.map((l) => ({ item_code: l.itemCode, qty: l.qty, rate: l.rate })),
+    productId: first?.itemCode,
+    qty: first?.qty,
+    quantity: first?.qty,
+    unitPrice: first?.rate,
     payment_mode: 'Cash',
     delivery_date: new Date().toISOString().slice(0, 10),
+    deliveryDate: new Date().toISOString().slice(0, 10),
   };
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_sales_order', {
     method: 'POST',
@@ -948,10 +972,21 @@ export const getMyInventory = async (): Promise<Product[]> => {
 
 export interface StockRequestLine {
   itemCode: string;
+  itemName?: string;
   qty: number;
+  cases?: number;
+  units?: number;
 }
 
-/** Submit a replenishment request via the RPC contract (`submit_stock_request`). */
+/**
+ * Submit a replenishment request via the RPC contract (`submit_stock_request`).
+ *
+ * The backend's per-line mapping falls back to the item code as the display name
+ * whenever `item_name` isn't sent (`pname = l.get("item_name") or ... or pid`) — the
+ * app previously only sent `item_code`/`qty`, so the web approval screen showed the
+ * raw item code instead of a readable product name. `item_name` (plus `cases`/`units`,
+ * which the backend folds into a per-line note when present) are now sent too.
+ */
 export const submitStockRequest = async (
   campaignId: string,
   lines: StockRequestLine[],
@@ -963,7 +998,13 @@ export const submitStockRequest = async (
     // key is harmless but a missing required one silently drops the campaign link.
     campaign_id: campaignId,
     campaign: campaignId,
-    items: lines.map((l) => ({ item_code: l.itemCode, qty: l.qty })),
+    items: lines.map((l) => ({
+      item_code: l.itemCode,
+      qty: l.qty,
+      item_name: l.itemName,
+      cases: l.cases,
+      units: l.units,
+    })),
     notes: purpose || 'Field Replenishment',
   };
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_stock_request', {
@@ -1039,6 +1080,202 @@ export const submitStockReconciliation = async (
   const result = data?.message ?? data?.data ?? data;
   const ref = result?.reconciliation_id || result?.name || result?.id || '';
   return { ref: String(ref) };
+};
+
+// ─── Surveys API ──────────────────────────────────────────────────────────────
+
+export interface SurveyListItem {
+  id: string;
+  name: string;
+  status: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+const mapSurveyListItem = (raw: any): SurveyListItem => ({
+  id: raw?.name || raw?.id || '',
+  name: raw?.survey_name || raw?.name || 'Survey',
+  status: raw?.status || '',
+  startDate: raw?.start_date || undefined,
+  endDate: raw?.end_date || undefined,
+});
+
+/**
+ * List surveys assigned to the agent for a campaign via `get_surveys_for_campaign`.
+ * Only returns id/name/status/dates (no questions) — call `getSurveyDetail` per survey
+ * for the actual form.
+ */
+export const getSurveysForCampaign = async (campaignId: string): Promise<SurveyListItem[]> => {
+  try {
+    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_surveys_for_campaign?campaign=${encodeURIComponent(campaignId)}`);
+    const raw = data?.message ?? data?.data ?? data;
+    const list = Array.isArray(raw) ? raw : [];
+    return list.map(mapSurveyListItem);
+  } catch (e: any) {
+    if (e instanceof AuthError) throw e;
+    return [];
+  }
+};
+
+/**
+ * The backend sends question_type as a mobile-friendly label (Text/Multiple Choice/
+ * Single Choice/Rating/Image) rather than this app's internal QuestionType union.
+ * "Single Choice" with exactly ["Yes","No"] options already renders as the yes/no
+ * toggle in DynamicSurveyForm — that check lives there (q.type === 'choice' + options),
+ * so no separate yes/no QuestionType is needed on this side.
+ */
+const BACKEND_TO_APP_QUESTION_TYPE: Record<string, QuestionType> = {
+  Text: 'text',
+  'Multiple Choice': 'multi',
+  'Single Choice': 'choice',
+  Rating: 'rating',
+  Image: 'photo',
+};
+const APP_TO_BACKEND_QUESTION_TYPE: Record<QuestionType, string> = {
+  text: 'Text',
+  multi: 'Multiple Choice',
+  choice: 'Single Choice',
+  rating: 'Rating',
+  photo: 'Image',
+  select: 'Text',
+  number: 'Text',
+  gps: 'Text',
+};
+
+/**
+ * `get_survey_detail` returns one flat `questions[]` array (no sections). This app's
+ * survey form/review UI is built around sectioned surveys (see LeadSurveySection), so
+ * the flat list is wrapped as a single synthetic section rather than inventing section
+ * boundaries the backend never sends.
+ *
+ * Note: as of the branch this was checked against, the backend's `required` field on
+ * each question is hardcoded to 0 server-side regardless of how the question was
+ * configured (not a client mapping choice) — so client-side required-question
+ * validation on these forms won't currently trigger for any fetched survey. Passed
+ * through as-is rather than guessed at; flagged to the backend team separately.
+ */
+const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
+  const questions: DynamicSurveyQuestion[] = Array.isArray(raw?.questions)
+    ? raw.questions.map((q: any) => ({
+        id: q?.name || q?.id || '',
+        type: BACKEND_TO_APP_QUESTION_TYPE[q?.question_type] || 'text',
+        question: q?.question || q?.question_text || '',
+        required: !!q?.required,
+        options: Array.isArray(q?.options) && q.options.length > 0 ? q.options : undefined,
+      }))
+    : [];
+
+  return {
+    id: raw?.name || raw?.id || '',
+    name: raw?.survey_name || raw?.name || 'Survey',
+    module: 'surveys',
+    questions,
+    sections: [{ id: 'section-1', name: 'Questions', questions }],
+    description: raw?.description || undefined,
+    durationLabel: questions.length > 0 ? `~${Math.max(1, Math.round(questions.length / 3))} min` : undefined,
+  };
+};
+
+/** Fetch a survey's full question set via `get_survey_detail`. */
+export const getSurveyDetail = async (surveyId: string): Promise<CampaignSurveyConfig | null> => {
+  try {
+    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_survey_detail?survey_id=${encodeURIComponent(surveyId)}`);
+    const raw = data?.message ?? data?.data ?? data;
+    if (!raw || typeof raw !== 'object') return null;
+    return mapSurveyDetail(raw);
+  } catch (e: any) {
+    if (e instanceof AuthError) throw e;
+    return null;
+  }
+};
+
+export interface SurveyResponsePayload {
+  questionId: string;
+  questionType: QuestionType;
+  answer: string | string[] | number | null;
+}
+
+export interface SurveyRespondent {
+  leadId?: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+}
+
+/**
+ * Submit answers via the RPC contract (`submit_survey_response`).
+ *
+ * IMPORTANT (flagged, not silently worked around): the backend dedupes an existing
+ * response by `{survey, agent, status in [Draft, Submitted]}` only — there is no
+ * outlet dimension. So submitting the same survey for a second outlet on the same day
+ * updates/overwrites the agent's one existing response for that survey rather than
+ * creating a second record. This app still tracks completion per-outlet locally
+ * (OutletSurvey.outletId) for UI purposes, but that per-outlet distinction is NOT
+ * preserved server-side under this contract — needs backend confirmation if outlet-
+ * scoped survey responses are actually required.
+ *
+ * Also: 'photo' (Image) question answers are sent as the local file URI string since
+ * this endpoint has no documented multipart/file-upload path — the photo itself is not
+ * confirmed to reach the server through this call.
+ */
+export const submitSurveyResponse = async (
+  surveyId: string,
+  responses: SurveyResponsePayload[],
+  coordinates?: { lat: number; lng: number },
+  respondent?: SurveyRespondent
+): Promise<{ responseId: string }> => {
+  const body: Record<string, any> = {
+    survey: surveyId,
+    responses: responses.map((r) => ({
+      question: r.questionId,
+      question_type: APP_TO_BACKEND_QUESTION_TYPE[r.questionType] || 'Text',
+      answer: Array.isArray(r.answer) ? r.answer.join(', ') : r.answer,
+    })),
+  };
+  if (coordinates) {
+    body.latitude = coordinates.lat;
+    body.longitude = coordinates.lng;
+  }
+  if (respondent?.leadId) body.lead_id = respondent.leadId;
+  if (respondent?.firstName) body.first_name = respondent.firstName;
+  if (respondent?.lastName) body.last_name = respondent.lastName;
+  if (respondent?.phone) body.phone = respondent.phone;
+
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_survey_response', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const result = data?.message ?? data?.data ?? data;
+  return { responseId: String(result?.response_id || '') };
+};
+
+export interface MySurveyResponseSummary {
+  id: string;
+  surveyId: string;
+  status: string;
+  submissionDate?: string;
+}
+
+const mapMySurveyResponse = (raw: any): MySurveyResponseSummary => ({
+  id: raw?.name || raw?.id || '',
+  surveyId: raw?.survey || '',
+  status: raw?.status || '',
+  submissionDate: raw?.submission_date || undefined,
+});
+
+/** Fetch this agent's own submitted survey responses via `get_my_surveys`, optionally scoped to a campaign. */
+export const getMySurveys = async (campaignId?: string): Promise<MySurveyResponseSummary[]> => {
+  try {
+    const qs = campaignId ? `?campaign=${encodeURIComponent(campaignId)}` : '';
+    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_my_surveys${qs}`);
+    const raw = data?.message ?? data?.data ?? data;
+    const list = Array.isArray(raw) ? raw : [];
+    return list.map(mapMySurveyResponse);
+  } catch (e: any) {
+    if (e instanceof AuthError) throw e;
+    return [];
+  }
 };
 
 // ─── Journey Maps / Beat Plans API ───────────────────────────────────────────────

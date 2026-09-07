@@ -39,6 +39,10 @@ interface FieldState {
   campaignSelected: boolean;
   /** Flips true once the AsyncStorage hydration pass (or the first-run check that finds nothing to hydrate) has completed — lets callers wait for a real answer before deciding things like "is the user already clocked in". */
   hydrated: boolean;
+  /** ISO timestamp (next local midnight) set on a real End-of-Day submit — while
+   *  `Date.now()` is before this, App.tsx blocks the whole app behind a "day
+   *  complete" screen instead of allowing login/any activity. Null when not locked. */
+  dayLockedUntil: string | null;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -67,6 +71,7 @@ type Action =
   | { type: 'SAVE_LEAD_DRAFT'; leadDraft: LeadDraft }
   | { type: 'DELETE_LEAD_DRAFT'; draftId: string }
   | { type: 'ADD_LEAD_SURVEY_RESPONSE'; response: LeadSurveyResponse }
+  | { type: 'SET_DAY_LOCK'; until: string | null }
   | { type: 'HYDRATE'; state: Partial<FieldState> };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
@@ -86,6 +91,9 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_CAMPAIGN_SELECTED':
       return { ...state, campaignSelected: action.value };
+
+    case 'SET_DAY_LOCK':
+      return { ...state, dayLockedUntil: action.until };
 
     case 'SET_OUTLETS': {
       // The backend's outlet `status` field means Active/Inactive record state, not
@@ -290,6 +298,7 @@ const initialState: FieldState = {
   attendanceStatus: { clockedIn: false },
   campaignSelected: false,
   hydrated: false,
+  dayLockedUntil: null,
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────

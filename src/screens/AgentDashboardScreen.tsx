@@ -1,5 +1,6 @@
 import React from 'react';
-import { Text, StyleSheet, SafeAreaView, ScrollView } from 'react-native';
+import { Text, StyleSheet, ScrollView } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { PerformanceDashboardView } from './dashboard/PerformanceDashboardView';

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView, Pressable, Linking, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
@@ -212,7 +213,11 @@ export const LeadDetailScreen: React.FC<LeadDetailScreenProps> = ({ onNavigate, 
         visible={quickActionsOpen}
         onClose={() => setQuickActionsOpen(false)}
         onEditLead={() => onNavigate('editLead', l)}
-        onRecordSale={() => Alert.alert('Record Sale', 'Recording sales directly from a lead is coming soon.')}
+        // A lead only carries a free-text `company` name, not a real Outlet id — so
+        // there's no specific outlet to jump straight into a sale for. Send the agent
+        // to Outlets to pick (or add) the actual outlet to record the sale against,
+        // instead of the old "coming soon" dead end.
+        onRecordSale={() => onNavigate('outlets')}
         onRunSurvey={() => onNavigate('leadSurveys', l)}
       />
     </SafeAreaView>

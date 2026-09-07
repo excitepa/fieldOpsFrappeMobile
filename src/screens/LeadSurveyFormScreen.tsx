@@ -1,24 +1,27 @@
 import React, { useState } from 'react';
-import { StyleSheet, SafeAreaView, ScrollView, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
+import { Icon } from '../components/Icon';
+import { Button } from '../components/Button';
 import { DynamicSurveyForm } from '../components/DynamicSurveyForm';
-import { mockLeads, mockLeadSurveys } from '../services/mockService';
-import { RouteName, Lead, LeadSurveyConfig } from '../types';
+import { RouteName, Lead, CampaignSurveyConfig } from '../types';
 
 interface LeadSurveyFormScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
-  routeData?: { lead?: Lead; survey?: LeadSurveyConfig };
+  routeData?: { lead?: Lead; survey?: CampaignSurveyConfig };
 }
 
 export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNavigate, routeData }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const lead = routeData?.lead || mockLeads[0];
-  const survey = routeData?.survey || mockLeadSurveys[0];
+  const lead = routeData?.lead;
+  const survey = routeData?.survey;
 
-  const allQuestions = survey.sections.flatMap((s) => s.questions);
+  const sections = survey?.sections || [];
+  const allQuestions = sections.flatMap((s) => s.questions);
 
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [photoUris, setPhotoUris] = useState<Record<string, string>>({});
@@ -73,6 +76,19 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
     onNavigate('leadSurveyReview', { lead, survey, answers, photoUris });
   };
 
+  if (!lead || !survey) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Header title="Survey" onNavigate={onNavigate} onBackPress={() => onNavigate('leadSurveys', lead)} />
+        <View style={styles.missingContainer}>
+          <Icon name="alert-circle" size={44} color={theme.colors.amber} />
+          <Text style={styles.missingTitle}>This survey could not be loaded.</Text>
+          <Button title="Back to Surveys" onPress={() => onNavigate('leadSurveys', lead)} variant="navy" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       <Header
@@ -83,8 +99,8 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
       />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <DynamicSurveyForm
-          description={survey.description}
-          sections={survey.sections}
+          description={survey.description || survey.name}
+          sections={sections}
           answers={answers}
           photoUris={photoUris}
           errors={errors}
@@ -102,4 +118,6 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
 const createStyles = (theme: any) => StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.appBg },
   content: { padding: theme.spacing.lg, paddingBottom: 60, gap: theme.spacing.sm },
+  missingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md, padding: theme.spacing.xl },
+  missingTitle: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark, textAlign: 'center' },
 });

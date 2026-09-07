@@ -1,27 +1,41 @@
 import React from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
+import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { mockLeads, mockLeadSurveys } from '../services/mockService';
-import { RouteName, Lead, LeadSurveyConfig } from '../types';
+import { RouteName, Lead, CampaignSurveyConfig } from '../types';
 
 interface LeadSurveyDetailScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
-  routeData?: { lead?: Lead; survey?: LeadSurveyConfig };
+  routeData?: { lead?: Lead; survey?: CampaignSurveyConfig };
 }
 
 export const LeadSurveyDetailScreen: React.FC<LeadSurveyDetailScreenProps> = ({ onNavigate, routeData }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   const { getLeadSurveyResponse } = useFieldStore();
-  const lead = routeData?.lead || mockLeads[0];
-  const survey = routeData?.survey || mockLeadSurveys[0];
+  const lead = routeData?.lead;
+  const survey = routeData?.survey;
 
-  const questionCount = survey.sections.reduce((sum, s) => sum + s.questions.length, 0);
-  const requiredCount = survey.sections.reduce((sum, s) => sum + s.questions.filter((q) => q.required).length, 0);
+  if (!lead || !survey) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Header title="Survey" onNavigate={onNavigate} onBackPress={() => onNavigate('leadSurveys', lead)} />
+        <View style={styles.missingContainer}>
+          <Icon name="alert-circle" size={44} color={theme.colors.amber} />
+          <Text style={styles.missingTitle}>This survey could not be loaded.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const sections = survey.sections || [];
+  const questionCount = sections.reduce((sum, s) => sum + s.questions.length, 0);
+  const requiredCount = sections.reduce((sum, s) => sum + s.questions.filter((q) => q.required).length, 0);
   const completed = !!getLeadSurveyResponse(lead.id, survey.id);
 
   return (
@@ -46,14 +60,14 @@ export const LeadSurveyDetailScreen: React.FC<LeadSurveyDetailScreenProps> = ({ 
               <Text style={styles.statLabel}>REQUIRED</Text>
             </View>
             <View style={styles.statCell}>
-              <Text style={styles.statVal}>{survey.durationLabel.replace('~', '')}</Text>
+              <Text style={styles.statVal}>{(survey.durationLabel || '~1 min').replace('~', '')}</Text>
               <Text style={styles.statLabel}>DURATION</Text>
             </View>
           </View>
         </Card>
 
         <Text style={styles.sectionsTitle}>SECTIONS</Text>
-        {survey.sections.map((section, idx) => (
+        {sections.map((section, idx) => (
           <Card key={section.id} style={styles.sectionCard}>
             <View style={styles.sectionRow}>
               <View style={styles.sectionNumBadge}>
@@ -83,6 +97,8 @@ export const LeadSurveyDetailScreen: React.FC<LeadSurveyDetailScreenProps> = ({ 
 const createStyles = (theme: any) => StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.appBg },
   content: { padding: theme.spacing.lg, paddingBottom: 60, gap: theme.spacing.md },
+  missingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md, padding: theme.spacing.xl },
+  missingTitle: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark, textAlign: 'center' },
   flex1: { flex: 1 },
   overviewCard: { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy, gap: theme.spacing.sm },
   statusBadge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: theme.radius.full },

@@ -1,18 +1,21 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView, Image, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Location from 'expo-location';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
+import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { mockLeads, mockLeadSurveys } from '../services/mockService';
-import { RouteName, Lead, LeadSurveyConfig, LeadSurveyAnswer } from '../types';
+import { submitSurveyResponse, NetworkError } from '../services/api';
+import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
 
 interface LeadSurveyReviewScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
   routeData?: {
     lead?: Lead;
-    survey?: LeadSurveyConfig;
+    survey?: CampaignSurveyConfig;
     answers?: Record<string, any>;
     photoUris?: Record<string, string>;
   };
@@ -28,24 +31,43 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
   const theme = useTheme();
   const styles = createStyles(theme);
   const { dispatch } = useFieldStore();
-  const lead = routeData?.lead || mockLeads[0];
-  const survey = routeData?.survey || mockLeadSurveys[0];
+  const lead = routeData?.lead;
+  const survey = routeData?.survey;
   const answers = routeData?.answers || {};
   const photoUris = routeData?.photoUris || {};
   const [submitting, setSubmitting] = useState(false);
 
-  const allQuestions = survey.sections.flatMap((s) => s.questions);
+  const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (!lead || !survey) return;
     setSubmitting(true);
 
-    const surveyAnswers: LeadSurveyAnswer[] = allQuestions.map((q) => ({
-      questionId: q.id,
-      question: q.question,
-      answer: answers[q.id] ?? null,
-    }));
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      let coordinates: { lat: number; lng: number } | undefined;
+      if (status === 'granted') {
+        const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
+      }
 
-    setTimeout(() => {
+      const nameParts = lead.name.trim().split(/\s+/);
+      const firstName = nameParts[0] || undefined;
+      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined;
+
+      await submitSurveyResponse(
+        survey.id,
+        allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
+        coordinates,
+        { leadId: lead.id, firstName, lastName, phone: lead.phone || undefined }
+      );
+
+      const surveyAnswers: LeadSurveyAnswer[] = allQuestions.map((q) => ({
+        questionId: q.id,
+        question: q.question,
+        answer: answers[q.id] ?? null,
+      }));
+
       dispatch({
         type: 'ADD_LEAD_SURVEY_RESPONSE',
         response: {
@@ -60,8 +82,27 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
       Alert.alert('Survey Submitted', `${survey.name} has been recorded for ${lead.name}.`, [
         { text: 'OK', onPress: () => onNavigate('leadSurveys', lead) },
       ]);
-    }, 400);
+    } catch (e: any) {
+      setSubmitting(false);
+      if (e instanceof NetworkError) {
+        Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
+      } else {
+        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+      }
+    }
   };
+
+  if (!lead || !survey) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Header title="Review Answers" onNavigate={onNavigate} onBackPress={() => onNavigate('leadSurveys', lead)} />
+        <View style={styles.missingContainer}>
+          <Icon name="alert-circle" size={44} color={theme.colors.amber} />
+          <Text style={styles.missingTitle}>Nothing to review.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -102,6 +143,8 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
 const createStyles = (theme: any) => StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.appBg },
   content: { padding: theme.spacing.lg, paddingBottom: 60, gap: theme.spacing.sm },
+  missingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md, padding: theme.spacing.xl },
+  missingTitle: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark, textAlign: 'center' },
   qCard: { gap: 6 },
   qText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textMuted },
   answerText: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },

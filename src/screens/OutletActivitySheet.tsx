@@ -33,7 +33,13 @@ export const OutletActivitySheet: React.FC<OutletActivitySheetProps> = ({
   const showSale = enabledModules.includes('sales');
   // "New Order" never appears in quick actions — outlet orders are placed
   // from the Orders module, not this sheet, matching the reference flow.
-  const showSurvey = enabledModules.includes('surveys');
+  // Surveys are always offered regardless of the campaign's declared `modules`
+  // list — that list is loosely-defined campaign metadata and isn't reliably
+  // populated with 'surveys' even for campaigns that do have real surveys
+  // assigned server-side (Survey.campaign is a separate link, independent of
+  // Campaign.modules). OutletSurveysScreen already shows an empty state if a
+  // campaign genuinely has no surveys configured, so gating the entry point
+  // here only hid a working flow behind an unreliable flag.
   const showMerchandising = enabledModules.includes('merchandising');
 
   return (
@@ -74,20 +80,18 @@ export const OutletActivitySheet: React.FC<OutletActivitySheetProps> = ({
                   </Pressable>
                 )}
 
-                {showSurvey && (
-                  <Pressable
-                    onPress={() => {
-                      onClose();
-                      onSelectAction('survey');
-                    }}
-                    style={styles.actionRow}
-                  >
-                    <View style={[styles.iconBox, { backgroundColor: theme.colors.tintGold }]}>
-                      <Icon name="clipboard-list" size={18} color={theme.colors.tintGoldIcon} />
-                    </View>
-                    <Text style={styles.actionTitle}>New Survey</Text>
-                  </Pressable>
-                )}
+                <Pressable
+                  onPress={() => {
+                    onClose();
+                    onSelectAction('survey');
+                  }}
+                  style={styles.actionRow}
+                >
+                  <View style={[styles.iconBox, { backgroundColor: theme.colors.tintGold }]}>
+                    <Icon name="clipboard-list" size={18} color={theme.colors.tintGoldIcon} />
+                  </View>
+                  <Text style={styles.actionTitle}>New Survey</Text>
+                </Pressable>
 
                 {showMerchandising && (
                   <Pressable

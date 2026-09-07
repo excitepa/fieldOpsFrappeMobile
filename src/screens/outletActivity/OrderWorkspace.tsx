@@ -63,16 +63,29 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
               {!outOfStock && (
                 <>
                   <View style={styles.stepperRow}>
-                    <Stepper
-                      label="CASES"
-                      value={cases}
-                      onChange={(v) => onSetQty(p, Math.max(0, v) * unitsPerCase + units)}
-                    />
-                    <Stepper
-                      label="UNITS"
-                      value={units}
-                      onChange={(v) => onSetQty(p, cases * unitsPerCase + Math.max(0, v))}
-                    />
+                    {unitsPerCase > 1 ? (
+                      <>
+                        <Stepper
+                          label="CASES"
+                          value={cases}
+                          onChange={(v) => onSetQty(p, Math.max(0, v) * unitsPerCase + units)}
+                        />
+                        <Stepper
+                          label="UNITS"
+                          value={units}
+                          onChange={(v) => onSetQty(p, cases * unitsPerCase + Math.max(0, v))}
+                        />
+                      </>
+                    ) : (
+                      // A product with no real case packaging (unitsPerCase <= 1, the
+                      // default when the backend doesn't send units_per_case/
+                      // conversion_factor) has no room for a leftover unit — qty % 1 is
+                      // always 0, so the UNITS stepper could never show anything but 0
+                      // no matter how many times it was pressed, while CASES silently
+                      // absorbed every tap instead. One QUANTITY stepper avoids that
+                      // dead control entirely for these products.
+                      <Stepper label="QUANTITY" value={qty} onChange={(v) => onSetQty(p, Math.max(0, v))} />
+                    )}
                   </View>
                   {qty > 0 && (
                     <Text style={styles.qtyHint}>

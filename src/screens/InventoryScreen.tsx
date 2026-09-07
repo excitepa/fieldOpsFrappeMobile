@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView, Pressable, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
@@ -111,7 +112,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     try {
       await submitStockRequest(
         state.activeCampaign?.id || '',
-        basketLines.map((l) => ({ itemCode: l.productId, qty: l.totalUnits })),
+        basketLines.map((l) => ({ itemCode: l.productId, itemName: l.product.name, qty: l.totalUnits, cases: l.cases, units: l.units })),
         note.trim() || undefined
       );
     } catch (e: any) {

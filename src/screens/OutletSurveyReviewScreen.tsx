@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView, Image, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Location from 'expo-location';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
+import { submitSurveyResponse, NetworkError } from '../services/api';
 import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
 
 interface OutletSurveyReviewScreenProps {
@@ -37,37 +40,57 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!outlet || !survey) return;
     setSubmitting(true);
 
-    const surveyAnswers: SurveyAnswer[] = allQuestions.map((q) => ({
-      questionId: q.id,
-      question: q.question,
-      answer: answers[q.id] ?? null,
-    }));
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      let coordinates: { lat: number; lng: number } | undefined;
+      if (status === 'granted') {
+        const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
+      }
 
-    const nowStr = new Date().toLocaleString('en-US', {
-      month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
-    });
+      await submitSurveyResponse(
+        survey.id,
+        allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
+        coordinates
+      );
 
-    const newSurvey: OutletSurvey = {
-      id: `surv-${Date.now()}`,
-      outletId: outlet.id,
-      campaignId: state.activeCampaign?.id || 'c2',
-      surveyConfigId: survey.id,
-      surveyName: survey.name,
-      answers: surveyAnswers,
-      isDraft: false,
-      timestamp: nowStr,
-    };
+      const surveyAnswers: SurveyAnswer[] = allQuestions.map((q) => ({
+        questionId: q.id,
+        question: q.question,
+        answer: answers[q.id] ?? null,
+      }));
 
-    setTimeout(() => {
+      const nowStr = new Date().toLocaleString('en-US', {
+        month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+      });
+
+      const newSurvey: OutletSurvey = {
+        id: `surv-${Date.now()}`,
+        outletId: outlet.id,
+        campaignId: state.activeCampaign?.id || 'c2',
+        surveyConfigId: survey.id,
+        surveyName: survey.name,
+        answers: surveyAnswers,
+        isDraft: false,
+        timestamp: nowStr,
+      };
+
       dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
       dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
       setSubmitting(false);
       onNavigate('surveySuccess', { survey: newSurvey, outletId: outlet.id });
-    }, 400);
+    } catch (e: any) {
+      setSubmitting(false);
+      if (e instanceof NetworkError) {
+        Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
+      } else {
+        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+      }
+    }
   };
 
   if (!outlet || !survey) {
