@@ -9,6 +9,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
 
 interface LeadSurveyReviewScreenProps {
@@ -30,7 +31,7 @@ function formatAnswer(val: any): string {
 export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ onNavigate, routeData }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { dispatch } = useFieldStore();
+  const { state, dispatch } = useFieldStore();
   const lead = routeData?.lead;
   const survey = routeData?.survey;
   const answers = routeData?.answers || {};
@@ -41,6 +42,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
 
   const handleSubmit = async () => {
     if (!lead || !survey) return;
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     setSubmitting(true);
 
     try {

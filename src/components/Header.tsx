@@ -52,7 +52,7 @@ export const Header: React.FC<HeaderProps> = ({
         </Pressable>
       ) : (
         <View style={styles.logoBadge}>
-          <Image source={require('../../assets/logo.jpg')} style={styles.logoImage} resizeMode="contain" />
+          <Image source={require('../../assets/logo-icon.png')} style={styles.logoImage} resizeMode="contain" />
         </View>
       )}
 
@@ -86,7 +86,11 @@ export const Header: React.FC<HeaderProps> = ({
 
 const createStyles = (theme: any) => StyleSheet.create({
   headerContainer: {
-    paddingTop: theme.safeTopPadding,
+    // SafeAreaView (from react-native-safe-area-context, used by every screen
+    // that renders this Header) already reserves the real status-bar/notch
+    // inset — adding theme.safeTopPadding here on top of that double-counts
+    // it and leaves a blank gap under the header. Just a normal top padding.
+    paddingTop: theme.spacing.sm,
     paddingBottom: theme.spacing.md,
     paddingHorizontal: theme.spacing.lg,
     flexDirection: 'row',

@@ -26,11 +26,14 @@ export const OutletTransactionsScreen: React.FC<OutletTransactionsScreenProps> =
   // visiting Orders or Dashboard first, so it needs its own fetch to make sure
   // real transactions are loaded rather than showing only local session data.
   useEffect(() => {
+    // Always reflects exactly what the server just said, including a real
+    // empty list — never leaves a previous (possibly stale, possibly
+    // another agent's) transaction list sitting there looking current.
     getMyOrders().then((fetched) => {
-      if (fetched.length > 0) dispatch({ type: 'SET_ORDERS', orders: fetched });
+      dispatch({ type: 'SET_ORDERS', orders: fetched });
     }).catch(() => {});
     getMySales().then((fetched) => {
-      if (fetched.length > 0) dispatch({ type: 'SET_SALES', sales: fetched });
+      dispatch({ type: 'SET_SALES', sales: fetched });
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

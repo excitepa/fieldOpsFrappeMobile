@@ -53,11 +53,12 @@ export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList 
     setFetchError('');
     try {
       const fetched = await getLeads(activeCampaign.id);
-      if (fetched.length > 0) {
-        setLiveLeads(fetched);
-      } else if (!silent) {
-        // Empty result: keep current data visible, don't blank the screen
-      }
+      // Always reflects exactly what the server just said, including a real
+      // empty list — never leaves a previous (possibly stale, possibly
+      // another agent's) lead list sitting there looking current. The merge
+      // effect below still re-adds any lead created locally this session.
+      setLiveLeads(fetched);
+      if (fetched.length === 0 && !silent) setFetchError('No leads are currently assigned to you.');
     } catch (e: any) {
       if (!silent) setFetchError(e?.message || 'Could not load leads.');
     } finally {

@@ -93,16 +93,20 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
       getMyOrders(),
       getMySales(),
     ]);
-    if (outletsRes.status === 'fulfilled' && outletsRes.value.length > 0) {
+    // Always reflects exactly what the server just said for each dataset that
+    // actually came back (a rejected promise is a real failure — leave that
+    // one alone), including a real empty list — never leaves a previous
+    // (possibly stale) dataset sitting there looking current.
+    if (outletsRes.status === 'fulfilled') {
       dispatch({ type: 'SET_OUTLETS', outlets: outletsRes.value });
     }
-    if (productsRes.status === 'fulfilled' && productsRes.value.length > 0) {
+    if (productsRes.status === 'fulfilled') {
       dispatch({ type: 'SET_PRODUCTS', products: productsRes.value });
     }
-    if (ordersRes.status === 'fulfilled' && ordersRes.value.length > 0) {
+    if (ordersRes.status === 'fulfilled') {
       dispatch({ type: 'SET_ORDERS', orders: ordersRes.value });
     }
-    if (salesRes.status === 'fulfilled' && salesRes.value.length > 0) {
+    if (salesRes.status === 'fulfilled') {
       dispatch({ type: 'SET_SALES', sales: salesRes.value });
     }
   };
@@ -129,21 +133,24 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     if (!online || syncingId) return;
     setSyncingId(id);
     try {
+      // Always reflects exactly what the server just said, including a real
+      // empty list — a manual "sync now" that comes back empty should say so,
+      // not silently leave the previous (possibly stale) data in place.
       if (id === 'outlets') {
         const campaignId = state.activeCampaign?.id;
         if (campaignId) {
           const fetched = await getOutlets(campaignId);
-          if (fetched.length > 0) dispatch({ type: 'SET_OUTLETS', outlets: fetched });
+          dispatch({ type: 'SET_OUTLETS', outlets: fetched });
         }
       } else if (id === 'products') {
         const fetched = await getItems();
-        if (fetched.length > 0) dispatch({ type: 'SET_PRODUCTS', products: fetched });
+        dispatch({ type: 'SET_PRODUCTS', products: fetched });
       } else if (id === 'orders') {
         const fetched = await getMyOrders();
-        if (fetched.length > 0) dispatch({ type: 'SET_ORDERS', orders: fetched });
+        dispatch({ type: 'SET_ORDERS', orders: fetched });
       } else if (id === 'sales') {
         const fetched = await getMySales();
-        if (fetched.length > 0) dispatch({ type: 'SET_SALES', sales: fetched });
+        dispatch({ type: 'SET_SALES', sales: fetched });
       }
     } catch (e: any) {
       Alert.alert('Refresh Failed', e?.message || 'Could not refresh this data.');

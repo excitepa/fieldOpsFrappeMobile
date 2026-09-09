@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -8,7 +8,8 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon, IconName } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { clockOut, submitEodReport, NetworkError } from '../services/api';
+import { clockOut, submitEodReport, getLeads, NetworkError } from '../services/api';
+import { parseAppTimestamp } from '../utils/timestamp';
 import { RouteName, Lead } from '../types';
 
 interface EODSummaryScreenProps {
@@ -21,7 +22,7 @@ interface EODSummaryScreenProps {
 }
 
 const isToday = (timestamp: string) => {
-  const d = new Date(timestamp);
+  const d = parseAppTimestamp(timestamp);
   if (isNaN(d.getTime())) return false;
   return d.toDateString() === new Date().toDateString();
 };
@@ -35,11 +36,35 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // App.tsx's `leadsList` prop is only ever appended to locally right after a lead
+  // is created in THIS session — it's never persisted or re-fetched, so it reads
+  // empty on a fresh app launch even though real leads exist on the server. This
+  // fetches the real list directly (same as Pipeline's own leads fetch) so "Leads
+  // created today" reflects what actually happened today, not just this session.
+  const [liveLeads, setLiveLeads] = useState<Lead[]>(leadsList);
+  const fetchLeads = useCallback(async () => {
+    if (!state.activeCampaign?.id) return;
+    try {
+      const fetched = await getLeads(state.activeCampaign.id);
+      setLiveLeads(fetched);
+    } catch {
+      // Non-fatal: keep showing whatever's already there rather than blocking EOD.
+    }
+  }, [state.activeCampaign?.id]);
+  useEffect(() => { fetchLeads(); }, [fetchLeads]);
+  useEffect(() => {
+    setLiveLeads((prev) => {
+      const mergeMap = new Map(prev.map((l) => [l.id, l]));
+      leadsList.forEach((l) => { if (!mergeMap.has(l.id)) mergeMap.set(l.id, l); });
+      return Array.from(mergeMap.values());
+    });
+  }, [leadsList]);
+
   const todayIso = new Date().toISOString().slice(0, 10);
   const outletsVisited = state.outlets.filter((o) => o.status === 'visited').length;
   const salesToday = state.sales.filter((s) => isToday(s.timestamp));
   const salesTotal = salesToday.reduce((sum, s) => sum + s.total, 0);
-  const leadsToday = leadsList.filter((l) => l.createdAt === todayIso).length;
+  const leadsToday = liveLeads.filter((l) => l.createdAt === todayIso).length;
   const surveysToday = state.surveys.filter((s) => !s.isDraft && isToday(s.timestamp)).length;
 
   const rows: { icon: IconName; label: string; value: string; tint: string; tintIcon: string }[] = [

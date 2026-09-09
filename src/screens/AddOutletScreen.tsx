@@ -20,6 +20,7 @@ import { Icon } from '../components/Icon';
 import { OptionPickerSheet } from '../components/OptionPickerSheet';
 import { useFieldStore } from '../store/useFieldStore';
 import { createOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Outlet } from '../types';
 
 interface AddOutletScreenProps {
@@ -148,6 +149,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   };
 
   const handleSubmit = async () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (!outletName.trim()) {
       Alert.alert('Required', 'Please enter an outlet name.');
       return;

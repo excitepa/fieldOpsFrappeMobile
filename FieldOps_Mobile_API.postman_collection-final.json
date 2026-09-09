@@ -1,0 +1,3040 @@
+{
+  "info": {
+    "_postman_id": "fieldops-mobile-api-v2",
+    "name": "FieldOps Mobile & Agent API Collection (Full Contract & RPC)",
+    "description": "Comprehensive Postman collection for all FieldOps Mobile APIs, supporting both:\n1. Client Contract REST routes (/auth/*, /agent/*)\n2. Direct Frappe RPC endpoints (/api/method/fieldops.api.mobile_api.*)\n\nAuthentication:\n- Run 'POST Login' or 'RPC mobile_login' first. The Bearer access_token will be automatically captured into collection variables.\n- All subsequent requests use Bearer {{access_token}} and Host: {{host_header}} headers.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    },
+    {
+      "key": "host_header",
+      "value": "fieldops.local",
+      "type": "string"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "campaign_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "item_id",
+      "value": "BGAQ",
+      "type": "string"
+    },
+    {
+      "key": "outlet_id",
+      "value": "OUT-00001",
+      "type": "string"
+    },
+    {
+      "key": "lead_id",
+      "value": "LEAD-00001",
+      "type": "string"
+    },
+    {
+      "key": "audit_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "order_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "stock_request_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "reconciliation_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "survey_id",
+      "value": "SRV-0007",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Authentication & Profile",
+      "item": [
+        {
+          "name": "REST POST /auth/login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"agent1@example.com\",\n  \"password\": \"password123\",\n  \"tenantID\": \"fieldops\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "pm.test(\"Status 200\", function () { pm.response.to.have.status(200); });",
+                  "const token = json?.access_token || json?.data?.access_token || json?.message?.access_token;",
+                  "if (token) {",
+                  "    pm.collectionVariables.set(\"access_token\", String(token));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "RPC POST mobile_login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.mobile_login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.mobile_login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usr\": \"agent1@example.com\",\n  \"pwd\": \"password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "pm.test(\"Status 200\", function () { pm.response.to.have.status(200); });",
+                  "const token = json?.message?.access_token || json?.data?.access_token;",
+                  "if (token) {",
+                  "    pm.collectionVariables.set(\"access_token\", String(token));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "RPC GET get_my_profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_profile",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_profile"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_agent_dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_agent_dashboard",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_agent_dashboard"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Campaigns & Inventory",
+      "item": [
+        {
+          "name": "REST GET /agent/campaigns",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/campaigns",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "campaigns"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "const first = (json?.data && Array.isArray(json.data) && json.data.length) ? json.data[0] : null;",
+                  "if (first?.id || first?.name) {",
+                  "    pm.collectionVariables.set(\"campaign_id\", String(first.id || first.name));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "RPC GET get_agent_campaigns",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_agent_campaigns",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_agent_campaigns"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/campaigns/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/campaigns/{{campaign_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "campaigns",
+                "{{campaign_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_campaign_details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_campaign_details?campaign_id={{campaign_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_campaign_details?campaign_id={{campaign_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_campaign_inventory",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_campaign_inventory?campaign_id={{campaign_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_campaign_inventory?campaign_id={{campaign_id}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Merchandising & Shelf Audits",
+      "item": [
+        {
+          "name": "REST POST /agent/merchandising",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/merchandising",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "merchandising"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"item_code\": \"{{item_id}}\",\n  \"stock_level\": 45,\n  \"facing_count\": 5,\n  \"price\": 1200.0,\n  \"promo_present\": 1,\n  \"notes\": \"Endcap display compliance audit\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "if (json?.data?.id || json?.data?.name) {",
+                  "    pm.collectionVariables.set(\"audit_id\", String(json.data.id || json.data.name));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "RPC POST submit_merchandising",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_merchandising",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_merchandising"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"campaign\": \"{{campaign_id}}\",\n  \"outlet\": \"{{outlet_id}}\",\n  \"item_code\": \"{{item_id}}\",\n  \"stock_count\": 45,\n  \"facing_count\": 5,\n  \"shelf_price\": 1200.0,\n  \"promo_active\": 1,\n  \"remarks\": \"RPC audit verification\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/merchandising",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/merchandising",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "merchandising"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_merchandising",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_merchandising",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_merchandising"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Sales Orders & Field Sales",
+      "item": [
+        {
+          "name": "RPC GET get_items",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_items",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_items"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/orders",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/orders",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "orders"
+              ]
+            },
+            "description": "Submit a pre-order/sales order for an outlet.\n\nAccepted Outlet fields: `outlet_id`, `outlet`, `customer_id`, `customer`, `customerId`, `outletId`, `customer_name`.\nAccepted Campaign fields: `campaign_id`, `campaign`, `campaignId`, `campaign_name` (e.g. 'CAM-00005' or 'Visibility Campaign'). Defaults to agent's assigned active campaign if omitted.\nAccepted Items array: `items`, `products`, `order_items`, `cart`.\nAccepted Item fields: `product_id`, `productId`, `item_code`, `item`, `product_name`, `itemName`, `qty`, `quantity`, `unit_price`, `unitPrice`, `rate`, `price`, `amount`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"product_id\": \"{{item_id}}\",\n      \"product_name\": \"Caprison 40x150ml\",\n      \"qty\": 10,\n      \"unit_price\": 1500.0,\n      \"amount\": 15000.0\n    }\n  ],\n  \"amount\": 15000.0,\n  \"payment_mode\": \"Cash\",\n  \"delivery_date\": \"2026-09-10\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "if (json?.data?.id || json?.data?.name || json?.order_id) {",
+                  "    pm.collectionVariables.set(\"order_id\", String(json.data?.id || json.data?.name || json.order_id));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "REST POST /agent/sales",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/sales",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "sales"
+              ]
+            },
+            "description": "Log an immediate secondary field sale from mobile app.\n\nAccepted Outlet fields: `outlet_id`, `outlet`, `customer_id`, `customer`, `customerId`, `outletId`, `customer_name`.\nAccepted Campaign fields: `campaign_id`, `campaign`, `campaignId`, `campaign_name` (e.g. 'CAM-00005' or 'Visibility Campaign'). Defaults to agent's assigned active campaign if omitted.\nAccepted Items array: `items`, `products`, `order_items`, `cart` (supports multi-item order array or root-level item fields).\nAccepted Item fields: `product_id`, `productId`, `item_code`, `item`, `product_name`, `itemName`, `qty`, `quantity`, `unit_price`, `unitPrice`, `rate`, `price`, `amount`.\nAccepted Total: `total_amount`, `totalAmount`, `amount`, `total` (automatically calculated if omitted).\nAccepted Payments: `payment_type`, `payment_mode`, `amount_paid` or `payments` array.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"product_id\": \"{{item_id}}\",\n      \"product_name\": \"Caprison 40x150ml\",\n      \"qty\": 5,\n      \"unit_price\": 1500.0,\n      \"amount\": 7500.0\n    }\n  ],\n  \"total_amount\": 7500.0,\n  \"payment_type\": \"Bank Transfer\",\n  \"amount_paid\": 7500.0,\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST submit_sales_order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_sales_order",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_sales_order"
+              ]
+            },
+            "description": "RPC endpoint for submitting pre-orders / sales orders.\nSupports both single-product payload (root level product_id, qty, unit_price) or multi-product payload (items[] / products[]).\nCampaign defaults to agent's assigned active campaign if omitted or unmapped.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer\": \"{{outlet_id}}\",\n  \"campaign\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_id}}\",\n      \"qty\": 10,\n      \"rate\": 1500.0\n    }\n  ],\n  \"amount\": 15000.0,\n  \"payment_mode\": \"Cash\",\n  \"delivery_date\": \"2026-09-10\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST submit_field_sale",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_field_sale",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_field_sale"
+              ]
+            },
+            "description": "RPC endpoint for logging immediate secondary field sales.\nAccepts all mobile client aliases for outlet (outlet_id, customer_id, customer, etc.), campaign (campaign_id, campaign_name, or omitted), and items (items, products, cart). Automatically resolves item names, computes total amount, and records payment.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet\": \"{{outlet_id}}\",\n  \"campaign\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_id}}\",\n      \"item_name\": \"Caprison 40x150ml\",\n      \"qty\": 5,\n      \"rate\": 1500.0,\n      \"amount\": 7500.0\n    }\n  ],\n  \"total_amount\": 7500.0,\n  \"payment_type\": \"Bank Transfer\",\n  \"amount_paid\": 7500.0,\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/orders",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "orders"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/sales",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/sales",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "sales"
+              ]
+            },
+            "description": "Retrieve logged sales for the authenticated agent."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_orders",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_orders"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_sales",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_sales",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_sales"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Stock Requests & Inventory",
+      "item": [
+        {
+          "name": "RPC GET get_my_inventory",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_inventory",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_inventory"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/stock-requests",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/stock-requests",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "stock-requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_id}}\",\n      \"qty\": 25\n    }\n  ],\n  \"required_date\": \"2026-09-03\",\n  \"notes\": \"Replenishment request\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "if (json?.data?.id || json?.data?.name) {",
+                  "    pm.collectionVariables.set(\"stock_request_id\", String(json.data.id || json.data.name));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "RPC POST submit_stock_request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_stock_request",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_stock_request"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"campaign\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_id}}\",\n      \"qty\": 25\n    }\n  ],\n  \"purpose\": \"Campaign Replenishment\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST cancel_stock_request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.cancel_stock_request",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.cancel_stock_request"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_id\": \"{{stock_request_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/stock-requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/stock-requests",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "stock-requests"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_stock_requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_stock_requests",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_stock_requests"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. Stock Reconciliations",
+      "item": [
+        {
+          "name": "REST POST /agent/reconciliations",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/reconciliations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "reconciliations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_id}}\",\n      \"physical_count\": 48,\n      \"system_count\": 50,\n      \"variance\": -2\n    }\n  ],\n  \"notes\": \"Weekly inventory reconciliation count\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "if (json?.data?.id || json?.data?.name) {",
+                  "    pm.collectionVariables.set(\"reconciliation_id\", String(json.data.id || json.data.name));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "RPC POST submit_stock_reconciliation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_stock_reconciliation",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_stock_reconciliation"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"campaign\": \"{{campaign_id}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_id}}\",\n      \"physical_qty\": 48,\n      \"recorded_qty\": 50\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/reconciliations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/reconciliations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "reconciliations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_reconciliations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_reconciliations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_reconciliations"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "7. Outlets & Visits",
+      "item": [
+        {
+          "name": "REST POST /agent/outlets",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/outlets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "outlets"
+              ]
+            },
+            "description": "Create a new outlet / customer from mobile app.\n\nBidirectional Sync: Automatically creates both the mobile Outlet document and ERPNext Customer Outlets table, making it immediately visible in web flow center, customer outlets, beat planning, and secondary sales.\n\nAccepted Outlet Name fields: `name`, `outlet_name`, `customer_name`.\nAccepted Contact Person: `contact_person`, `owner_name`, `ownerName`, `owner`.\nAccepted Phone: `phone`, `phone_number`, `phoneNumber`, `owner_phone`, `ownerPhone`, `mobile_no`.\nAccepted Email: `email`, `email_address`, `owner_email`.\nAccepted Address: `address`, `location`, `residential_address`.\nAccepted Coordinates: `latitude` & `longitude`, or `coordinates` object/array, or `coordinates[lat]` & `coordinates[lng]`.\nAccepted Classification: `outlet_type` (Retail, Wholesale, Distributor, Other), `category`, `zone`, `area`.\nSupports multipart form-data for uploading store images via `images[]`, `images`, `image`, or `photo`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Central Mart Express\",\n  \"owner_name\": \"Kelechi Onoja\",\n  \"phone\": \"+2348012345678\",\n  \"email\": \"kelechi@example.com\",\n  \"outlet_type\": \"Retail\",\n  \"category\": \"Supermarket\",\n  \"address\": \"12 Broad Street, Marina, Lagos\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792,\n  \"zone\": \"Lagos Central\",\n  \"area\": \"Marina\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "if (json?.data?.id || json?.data?.name || json?.outlet_id) {",
+                  "    pm.collectionVariables.set(\"outlet_id\", String(json.data?.id || json.data?.name || json.outlet_id));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "REST POST /agent/customers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/customers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "customers"
+              ]
+            },
+            "description": "REST alias endpoint for creating an outlet/customer from mobile app.\n\nCreates both `tabOutlet` and `tabCustomer` (Customer Outlet), linking owner contact, address, and coordinates.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_name\": \"De Prince Superstores\",\n  \"contact_person\": \"Prince Emeka\",\n  \"phone_number\": \"+2348023456789\",\n  \"outlet_type\": \"Retail\",\n  \"address\": \"45 Allen Avenue, Ikeja, Lagos\",\n  \"latitude\": 6.6018,\n  \"longitude\": 3.3515\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST submit_outlet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_outlet",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_outlet"
+              ]
+            },
+            "description": "RPC endpoint for onboarding a new outlet. Bidirectionally writes to `tabOutlet` and `tabCustomer`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet_name\": \"Central Mart Express\",\n  \"contact_person\": \"Kelechi Onoja\",\n  \"phone\": \"+2348012345678\",\n  \"outlet_type\": \"Retail\",\n  \"address\": \"12 Broad Street, Marina, Lagos\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST PUT /agent/outlets/:id",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/outlets/{{outlet_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "outlets",
+                "{{outlet_id}}"
+              ]
+            },
+            "description": "Update an existing outlet/customer.\nSyncs modifications across both Outlet and Customer tables.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Central Mart Express - Flagship\",\n  \"phone\": \"+2348099887766\",\n  \"address\": \"14 Broad Street, Marina, Lagos\",\n  \"latitude\": 6.5246,\n  \"longitude\": 3.3795\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST update_outlet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.update_outlet",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.update_outlet"
+              ]
+            },
+            "description": "RPC endpoint to update an existing outlet/customer.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"outlet_name\": \"Central Mart Express - Flagship\",\n  \"phone\": \"+2348099887766\",\n  \"address\": \"14 Broad Street, Marina, Lagos\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/outlets",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/outlets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "outlets"
+              ],
+              "query": [
+                {
+                  "key": "today",
+                  "value": "1",
+                  "description": "Optional: filter to today's scheduled beat outlets",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "Central",
+                  "description": "Optional text search",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "List outlets/customers with contact, address, coordinates, and beat plan schedules."
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/customers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/customers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "customers"
+              ]
+            },
+            "description": "REST alias to list outlets/customers for mobile app."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_outlets",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_outlets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_outlets"
+              ]
+            },
+            "description": "RPC endpoint to retrieve scoped outlets/customers for the agent."
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/outlets/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/outlets/{{outlet_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "outlets",
+                "{{outlet_id}}"
+              ]
+            },
+            "description": "Get detailed record for an outlet or customer."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_outlet_detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_outlet_detail?outlet_id={{outlet_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_outlet_detail"
+              ],
+              "query": [
+                {
+                  "key": "outlet_id",
+                  "value": "{{outlet_id}}"
+                }
+              ]
+            },
+            "description": "RPC endpoint to get detailed information on a single outlet or customer."
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/outlets/:id/visit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/outlets/{{outlet_id}}/visit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "outlets",
+                "{{outlet_id}}",
+                "visit"
+              ]
+            },
+            "description": "Record a visit to an outlet.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"visited\",\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792,\n  \"notes\": \"Store visit completed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST record_outlet_visit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.record_outlet_visit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.record_outlet_visit"
+              ]
+            },
+            "description": "RPC endpoint to record a visit to an outlet.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet\": \"{{outlet_id}}\",\n  \"campaign\": \"{{campaign_id}}\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792,\n  \"remarks\": \"Order discussion completed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/outlets/skip",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/outlets/skip",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "outlets",
+                "skip"
+              ]
+            },
+            "description": "Skip a scheduled outlet visit with reason and optional coordinates.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"reason\": \"Shop closed\",\n  \"note\": \"Owner travelled for the day\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST skip_outlet_visit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.skip_outlet_visit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.skip_outlet_visit"
+              ]
+            },
+            "description": "RPC endpoint to skip a scheduled outlet visit.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet\": \"{{outlet_id}}\",\n  \"campaign\": \"{{campaign_id}}\",\n  \"reason\": \"Shop closed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/visits",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/visits",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "visits"
+              ]
+            },
+            "description": "List visits logged by the agent."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_outlet_visits",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_outlet_visits",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_outlet_visits"
+              ]
+            },
+            "description": "RPC endpoint to list logged outlet visits."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "8. Leads & Pipeline",
+      "item": [
+        {
+          "name": "REST POST /agent/leads",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/leads",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "leads"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lead_name\": \"Bright Stores Ltd\",\n  \"outlet\": \"Central Mart Express\",\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"contact_person\": \"Grace Okafor\",\n  \"phone\": \"+2348099887766\",\n  \"email\": \"grace@brightstores.com\",\n  \"address\": \"12 Broad Street, Lagos\",\n  \"source\": \"Cold Call\",\n  \"notes\": \"Store manager interested in 20 cases weekly\",\n  \"stage\": \"New\",\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {};",
+                  "try { json = pm.response.json(); } catch(e) {}",
+                  "if (json?.data?.id || json?.data?.name) {",
+                  "    pm.collectionVariables.set(\"lead_id\", String(json.data.id || json.data.name));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "RPC POST submit_lead",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_lead",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_lead"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lead_name\": \"Bright Stores Ltd\",\n  \"outlet\": \"Central Mart Express\",\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"contact_person\": \"Grace Okafor\",\n  \"phone_number\": \"+2348099887766\",\n  \"email_address\": \"grace@brightstores.com\",\n  \"address\": \"12 Broad Street, Lagos\",\n  \"source\": \"Cold Call\",\n  \"notes\": \"Store manager interested in 20 cases weekly\",\n  \"campaign\": \"{{campaign_id}}\",\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST update_lead_stage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.update_lead_stage",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.update_lead_stage"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lead_id\": \"{{lead_id}}\",\n  \"stage\": \"Pitch\",\n  \"remarks\": \"Product presentation delivered\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST request_lead_regression",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.request_lead_regression",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.request_lead_regression"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lead_id\": \"{{lead_id}}\",\n  \"target_stage\": \"New\",\n  \"reason\": \"Client requested proposal restructure\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/leads",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/leads",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "leads"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_leads",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_leads",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_leads"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "9. Journey Maps & Beat Plans",
+      "item": [
+        {
+          "name": "REST GET /agent/journey-maps",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/journey-maps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "journey-maps"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_agent_beats",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_agent_beats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_agent_beats"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "10. Surveys & Questionnaires",
+      "item": [
+        {
+          "name": "REST GET /agent/surveys",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/surveys?campaign={{campaign_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "surveys"
+              ],
+              "query": [
+                {
+                  "key": "campaign",
+                  "value": "{{campaign_id}}",
+                  "description": "Optional: Filter surveys by campaign ID or name (e.g. 'CAM-00017'). Omit to list all assigned active surveys."
+                }
+              ]
+            },
+            "description": "List active surveys assigned to the logged-in agent, with optional campaign filter."
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/campaigns/:id/surveys",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/campaigns/{{campaign_id}}/surveys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "campaigns",
+                "{{campaign_id}}",
+                "surveys"
+              ]
+            },
+            "description": "REST endpoint to list all surveys specifically configured under a campaign."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_surveys_for_campaign",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_surveys_for_campaign?campaign={{campaign_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_surveys_for_campaign"
+              ],
+              "query": [
+                {
+                  "key": "campaign",
+                  "value": "{{campaign_id}}",
+                  "description": "Campaign name or ID (e.g. 'CAM-00017')"
+                }
+              ]
+            },
+            "description": "RPC endpoint to retrieve all active/published surveys scoped to a specific campaign."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_surveys",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_surveys?campaign={{campaign_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_surveys"
+              ],
+              "query": [
+                {
+                  "key": "campaign",
+                  "value": "{{campaign_id}}",
+                  "description": "Campaign name or ID (e.g. 'CAM-00017')"
+                }
+              ]
+            },
+            "description": "RPC alias endpoint to retrieve all active/published surveys scoped to a specific campaign."
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/surveys/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/surveys/{{survey_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "surveys",
+                "{{survey_id}}"
+              ]
+            },
+            "description": "Get survey details including list of questions, options, types (Text, Single Choice, Multiple Choice, Rating, Photo), and validation rules."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_survey_detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_survey_detail?survey_id={{survey_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_survey_detail"
+              ],
+              "query": [
+                {
+                  "key": "survey_id",
+                  "value": "{{survey_id}}",
+                  "description": "Survey DocName (e.g. 'SRV-0007')"
+                }
+              ]
+            },
+            "description": "RPC endpoint to fetch survey details and questions for mobile survey execution."
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/surveys/:id/submit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/surveys/{{survey_id}}/submit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "surveys",
+                "{{survey_id}}",
+                "submit"
+              ]
+            },
+            "description": "Submit responses for a survey under an outlet or lead visit.\nSupports both standard responses array (with question, question_type, answer/option_selected) and answers array (with question_id, response).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outlet_id\": \"{{outlet_id}}\",\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"responses\": [\n    {\n      \"question\": \"SQ-0001\",\n      \"question_type\": \"Single Choice\",\n      \"answer\": \"Very Satisfied\",\n      \"option_selected\": \"Very Satisfied\"\n    }\n  ],\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST submit_survey_response",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_survey_response",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_survey_response"
+              ]
+            },
+            "description": "RPC endpoint to submit a completed survey questionnaire.\nAccepts survey/survey_id, responses[] (with question, question_type, answer, option_selected) or answers[] (with question_id, response).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"survey\": \"{{survey_id}}\",\n  \"outlet\": \"{{outlet_id}}\",\n  \"campaign\": \"{{campaign_id}}\",\n  \"responses\": [\n    {\n      \"question\": \"SQ-0001\",\n      \"question_type\": \"Single Choice\",\n      \"answer\": \"Very Satisfied\",\n      \"option_selected\": \"Very Satisfied\"\n    }\n  ],\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "11. End-of-Day (EOD) & Attendance",
+      "item": [
+        {
+          "name": "RPC POST check_in (Clock-in with Selfie)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.check_in",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.check_in"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792,\n  \"image\": \"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD...\",\n  \"device_id\": \"DEV-TEST-001\",\n  \"campaign\": \"{{campaign_id}}\",\n  \"remarks\": \"Morning shift clock in\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/attendance/clock-in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/attendance/clock-in",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "attendance",
+                "clock-in"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"coordinates\": {\n    \"lat\": 6.5244,\n    \"lng\": 3.3792\n  },\n  \"image\": \"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD...\",\n  \"campaign_id\": \"{{campaign_id}}\",\n  \"notes\": \"Clock-in from field\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST check_out (Clock-out)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.check_out",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.check_out"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": 6.5244,\n  \"longitude\": 3.3792,\n  \"attendance_id\": \"ATT-00001\",\n  \"remarks\": \"End of shift clock out\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/attendance/clock-out",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/attendance/clock-out",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "attendance",
+                "clock-out"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"coordinates\": {\n    \"lat\": 6.5244,\n    \"lng\": 3.3792\n  },\n  \"notes\": \"Clock-out completed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST POST /agent/eod",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/eod",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "eod"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"report_date\": \"2026-09-01\",\n  \"summary\": \"Completed 10 outlet audits and secured 3 new orders\",\n  \"issues\": \"None\",\n  \"total_sales_amount\": 35000.0,\n  \"outlets_visited\": 10\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST submit_eod_report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.submit_eod_report",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.submit_eod_report"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"date\": \"2026-09-01\",\n  \"summary\": \"Completed all planned visits\",\n  \"expenses\": 2500.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/eod",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/eod",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "eod"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_eod_reports",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_eod_reports",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_eod_reports"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "REST GET /agent/attendance/stats",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/attendance/stats?month=9&year=2026",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "attendance",
+                "stats"
+              ],
+              "query": [
+                {
+                  "key": "month",
+                  "value": "9"
+                },
+                {
+                  "key": "year",
+                  "value": "2026"
+                }
+              ]
+            },
+            "description": "Fetch attendance summary stats (present_days, absent_days, late_days, on_time_days, streak_days, attendance_percentage, today_status). Present days increment by 1 for each distinct calendar day the agent clocks in at least once."
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_my_attendance_stats",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_my_attendance_stats?month=9&year=2026",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_my_attendance_stats"
+              ],
+              "query": [
+                {
+                  "key": "month",
+                  "value": "9"
+                },
+                {
+                  "key": "year",
+                  "value": "2026"
+                }
+              ]
+            },
+            "description": "RPC method for attendance statistics. Guarantees 1 clock-in per calendar day = 1 present_day counted, regardless of clock-out or multiple clock-ins."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "12. Offline Sync & Notifications",
+      "item": [
+        {
+          "name": "REST POST /agent/sync",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/agent/sync",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "sync"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queue\": [\n    {\n      \"endpoint\": \"/agent/merchandising\",\n      \"method\": \"POST\",\n      \"payload\": {\n        \"campaign_id\": \"{{campaign_id}}\",\n        \"outlet_id\": \"{{outlet_id}}\",\n        \"item_code\": \"{{item_id}}\",\n        \"stock_level\": 30\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC POST sync_offline_data",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.sync_offline_data",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.sync_offline_data"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"events\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_sync_status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_sync_status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_sync_status"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_notifications",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_notifications",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_notifications"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "RPC GET get_unread_notification_count",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Host",
+                "value": "{{host_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/method/fieldops.api.mobile_api.get_unread_notification_count",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "fieldops.api.mobile_api.get_unread_notification_count"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

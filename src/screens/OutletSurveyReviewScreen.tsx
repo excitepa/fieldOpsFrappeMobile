@@ -9,6 +9,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
 
 interface OutletSurveyReviewScreenProps {
@@ -42,6 +43,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
 
   const handleSubmit = async () => {
     if (!outlet || !survey) return;
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     setSubmitting(true);
 
     try {

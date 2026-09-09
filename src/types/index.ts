@@ -259,6 +259,14 @@ export interface Outlet {
   gps?: string;
   photoUri?: string;
   campaignId: string;
+  /** True when this outlet is on the agent's web-planned beat/route for today. */
+  isScheduledToday?: boolean;
+  /** ISO yyyy-mm-dd — the date this outlet's beat stop is scheduled for. */
+  scheduledDate?: string;
+  /** The beat/route name this outlet's stop belongs to, e.g. "Lekki Phase 1 Route". */
+  beatName?: string;
+  /** Visit order within that beat's stop list — lower comes first. */
+  sequence?: number;
 }
 
 // ─── Customer ─────────────────────────────────────────────────────────────────

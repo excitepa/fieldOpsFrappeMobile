@@ -51,7 +51,11 @@ const theme = useTheme();  const styles = createStyles(theme);
     setFetchError('');
     try {
       const fetched = await getOutlets(activeCampaign.id);
-      if (fetched.length > 0) dispatch({ type: 'SET_OUTLETS', outlets: fetched });
+      // Always reflects exactly what the server just said, including a real
+      // empty list — never leaves a previous (possibly stale, possibly
+      // another agent's) outlet list sitting there looking current.
+      dispatch({ type: 'SET_OUTLETS', outlets: fetched });
+      if (fetched.length === 0 && !silent) setFetchError('No outlets are currently assigned to you.');
     } catch (e: any) {
       if (!silent) setFetchError(e?.message || 'Could not load outlets.');
     } finally {
@@ -69,7 +73,7 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'visited' | 'skipped'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'today' | 'pending' | 'visited' | 'skipped'>('all');
   const [sortAlpha, setSortAlpha] = useState(true);
 
   // Counts
@@ -77,6 +81,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   const visitedCount = outlets.filter((o) => o.status === 'visited').length;
   const pendingCount = outlets.filter((o) => o.status === 'pending').length;
   const skippedCount = outlets.filter((o) => o.status === 'skipped').length;
+  const scheduledTodayCount = outlets.filter((o) => o.isScheduledToday).length;
 
   // Filtered outlets
   let filtered = outlets.filter((o) => {
@@ -87,10 +92,14 @@ const theme = useTheme();  const styles = createStyles(theme);
 
     if (!matchesSearch) return false;
     if (activeFilter === 'all') return true;
+    if (activeFilter === 'today') return !!o.isScheduledToday;
     return o.status === activeFilter;
   });
 
-  if (sortAlpha) {
+  if (activeFilter === 'today') {
+    // Web-planned visit order for today's beat, when the backend sent one.
+    filtered = [...filtered].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+  } else if (sortAlpha) {
     filtered = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -179,6 +188,17 @@ const theme = useTheme();  const styles = createStyles(theme);
               </Text>
             </Pressable>
 
+            {scheduledTodayCount > 0 && (
+              <Pressable
+                onPress={() => setActiveFilter('today')}
+                style={[styles.pill, activeFilter === 'today' && styles.pillActive]}
+              >
+                <Text style={[styles.pillText, activeFilter === 'today' && styles.pillTextActive]}>
+                  On Today's Beat ({scheduledTodayCount})
+                </Text>
+              </Pressable>
+            )}
+
             <Pressable
               onPress={() => setActiveFilter('pending')}
               style={[styles.pill, activeFilter === 'pending' && styles.pillActive]}
@@ -252,7 +272,14 @@ const theme = useTheme();  const styles = createStyles(theme);
                     </View>
 
                     <View style={styles.outletInfo}>
-                      <Text style={styles.outletName} numberOfLines={1}>{item.name}</Text>
+                      <View style={styles.outletNameRow}>
+                        <Text style={styles.outletName} numberOfLines={1}>{item.name}</Text>
+                        {item.isScheduledToday && (
+                          <View style={styles.todayPill}>
+                            <Text style={styles.todayPillText}>Today</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text style={styles.outletSub} numberOfLines={1}>{item.area} · {item.type}</Text>
                     </View>
 
@@ -316,7 +343,10 @@ const createStyles = (theme: any) => StyleSheet.create({
   cardContent: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   storeIconCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.colors.fieldFill, alignItems: 'center', justifyContent: 'center' },
   outletInfo: { flex: 1, gap: 2 },
-  outletName: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark },
+  outletNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  todayPill: { backgroundColor: theme.colors.visitedBg, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 2 },
+  todayPillText: { fontFamily: theme.fonts.bold, fontSize: 9, color: theme.colors.visitedText },
+  outletName: { flexShrink: 1, fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark },
   outletSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: theme.colors.cardBorder, paddingTop: theme.spacing.sm },
   statusText: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.textMuted },

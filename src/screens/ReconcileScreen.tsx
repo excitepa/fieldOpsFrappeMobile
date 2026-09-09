@@ -10,6 +10,7 @@ import { Icon } from '../components/Icon';
 import { OptionPickerSheet } from '../components/OptionPickerSheet';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitStockReconciliation, NetworkError } from '../services/api';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Product } from '../types';
 
 const RECONCILE_REASONS = ['Recount Correction', 'Damaged Goods', 'Expired Stock', 'Theft / Loss', 'Other'];
@@ -35,6 +36,7 @@ export const ReconcileScreen: React.FC<ReconcileScreenProps> = ({ onNavigate }) 
   const isValid = selectedProduct !== null && !isNaN(countNum) && countNum >= 0 && reason !== null && variance !== 0;
 
   const handleSubmit = async () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (!isValid || !selectedProduct || variance === null || !reason) return;
     setLoading(true);
     try {

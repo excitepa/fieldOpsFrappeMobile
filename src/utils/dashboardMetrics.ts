@@ -4,6 +4,7 @@ import {
 } from '../types';
 import { getConversionRate, getWeightedPipelineValue, getTotalPipelineValue, getStageBreakdown } from './pipelineMetrics';
 import { groupSalesByInvoice, groupOrdersByRef } from './transactions';
+import { parseAppTimestamp } from './timestamp';
 
 export interface DashboardContext {
   campaign: Campaign;
@@ -33,13 +34,13 @@ export function parseNumericTarget(target: string, fallback = 100): number {
 }
 
 function isToday(timestamp: string, today: Date = new Date()): boolean {
-  const d = new Date(timestamp);
+  const d = parseAppTimestamp(timestamp);
   if (isNaN(d.getTime())) return false;
   return d.toDateString() === today.toDateString();
 }
 
 function isThisMonth(timestamp: string, today: Date = new Date()): boolean {
-  const d = new Date(timestamp);
+  const d = parseAppTimestamp(timestamp);
   if (isNaN(d.getTime())) return false;
   return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth();
 }
@@ -113,13 +114,18 @@ export function getTodayPerformanceRows(ctx: DashboardContext): PerformanceRow[]
 }
 
 // ─── MTD Performance Overview ──────────────────────────────────────────────────
+// A real 0% ("visited 0 of 20 outlets") and "no outlets to measure at all" both
+// compute to pct: 0 — indistinguishable on the gauge unless the label itself says
+// which one it is, so a genuine 0% doesn't read as a broken/empty widget.
 export function getMtdRingPct(ctx: DashboardContext): { label: string; pct: number } {
   if (isPipelineCampaign(ctx.campaign)) {
+    if (ctx.leads.length === 0) return { label: 'No leads yet', pct: 0 };
     return { label: 'Customer Performance', pct: getConversionRate(ctx.leads) };
   }
   const total = ctx.outlets.length;
   const visited = ctx.outlets.filter((o) => o.status === 'visited').length;
-  return { label: 'Outlet Performance', pct: total ? visited / total : 0 };
+  if (total === 0) return { label: 'No outlets yet', pct: 0 };
+  return { label: 'Outlet Performance', pct: visited / total };
 }
 
 const WORKING_DAYS_PER_MONTH = 22;
@@ -162,7 +168,7 @@ export function getActivityChartData(ctx: DashboardContext, range: ChartRange): 
     : ctx.sales.map((s) => ({ timestamp: s.timestamp, amount: s.total }));
 
   const withinRange = (ts: string) => {
-    const d = new Date(ts);
+    const d = parseAppTimestamp(ts);
     if (isNaN(d.getTime())) return range === 'all';
     if (range === 'all') return true;
     if (range === 'today') return d.toDateString() === today.toDateString();
@@ -178,7 +184,7 @@ export function getActivityChartData(ctx: DashboardContext, range: ChartRange): 
   const buckets = new Map<string, number>();
   source.forEach(({ timestamp, amount }) => {
     if (!withinRange(timestamp)) return;
-    const d = new Date(timestamp);
+    const d = parseAppTimestamp(timestamp);
     const key = isNaN(d.getTime()) ? timestamp.slice(0, 10) : d.toISOString().slice(0, 10);
     buckets.set(key, (buckets.get(key) || 0) + amount);
   });

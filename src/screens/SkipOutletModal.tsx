@@ -16,6 +16,8 @@ import { useTheme } from '../theme/ThemeContext';
 import { Icon } from '../components/Icon';
 import { Button } from '../components/Button';
 import { skipOutletVisit, NetworkError } from '../services/api';
+import { useFieldStore } from '../store/useFieldStore';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { SkipRecord } from '../types';
 
 interface SkipOutletModalProps {
@@ -47,6 +49,7 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
   const theme = useTheme();
   const styles = createStyles(theme);
   const insets = useSafeAreaInsets();
+  const { state } = useFieldStore();
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -55,6 +58,7 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
   const isValid = selectedReason !== null && (!isOther || note.trim().length > 0);
 
   const handleSubmit = async () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (!selectedReason || !isValid) return;
     setSubmitting(true);
 

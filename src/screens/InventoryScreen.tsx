@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert, ActivityIndicator, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
@@ -7,8 +7,9 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getMyInventory, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
-import { RouteName } from '../types';
+import { getItems, getMyInventory, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
+import { blockIfDayLocked } from '../utils/dayLock';
+import { RouteName, Product } from '../types';
 
 interface InventoryScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -36,23 +37,54 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   const [stockRequests, setStockRequests] = useState<StockRequestSummary[]>([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [requestsError, setRequestsError] = useState('');
+  const [myInventory, setMyInventory] = useState<Product[]>([]);
+  const [loadingMyStock, setLoadingMyStock] = useState(false);
+  const [myStockError, setMyStockError] = useState('');
 
   const fetchInventory = useCallback(async () => {
     setLoadingInventory(true);
     setInventoryError('');
     try {
-      const fetched = await getMyInventory();
-      if (fetched.length > 0) {
-        dispatch({ type: 'SET_PRODUCTS', products: fetched });
-      } else {
-        setInventoryError('No products were returned for your account — showing the last known list.');
+      // get_items is the full catalog (including zero-stock items), which is what
+      // Request Stock needs on purpose — you request what you don't have. It does
+      // NOT reflect approved stock request transfers though (confirmed live: after
+      // two stock requests for ITC002 were approved, get_items still showed 0 for
+      // it) — that's what get_my_inventory (fetched separately below) is for.
+      const fetched = await getItems();
+      // Always reflects exactly what the server just said — including a real
+      // empty result — never leaves a previous (possibly stale, possibly
+      // another agent's) list sitting there looking current.
+      dispatch({ type: 'SET_PRODUCTS', products: fetched });
+      if (fetched.length === 0) {
+        setInventoryError('No products are currently allocated to your account.');
       }
     } catch (e: any) {
-      setInventoryError(e?.message || 'Could not load your inventory — showing the last known list.');
+      setInventoryError(e?.message || 'Could not load your inventory.');
     } finally {
       setLoadingInventory(false);
     }
   }, [dispatch]);
+
+  const fetchMyInventory = useCallback(async () => {
+    setLoadingMyStock(true);
+    setMyStockError('');
+    try {
+      // get_my_inventory is what actually reflects an approved stock request transfer
+      // (confirmed live: after two ITC002 requests were approved, this correctly
+      // returned quantity 2 for it, while get_items stayed at 0) — so "My Stock",
+      // meaning what the agent is holding right now, has to read from here and not
+      // from the shared get_items-backed product catalog used by Request Stock.
+      const fetched = await getMyInventory();
+      setMyInventory(fetched);
+      if (fetched.length === 0) {
+        setMyStockError("You don't have any stock in hand right now.");
+      }
+    } catch (e: any) {
+      setMyStockError(e?.message || 'Could not load your stock.');
+    } finally {
+      setLoadingMyStock(false);
+    }
+  }, []);
 
   const fetchStockRequests = useCallback(async () => {
     setLoadingRequests(true);
@@ -70,7 +102,11 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   useEffect(() => { fetchInventory(); }, [fetchInventory]);
   useEffect(() => {
     if (mainTab === 'requests') fetchStockRequests();
-  }, [mainTab, fetchStockRequests]);
+    // Refetched on every visit to My Stock (not just on mount) so a request that
+    // was approved after this screen was first opened shows up without the agent
+    // having to leave and come back.
+    if (mainTab === 'stock') fetchMyInventory();
+  }, [mainTab, fetchStockRequests, fetchMyInventory]);
 
   const categories = ['All', ...Array.from(new Set(products.map((p) => p.category).filter(Boolean) as string[]))];
 
@@ -107,6 +143,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   };
 
   const handleSubmitRequest = async () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (basketLines.length === 0) return;
     setSubmitting(true);
     try {
@@ -134,7 +171,12 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     Alert.alert('Request Submitted', 'Your stock request has been sent for approval.');
   };
 
-  const lowStockItems = products.filter((p) => p.stock < (p.minStock ?? 0));
+  // "My Stock" means what the agent is actually holding right now — sourced from
+  // get_my_inventory (see fetchMyInventory above), not the get_items-backed
+  // `products` catalog Request Stock uses, since only get_my_inventory reflects
+  // an approved stock request transfer.
+  const myStockProducts = myInventory.filter((p) => p.stock > 0);
+  const lowStockItems = myStockProducts.filter((p) => p.stock < (p.minStock ?? 0));
 
   const headerProps = (() => {
     if (view === 'basket') {
@@ -148,7 +190,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
       subtitle: mainTab === 'request'
         ? 'Request more stock to sell in the field'
         : mainTab === 'stock'
-          ? `${products.length} products · ${lowStockItems.length} low stock`
+          ? `${myStockProducts.length} products · ${lowStockItems.length} low stock`
           : `${stockRequests.length} request${stockRequests.length === 1 ? '' : 's'} submitted`,
       onBackPress: undefined,
     };
@@ -163,18 +205,25 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
         onBackPress={headerProps.onBackPress}
       />
 
-      {loadingInventory && (
+      {(mainTab === 'stock' ? loadingMyStock : loadingInventory) && (
         <View style={styles.loadingRow}>
           <ActivityIndicator size="small" color={theme.colors.navy} />
-          <Text style={styles.loadingText}>Loading your inventory…</Text>
+          <Text style={styles.loadingText}>{mainTab === 'stock' ? 'Loading your stock…' : 'Loading your inventory…'}</Text>
         </View>
       )}
-      {!loadingInventory && inventoryError !== '' && (
-        <View style={styles.errorRow}>
-          <Icon name="alert-circle" size={14} color={theme.colors.red} />
-          <Text style={styles.errorText}>{inventoryError}</Text>
-        </View>
-      )}
+      {mainTab === 'stock'
+        ? (!loadingMyStock && myStockError !== '' && (
+            <View style={styles.errorRow}>
+              <Icon name="alert-circle" size={14} color={theme.colors.red} />
+              <Text style={styles.errorText}>{myStockError}</Text>
+            </View>
+          ))
+        : (!loadingInventory && inventoryError !== '' && (
+            <View style={styles.errorRow}>
+              <Icon name="alert-circle" size={14} color={theme.colors.red} />
+              <Text style={styles.errorText}>{inventoryError}</Text>
+            </View>
+          ))}
 
       {view === 'list' && (
         <View style={styles.segmentWrapper}>
@@ -223,7 +272,11 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                 <View key={p.id} style={styles.productRow}>
                   <View style={styles.productTopRow}>
                     <View style={styles.productIcon}>
-                      <Icon name="package" size={18} color={theme.colors.navy} />
+                      {p.imageUrl ? (
+                        <Image source={{ uri: p.imageUrl }} style={styles.productImage} resizeMode="cover" />
+                      ) : (
+                        <Icon name="package" size={18} color={theme.colors.navy} />
+                      )}
                     </View>
                     <View style={styles.flex1}>
                       {p.focusProduct && (
@@ -237,16 +290,18 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                   </View>
 
                   <View style={styles.stepperRow}>
-                    <View style={styles.stepperCol}>
-                      <Text style={styles.stepperLabel}>CASES</Text>
+                    {/* Cases requests aren't live on the web admin yet — dimmed and
+                        locked at 0 so agents only ever request whole units for now. */}
+                    <View style={[styles.stepperCol, styles.stepperColDisabled]}>
+                      <Text style={styles.stepperLabel}>CASES (SOON)</Text>
                       <View style={styles.stepperControl}>
-                        <Pressable onPress={() => setQty(p.id, { cases: Math.max(0, q.cases - 1) })} style={styles.stepperBtn}>
-                          <Icon name="minus" size={16} color={theme.colors.textDark} />
-                        </Pressable>
-                        <Text style={styles.stepperValue}>{q.cases}</Text>
-                        <Pressable onPress={() => setQty(p.id, { cases: q.cases + 1 })} style={styles.stepperBtn}>
-                          <Icon name="plus" size={16} color={theme.colors.textDark} />
-                        </Pressable>
+                        <View style={[styles.stepperBtn, styles.stepperBtnDisabled]}>
+                          <Icon name="minus" size={16} color={theme.colors.textMuted} />
+                        </View>
+                        <Text style={[styles.stepperValue, styles.stepperValueDisabled]}>0</Text>
+                        <View style={[styles.stepperBtn, styles.stepperBtnDisabled]}>
+                          <Icon name="plus" size={16} color={theme.colors.textMuted} />
+                        </View>
                       </View>
                     </View>
                     <View style={styles.stepperCol}>
@@ -305,11 +360,18 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               </Text>
             </View>
           )}
-          {products.map((p) => (
+          {myStockProducts.length === 0 && !loadingMyStock && (
+            <Text style={styles.emptyStockText}>You don't have any stock in hand right now — request some from the Request Stock tab.</Text>
+          )}
+          {myStockProducts.map((p) => (
             <Card key={p.id} style={styles.myStockCard}>
               <View style={styles.productTopRow}>
                 <View style={styles.productIcon}>
-                  <Icon name="package" size={18} color={theme.colors.navy} />
+                  {p.imageUrl ? (
+                    <Image source={{ uri: p.imageUrl }} style={styles.productImage} resizeMode="cover" />
+                  ) : (
+                    <Icon name="package" size={18} color={theme.colors.navy} />
+                  )}
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.productName}>{p.name}</Text>
@@ -474,13 +536,17 @@ const createStyles = (theme: any) => StyleSheet.create({
   categoryChipTextActive: { color: '#FFFFFF', fontFamily: theme.fonts.bold },
   productRow: { borderBottomWidth: 1, borderBottomColor: theme.colors.cardBorder, paddingBottom: theme.spacing.md, gap: theme.spacing.sm },
   productTopRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  productIcon: { width: 44, height: 44, borderRadius: theme.radius.md, backgroundColor: theme.colors.fieldFill, alignItems: 'center', justifyContent: 'center' },
+  productIcon: { width: 44, height: 44, borderRadius: theme.radius.md, backgroundColor: theme.colors.fieldFill, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  productImage: { width: '100%', height: '100%' },
   focusBadge: { alignSelf: 'flex-start', backgroundColor: theme.colors.tintGold, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 2, marginBottom: 3 },
   focusBadgeText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.tintGoldIcon },
   productName: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },
   productMeta: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
   stepperRow: { flexDirection: 'row', gap: theme.spacing.sm },
   stepperCol: { flex: 1, gap: 4 },
+  stepperColDisabled: { opacity: 0.45 },
+  stepperBtnDisabled: { opacity: 0.6 },
+  stepperValueDisabled: { color: theme.colors.textMuted },
   stepperLabel: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.textMuted, letterSpacing: 0.6, textAlign: 'center' },
   stepperControl: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -518,6 +584,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   requestLineName: { fontFamily: theme.fonts.regular, fontSize: 13, color: theme.colors.textDark, flex: 1 },
   requestLineQty: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textMuted },
   requestNote: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 2, fontStyle: 'italic' },
+  emptyStockText: { fontFamily: theme.fonts.regular, fontSize: 13, color: theme.colors.textMuted, textAlign: 'center', marginTop: theme.spacing.xl, paddingHorizontal: theme.spacing.lg },
   myStockCard: { gap: 0 },
   myStockQtyCol: { alignItems: 'flex-end' },
   myStockQty: { fontFamily: theme.fonts.display, fontSize: 20, color: theme.colors.textDark },

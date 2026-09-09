@@ -54,7 +54,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         {/* Brand Lockup */}
         <View style={styles.brandRow}>
-          <Image source={require('../../assets/logo.jpg')} style={styles.logoImage} resizeMode="contain" />
+          <Image source={require('../../assets/logo-icon.png')} style={styles.logoImage} resizeMode="contain" />
           <Text style={styles.brandWordmark}>FIELDOPS</Text>
         </View>
 
@@ -133,7 +133,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: theme.spacing.xl,
-    paddingTop: theme.safeTopPadding + 10,
+    paddingTop: theme.spacing.xl,
     paddingBottom: theme.spacing.xxl,
     flexGrow: 1,
   },

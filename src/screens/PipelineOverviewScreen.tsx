@@ -34,7 +34,10 @@ export const PipelineOverviewScreen: React.FC<PipelineOverviewScreenProps> = ({ 
     if (!silent) setLoading(true);
     try {
       const fetched = await getLeads(activeCampaign.id);
-      if (fetched.length > 0) setLiveLeads(fetched);
+      // Always reflects exactly what the server just said, including a real
+      // empty list — never leaves a previous (possibly stale, possibly
+      // another agent's) lead list sitting there looking current.
+      setLiveLeads(fetched);
     } catch {
       // Non-fatal: keep showing existing data
     } finally {

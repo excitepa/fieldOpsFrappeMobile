@@ -14,18 +14,20 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { RadialGauge } from '../components/RadialGauge';
 import { useFieldStore } from '../store/useFieldStore';
-import { mockUser, mockCampaigns, mockAttendanceRecords } from '../services/mockService';
+import { mockCampaigns } from '../services/mockService';
 import { getCampaigns, getAttendanceStats, AttendanceStats, getMyOrders, getMySales, getOutlets } from '../services/api';
-import { getMtdRingPct, getAttendanceBreakdown, DashboardContext } from '../utils/dashboardMetrics';
+import { getMtdRingPct, DashboardContext } from '../utils/dashboardMetrics';
+import { isDayLocked } from '../utils/dayLock';
 import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
-import { RouteName, Campaign } from '../types';
+import { RouteName, Campaign, Lead } from '../types';
 
 interface DashboardScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
+  leadsList?: Lead[];
 }
 
-export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) => {
+export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, leadsList = [] }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   const insets = useSafeAreaInsets();
@@ -40,7 +42,20 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
   // The switcher lists the agent's real assigned campaigns — starts with just the
   // current one so the modal is never empty, then fills in from the backend.
   const [campaignsList, setCampaignsList] = useState<Campaign[]>([currentCampaign]);
-  const [attendanceStats, setAttendanceStats] = useState<AttendanceStats | null>(null);
+  // Shows the last real fetch immediately (this call is slow, 2s+) while a
+  // fresh one quietly refines it below — same idea as useCurrentLocation's
+  // last-known-fix. Cache is agent-scoped (RESET_AGENT_SESSION wipes it), so
+  // it can never show a different agent's cached attendance.
+  const [attendanceStats, setAttendanceStats] = useState<AttendanceStats | null>(state.cachedAttendanceStats);
+
+  // Live-recheck so the banner clears itself right at midnight without
+  // needing the agent to relaunch the app.
+  const [, forceDayLockRecheck] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forceDayLockRecheck((n) => n + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
+  const dayLocked = isDayLocked(state.dayLockedUntil);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +78,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
     (async () => {
       try {
         const stats = await getAttendanceStats();
-        if (!cancelled && stats) setAttendanceStats(stats);
+        if (!cancelled && stats) {
+          setAttendanceStats(stats);
+          dispatch({ type: 'SET_CACHED_ATTENDANCE_STATS', stats });
+        }
       } catch (e) {
         // Non-fatal — the card just keeps showing demo data.
       }
@@ -77,9 +95,12 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
     let cancelled = false;
     (async () => {
       try {
+        // Always reflects exactly what the server just said, including a real
+        // empty list — never leaves a previous (possibly stale, possibly
+        // another agent's) list sitting there looking current.
         const [orders, sales] = await Promise.all([getMyOrders(), getMySales()]);
-        if (!cancelled && orders.length > 0) dispatch({ type: 'SET_ORDERS', orders });
-        if (!cancelled && sales.length > 0) dispatch({ type: 'SET_SALES', sales });
+        if (!cancelled) dispatch({ type: 'SET_ORDERS', orders });
+        if (!cancelled) dispatch({ type: 'SET_SALES', sales });
       } catch (e) {
         // Non-fatal — sales/orders widgets just keep showing whatever's already local.
       }
@@ -90,16 +111,19 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The "Next Stop" card reads state.outlets — without this, it keeps
-  // showing the seeded mock outlet until the agent happens to visit the
-  // Customers screen (which is the only other place this gets fetched).
+  // The "Next Stop" card reads state.outlets — without this, it would keep
+  // showing whatever was last fetched elsewhere until the agent happens to
+  // visit the Customers screen (which is the only other place this refetches).
   useEffect(() => {
     let cancelled = false;
     if (!currentCampaign?.id) return;
     (async () => {
       try {
         const fetched = await getOutlets(currentCampaign.id);
-        if (!cancelled && fetched.length > 0) dispatch({ type: 'SET_OUTLETS', outlets: fetched });
+        // Always reflects exactly what the server just said, including a
+        // real empty list — never leaves a previous (possibly stale,
+        // possibly another agent's) outlet list sitting there looking current.
+        if (!cancelled) dispatch({ type: 'SET_OUTLETS', outlets: fetched });
       } catch (e) {
         // Non-fatal — the Next Stop card just keeps showing whatever's already local.
       }
@@ -145,7 +169,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
 
   const mtdCtx: DashboardContext = {
     campaign: currentCampaign,
-    leads: [],
+    leads: leadsList,
     outlets: state.outlets,
     sales: state.sales,
     orders: state.orders,
@@ -153,14 +177,18 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
     products: state.products,
     photoCaptures: state.photoCaptures,
     drafts: state.drafts,
-    attendance: mockAttendanceRecords,
+    // getMtdRingPct only reads campaign/leads/outlets — attendance isn't part of
+    // that calculation, so this is just satisfying the context shape, not a
+    // source of any displayed number.
+    attendance: [],
   };
   const ring = getMtdRingPct(mtdCtx);
-  // Falls back to demo data only until the real fetch above resolves — the API has no
-  // "half-day" concept, so that slot shows on-time days instead once live data is in.
+  // Shows real fetched stats once available. Before that resolves (or if it fails),
+  // this shows zeros rather than fabricated demo numbers — a blank/loading state is
+  // honest, a fake-but-plausible one isn't.
   const attendance = attendanceStats
     ? { present: attendanceStats.presentDays, absent: attendanceStats.absentDays, late: attendanceStats.lateDays, onTime: attendanceStats.onTimeDays }
-    : { ...getAttendanceBreakdown(mockAttendanceRecords), onTime: 0 };
+    : { present: 0, absent: 0, late: 0, onTime: 0 };
 
   // Quick Access is fully module-driven, not a single either/or campaign "type" —
   // a campaign's `modules` array can carry any combination, and every matching
@@ -202,6 +230,16 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
             <Text style={styles.syncBtnText}>Sync</Text>
           </Pressable>
         </View>
+
+        {dayLocked && (
+          <View style={styles.dayLockBanner}>
+            <Icon name="clock" size={16} color={theme.colors.amber} />
+            <View style={styles.flex1}>
+              <Text style={styles.dayLockTitle}>You're done for today</Text>
+              <Text style={styles.dayLockSub}>New activity is locked until 12:00 AM. You can still look around, or log out.</Text>
+            </View>
+          </View>
+        )}
 
         {/* ── Campaign Switcher Card ────────────────────────────────── */}
         <Card style={styles.campaignSwitchCard}>
@@ -356,7 +394,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate }) 
 
 const createStyles = (theme: any) => StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.appBg },
-  scrollContent: { paddingHorizontal: theme.spacing.lg, paddingTop: theme.safeTopPadding + 8, paddingBottom: 110 },
+  // SafeAreaView already reserves the real top inset now — safeTopPadding here
+  // on top of that was double-counting it, leaving a blank gap above the greeting.
+  scrollContent: { paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: 110 },
   topHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: theme.spacing.md },
   headerTextGroup: { flex: 1 },
   greetingTitle: { fontFamily: theme.fonts.display, fontSize: 26, color: theme.colors.textDark, letterSpacing: -0.5 },
@@ -367,6 +407,14 @@ const createStyles = (theme: any) => StyleSheet.create({
     backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder,
   },
   syncBtnText: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.navy },
+  dayLockBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.md,
+    borderLeftWidth: 3, borderLeftColor: theme.colors.amber,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
+  dayLockTitle: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textDark },
+  dayLockSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 2, lineHeight: 16 },
   campaignSwitchCard: { backgroundColor: theme.colors.campaignCardBg, borderColor: theme.colors.campaignCardBorder, marginBottom: theme.spacing.md, padding: theme.spacing.md },
   campaignSwitchRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   flex1: { flex: 1 },

@@ -289,10 +289,13 @@ export const getCampaignDetails = async (
 /** Fetch the product/stock allocation scoped to a campaign via `get_campaign_inventory`. */
 export const getCampaignInventory = async (campaignId: string): Promise<Product[]> => {
   try {
-    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_campaign_inventory?campaign_id=${encodeURIComponent(campaignId)}`);
+    const [data, tenantId] = await Promise.all([
+      authFetch(`/api/method/fieldops.api.mobile_api.get_campaign_inventory?campaign_id=${encodeURIComponent(campaignId)}`),
+      getTenantId(),
+    ]);
     const raw = data?.message ?? data?.data ?? data;
     const list = Array.isArray(raw) ? raw : [];
-    return flattenInventoryResponse(list);
+    return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
   } catch (e: any) {
     if (e instanceof AuthError) throw e;
     return [];
@@ -558,6 +561,10 @@ const mapOutlet = (raw: any, campaignId: string): Outlet => {
     gps: raw?.latitude && raw?.longitude ? `${raw.latitude}, ${raw.longitude}` : undefined,
     photoUri: raw?.image || raw?.photo || raw?.photo_url || raw?.image_url || images[0] || undefined,
     campaignId,
+    isScheduledToday: !!raw?.is_scheduled_today,
+    scheduledDate: raw?.scheduled_date || undefined,
+    beatName: raw?.beat_name || undefined,
+    sequence: raw?.sequence !== undefined && raw?.sequence !== null ? Number(raw.sequence) : undefined,
   };
 };
 
@@ -773,7 +780,19 @@ export const submitEodReport = async (date: string, summary: string, expenses?: 
 
 // ─── Items / Orders / Sales API ─────────────────────────────────────────────────
 
-const mapItem = (raw: any): Product => {
+/**
+ * Frappe returns item images as a site-relative path (e.g. "/files/product.png"),
+ * not an absolute URL — React Native's <Image> can't resolve that (no host/scheme)
+ * and just renders blank, so it needs the current tenant's origin prefixed on.
+ * Already-absolute URLs (http/https, or a data: URI) are passed through untouched.
+ */
+const resolveImageUrl = (raw: string | undefined, baseUrl: string): string | undefined => {
+  if (!raw) return undefined;
+  if (/^(https?:)?\/\//.test(raw) || raw.startsWith('data:')) return raw;
+  return `${baseUrl}${raw.startsWith('/') ? '' : '/'}${raw}`;
+};
+
+const mapItem = (raw: any, baseUrl: string): Product => {
   const price = Number(raw?.rate ?? raw?.standard_rate ?? raw?.selling_price ?? raw?.price) || 0;
   // current_stock/on_hand/qty are the field names the backend documented for get_items/
   // get_my_inventory/get_campaign_inventory as of the 2026-09-07 contract update — checked
@@ -788,7 +807,7 @@ const mapItem = (raw: any): Product => {
     category: raw?.item_group || raw?.category || undefined,
     warehouse: raw?.warehouse || '',
     unitsPerCase: Number(raw?.units_per_case ?? raw?.conversion_factor) || 1,
-    imageUrl: raw?.image || raw?.image_url || undefined,
+    imageUrl: resolveImageUrl(raw?.image || raw?.image_url || undefined, baseUrl),
     description: raw?.description || undefined,
     unit: raw?.stock_uom || raw?.unit || undefined,
   };
@@ -800,20 +819,23 @@ const mapItem = (raw: any): Product => {
  * actual per-product stock lines — not a flat item list like get_items. Detects
  * which shape came back (rather than assuming) so a future flat response still works.
  */
-const flattenInventoryResponse = (raw: any[]): Product[] => {
+const flattenInventoryResponse = (raw: any[], baseUrl: string): Product[] => {
   if (raw.length > 0 && Array.isArray(raw[0]?.items)) {
-    return raw.flatMap((rec: any) => (Array.isArray(rec.items) ? rec.items.map(mapItem) : []));
+    return raw.flatMap((rec: any) => (Array.isArray(rec.items) ? rec.items.map((it: any) => mapItem(it, baseUrl)) : []));
   }
-  return raw.map(mapItem);
+  return raw.map((it: any) => mapItem(it, baseUrl));
 };
 
 /** Fetch the product catalog via the RPC contract (`get_items`). Falls back to an empty array on error. */
 export const getItems = async (): Promise<Product[]> => {
   try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_items');
+    const [data, tenantId] = await Promise.all([
+      authFetch('/api/method/fieldops.api.mobile_api.get_items'),
+      getTenantId(),
+    ]);
     const raw = data?.message ?? data?.data ?? data;
     const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapItem);
+    return list.map((it: any) => mapItem(it, getBaseUrl(tenantId || "")));
   } catch (e: any) {
     if (e instanceof AuthError) throw e;
     return [];
@@ -822,6 +844,7 @@ export const getItems = async (): Promise<Product[]> => {
 
 export interface OrderLinePayload {
   itemCode: string;
+  itemName?: string;
   qty: number;
   rate: number;
 }
@@ -830,24 +853,46 @@ export interface OrderLinePayload {
  * Submit an immediate, paid transaction via the RPC contract (`submit_field_sale`).
  * There's no payment-method picker on the Sale flow yet, so `payment_type` defaults
  * to "Cash" and `amount_paid` is assumed to equal the cart total (a fully-paid sale).
+ *
+ * Field names follow the backend's documented "recommended mobile JSON body"
+ * (2026-09-07 spec) — `outlet_id`/`campaign_id`, items keyed by `product_id`/
+ * `product_name`/`qty`/`unit_price`/`amount`, plus `total_amount`. The older
+ * `outlet`/`campaign`/`item`/`item_code`/`quantity`/`rate` aliases are also accepted
+ * per that same spec, so they're kept alongside rather than swapped out.
  */
 export const submitFieldSale = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[],
-  amountPaid: number
+  amountPaid: number,
+  coordinates?: { lat: number; lng: number }
 ): Promise<{ ref: string }> => {
-  const body = {
+  const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
+  const body: Record<string, any> = {
     outlet: outletId,
+    outlet_id: outletId,
     campaign: campaignId,
-    // submit_field_sale's item-append loop reads `item`/`quantity` (not `item_code`/`qty`,
-    // which this app's other endpoints use) — confirmed by reading the actual handler.
-    // Sending both key sets so a real product/qty always lands regardless of which the
-    // server reads.
-    items: lines.map((l) => ({ item: l.itemCode, item_code: l.itemCode, quantity: l.qty, qty: l.qty, rate: l.rate })),
+    campaign_id: campaignId,
+    items: lines.map((l) => ({
+      item: l.itemCode,
+      item_code: l.itemCode,
+      product_id: l.itemCode,
+      product_name: l.itemName,
+      item_name: l.itemName,
+      quantity: l.qty,
+      qty: l.qty,
+      rate: l.rate,
+      unit_price: l.rate,
+      amount: l.qty * l.rate,
+    })),
+    total_amount: totalAmount,
     payment_type: 'Cash',
     amount_paid: amountPaid,
   };
+  if (coordinates) {
+    body.latitude = coordinates.lat;
+    body.longitude = coordinates.lng;
+  }
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_field_sale', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -864,19 +909,33 @@ export const submitFieldSale = async (
  *
  * `submit_sales_order` now loops over a real `items[]` array (backend fix confirmed
  * 2026-09-07 — previously it only read a single product off the top level, silently
- * dropping every line past the first). Sends `productId`/`qty`/`unitPrice` per line,
- * matching the field names the backend documented for this.
+ * dropping every line past the first). Field names follow the same flexible-schema
+ * spec documented for `submit_field_sale` — both camelCase and snake_case
+ * outlet/campaign keys are accepted, so both are sent for consistency with that
+ * endpoint's payload shape.
  */
 export const submitSalesOrder = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[]
 ): Promise<{ ref: string }> => {
+  const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body = {
     outletId,
+    outlet_id: outletId,
     campaignId,
+    campaign_id: campaignId,
     deliveryDate: new Date().toISOString().slice(0, 10),
-    items: lines.map((l) => ({ productId: l.itemCode, qty: l.qty, unitPrice: l.rate })),
+    items: lines.map((l) => ({
+      productId: l.itemCode,
+      product_id: l.itemCode,
+      product_name: l.itemName,
+      qty: l.qty,
+      unitPrice: l.rate,
+      unit_price: l.rate,
+      amount: l.qty * l.rate,
+    })),
+    total_amount: totalAmount,
   };
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_sales_order', {
     method: 'POST',
@@ -995,10 +1054,13 @@ export const getMySales = async (): Promise<OutletSale[]> => {
  */
 export const getMyInventory = async (): Promise<Product[]> => {
   try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_inventory');
+    const [data, tenantId] = await Promise.all([
+      authFetch('/api/method/fieldops.api.mobile_api.get_my_inventory'),
+      getTenantId(),
+    ]);
     const raw = data?.message ?? data?.data ?? data;
     const list = Array.isArray(raw) ? raw : [];
-    return flattenInventoryResponse(list);
+    return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
   } catch (e: any) {
     if (e instanceof AuthError) throw e;
     return [];

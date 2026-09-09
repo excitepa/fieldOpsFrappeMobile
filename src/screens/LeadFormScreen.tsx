@@ -8,6 +8,7 @@ import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { createLead, NetworkError } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Lead, LeadDraft } from '../types';
 
 interface LeadFormScreenProps {
@@ -35,6 +36,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (!name || !phone || !outlet) {
       Alert.alert('Required Information', 'Full name, phone, and outlet are required.');
       return;

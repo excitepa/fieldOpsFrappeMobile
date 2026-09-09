@@ -4,9 +4,9 @@ import {
   StockMovement, StockMovementType, Draft, LeadDraft, OutletPhotoCapture, LeadSurveyResponse,
   UserProfile,
 } from '../types';
-import { mockOutlets, mockProducts, mockCampaigns, mockUser } from '../services/mockService';
+import { mockCampaigns, mockUser } from '../services/mockService';
 import { getUserInfo } from '../services/apiConfig';
-import { mapUserInfoToProfile, fetchUserProfile } from '../services/api';
+import { mapUserInfoToProfile, fetchUserProfile, AttendanceStats } from '../services/api';
 
 let AsyncStorage: any = null;
 try {
@@ -34,22 +34,42 @@ interface FieldState {
   leadDrafts: LeadDraft[];
   leadSurveyResponses: LeadSurveyResponse[];
   user: UserProfile;
-  attendanceStatus: { clockedIn: boolean; attendanceId?: string };
+  /** `clockInDate` (YYYY-MM-DD, set whenever clockedIn is set true) is what makes a
+   *  resumed "already clocked in" session honest across a day boundary — without it,
+   *  an agent who clocked in yesterday and never explicitly clocked out (forgot, or
+   *  just killed the app) would still read as clockedIn today and skip straight past
+   *  attendance entirely on the next launch, since nothing else here is tied to a
+   *  calendar day. Checked against today's date at both App.tsx resume points before
+   *  a stored clockedIn:true is trusted. */
+  attendanceStatus: { clockedIn: boolean; attendanceId?: string; clockInDate?: string };
   /** True once a real campaign (not the default mock) has been confirmed via a completed clock-in — lets a resumed session skip straight to Attendance for the remembered campaign instead of asking the agent to pick one again every day. */
   campaignSelected: boolean;
   /** Flips true once the AsyncStorage hydration pass (or the first-run check that finds nothing to hydrate) has completed — lets callers wait for a real answer before deciding things like "is the user already clocked in". */
   hydrated: boolean;
   /** ISO timestamp (next local midnight) set on a real End-of-Day submit — while
-   *  `Date.now()` is before this, App.tsx blocks the whole app behind a "day
-   *  complete" screen instead of allowing login/any activity. Null when not locked. */
+   *  `Date.now()` is before this, App.tsx / blockIfDayLocked() refuse new activity
+   *  (add outlet/lead, stock requests, sales, etc.) until it lifts. Null when not locked. */
   dayLockedUntil: string | null;
+  /** Email of the agent `attendanceStatus`/`campaignSelected`/`activeCampaign` currently
+   *  belong to. This is a shared/testing device where different agents log in and out —
+   *  without this, App.tsx's login flow would resume "already clocked in" using whichever
+   *  agent last clocked in on this device, regardless of who just logged in. Compared
+   *  against the freshly logged-in user's email before resuming; null after a mismatch
+   *  reset (RESET_AGENT_SESSION) until the next real clock-in claims it again. */
+  sessionAgentEmail: string | null;
+  /** Last real fetch of get_my_attendance_stats — shown instantly on the next
+   *  Dashboard mount (that call is slow, ~2s+) while a fresh fetch quietly
+   *  refines it, same idea as useCurrentLocation's last-known-fix. Wiped on
+   *  RESET_AGENT_SESSION so a different agent never sees a stale cached
+   *  attendance card that isn't theirs. */
+  cachedAttendanceStats: AttendanceStats | null;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 type Action =
   | { type: 'SET_ACTIVE_CAMPAIGN'; campaign: Campaign }
   | { type: 'SET_USER'; user: UserProfile }
-  | { type: 'SET_ATTENDANCE_STATUS'; clockedIn: boolean; attendanceId?: string }
+  | { type: 'SET_ATTENDANCE_STATUS'; clockedIn: boolean; attendanceId?: string; clockInDate?: string }
   | { type: 'SET_CAMPAIGN_SELECTED'; value: boolean }
   | { type: 'SET_OUTLETS'; outlets: Outlet[] }
   | { type: 'RESET_OUTLET_VISIT_STATUS' }
@@ -72,6 +92,9 @@ type Action =
   | { type: 'DELETE_LEAD_DRAFT'; draftId: string }
   | { type: 'ADD_LEAD_SURVEY_RESPONSE'; response: LeadSurveyResponse }
   | { type: 'SET_DAY_LOCK'; until: string | null }
+  | { type: 'SET_SESSION_AGENT_EMAIL'; email: string | null }
+  | { type: 'SET_CACHED_ATTENDANCE_STATS'; stats: AttendanceStats | null }
+  | { type: 'RESET_AGENT_SESSION' }
   | { type: 'HYDRATE'; state: Partial<FieldState> };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
@@ -87,13 +110,52 @@ function reducer(state: FieldState, action: Action): FieldState {
       return { ...state, activeCampaign: action.campaign, campaignSelected: true };
 
     case 'SET_ATTENDANCE_STATUS':
-      return { ...state, attendanceStatus: { clockedIn: action.clockedIn, attendanceId: action.attendanceId } };
+      return { ...state, attendanceStatus: { clockedIn: action.clockedIn, attendanceId: action.attendanceId, clockInDate: action.clockInDate } };
 
     case 'SET_CAMPAIGN_SELECTED':
       return { ...state, campaignSelected: action.value };
 
     case 'SET_DAY_LOCK':
       return { ...state, dayLockedUntil: action.until };
+
+    case 'SET_SESSION_AGENT_EMAIL':
+      return { ...state, sessionAgentEmail: action.email };
+
+    case 'SET_CACHED_ATTENDANCE_STATS':
+      return { ...state, cachedAttendanceStats: action.stats };
+
+    // A different agent just logged in than whoever this device's clocked-in/
+    // campaign state belongs to (App.tsx compares emails before resuming) —
+    // wipe both the identity fields and every fetched-data array. This used to
+    // leave outlets/products/sales/etc. alone on the theory that each screen's
+    // own fetch-on-mount would "self-correct" it — but almost every one of
+    // those fetches only overwrites local state `if (fetched.length > 0)`, a
+    // guard meant to protect against a flaky empty response wiping good data.
+    // That guard has a real blind spot at exactly this boundary: if the new
+    // agent's own real data happens to be empty (a brand-new agent with no
+    // stock allocated yet, no outlets assigned yet, ...), the guard means the
+    // PREVIOUS agent's still-cached data just sits there looking valid. Wiping
+    // everything here closes that gap — an empty result for the new agent then
+    // correctly renders as empty instead of silently showing someone else's data.
+    case 'RESET_AGENT_SESSION':
+      return {
+        ...state,
+        attendanceStatus: { clockedIn: false },
+        campaignSelected: false,
+        sessionAgentEmail: null,
+        cachedAttendanceStats: null,
+        outlets: [],
+        sales: [],
+        orders: [],
+        surveys: [],
+        skipRecords: [],
+        products: [],
+        movements: [],
+        drafts: [],
+        photoCaptures: [],
+        leadDrafts: [],
+        leadSurveyResponses: [],
+      };
 
     case 'SET_OUTLETS': {
       // The backend's outlet `status` field means Active/Inactive record state, not
@@ -277,12 +339,17 @@ function reducer(state: FieldState, action: Action): FieldState {
 
 // ─── Initial State ────────────────────────────────────────────────────────────
 const initialState: FieldState = {
-  outlets: mockOutlets,
+  // Was seeded with mockOutlets/mockProducts — meaning a screen rendered before
+  // the real fetch resolved (or one that legitimately came back empty) showed
+  // fake placeholder outlets/products with no visual distinction from real
+  // data. Starting empty is honest: a genuinely empty list now looks empty,
+  // and real data only ever appears once a real fetch actually returns it.
+  outlets: [],
   sales: [],
   orders: [],
   surveys: [],
   skipRecords: [],
-  products: mockProducts,
+  products: [],
   // Renmoney Personal Loan Promo (mockCampaigns[0]) is the campaign every
   // "new ui" reference screenshot is built around — it must be the default,
   // not the merchandising campaign, or every screen that reads
@@ -299,6 +366,8 @@ const initialState: FieldState = {
   campaignSelected: false,
   hydrated: false,
   dayLockedUntil: null,
+  sessionAgentEmail: null,
+  cachedAttendanceStats: null,
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────

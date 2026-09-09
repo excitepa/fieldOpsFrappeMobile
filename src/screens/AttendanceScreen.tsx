@@ -9,6 +9,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { clockIn } from '../services/api';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Campaign } from '../types';
 
 interface AttendanceScreenProps {
@@ -121,6 +122,10 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
   });
 
   const handleFinishClockIn = async () => {
+    // A same-day re-clock-in would otherwise trivially bypass the EOD day
+    // lock (see App.tsx handleDayComplete) — clocking in again for today
+    // stays blocked right alongside every other action until it lifts.
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (gpsStatus !== 'locked' || !rawCoords) {
       Alert.alert('GPS Location Required', 'We need your real GPS location to verify your territory before clocking in.');
       return;
@@ -133,7 +138,7 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
     setIsSubmitting(true);
     try {
       const { attendanceId } = await clockIn(rawCoords, { imageUri: photoUri, campaignId: campaignData?.id });
-      dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: true, attendanceId });
+      dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: true, attendanceId, clockInDate: new Date().toISOString().slice(0, 10) });
     } catch (e: any) {
       setIsSubmitting(false);
       Alert.alert('Clock In Failed', e?.message || 'Could not clock in. Please try again.');

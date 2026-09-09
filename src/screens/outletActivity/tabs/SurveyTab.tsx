@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput, Image, Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { useTheme } from '../../../theme/ThemeContext';
 import { Card } from '../../../components/Card';
 import { Button } from '../../../components/Button';
 import { Icon } from '../../../components/Icon';
 import { OptionPickerSheet } from '../../../components/OptionPickerSheet';
 import { useFieldStore } from '../../../store/useFieldStore';
+import { submitSurveyResponse, NetworkError } from '../../../services/api';
+import { blockIfDayLocked } from '../../../utils/dayLock';
 import { CampaignSurveyConfig, DynamicSurveyQuestion, SurveyAnswer, OutletSurvey } from '../../../types';
 
 interface SurveyTabProps {
@@ -25,7 +28,7 @@ const isBestAnswer = (val: any) => typeof val === 'string' && BEST_KEYWORDS.some
 export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surveyConfig, onSubmitted }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { dispatch } = useFieldStore();
+  const { state, dispatch } = useFieldStore();
   const questions: DynamicSurveyQuestion[] = surveyConfig.questions;
   const isMerchandising = surveyConfig.module === 'merchandising';
 
@@ -97,11 +100,12 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     return valid;
   };
 
-  const handleSubmit = (isDraft = false) => {
+  const handleSubmit = async (isDraft = false) => {
     if (!isDraft && !validate()) {
       Alert.alert('Incomplete Survey', 'Please answer all required questions highlighted in red before submitting.');
       return;
     }
+    if (!isDraft && blockIfDayLocked(state.dayLockedUntil)) return;
 
     setSubmitting(true);
 
@@ -126,22 +130,49 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
       timestamp: nowStr,
     };
 
-    dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
-    if (!isDraft) {
-      dispatch({ type: 'MARK_OUTLET_VISITED', outletId });
+    if (isDraft) {
+      // Drafts are local-only by design (nothing to submit yet) — same as
+      // OutletSurveyReviewScreen's draft handling elsewhere in the app.
+      dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
+      setSubmitting(false);
+      Alert.alert('Draft Saved', 'Your survey draft has been saved locally.');
+      return;
     }
 
-    setTimeout(() => {
-      setSubmitting(false);
-      if (isDraft) {
-        Alert.alert('Draft Saved', 'Your survey draft has been saved locally.');
-      } else {
-        Alert.alert('Survey Submitted', `${surveyConfig.name} recorded for this visit.`);
-        setAnswers({});
-        setPhotoUris({});
-        onSubmitted?.();
+    // A real submit must actually reach the server — this previously only
+    // dispatched local state and showed a fake "Submitted" alert without
+    // ever calling submitSurveyResponse, so shelf-audit answers never left
+    // the device even though the agent was told it worked.
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      let coordinates: { lat: number; lng: number } | undefined;
+      if (status === 'granted') {
+        const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
       }
-    }, 400);
+
+      await submitSurveyResponse(
+        surveyConfig.id,
+        questions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
+        coordinates
+      );
+
+      dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
+      dispatch({ type: 'MARK_OUTLET_VISITED', outletId });
+
+      setSubmitting(false);
+      Alert.alert('Survey Submitted', `${surveyConfig.name} recorded for this visit.`);
+      setAnswers({});
+      setPhotoUris({});
+      onSubmitted?.();
+    } catch (e: any) {
+      setSubmitting(false);
+      if (e instanceof NetworkError) {
+        Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
+      } else {
+        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+      }
+    }
   };
 
   if (isMerchandising) {

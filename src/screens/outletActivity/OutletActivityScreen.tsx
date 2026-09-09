@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Location from 'expo-location';
 import { useTheme } from '../../theme/ThemeContext';
 import { Header } from '../../components/Header';
 import { Icon } from '../../components/Icon';
@@ -9,6 +10,7 @@ import { ScrollableTabs, TabItem } from '../../components/ScrollableTabs';
 import { useFieldStore } from '../../store/useFieldStore';
 import { generateInvoiceRef, generateOrderRef } from '../../services/mockService';
 import { getItems, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePayload } from '../../services/api';
+import { blockIfDayLocked } from '../../utils/dayLock';
 import { RouteName, CartLine, Draft, OutletSale, OutletOrder } from '../../types';
 import { getStockShortfalls } from '../../utils/cart';
 import { useCart } from './useCart';
@@ -76,9 +78,19 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // The Sale/Order product catalog is scoped to the active campaign's
   // `productIds`, matching the reference (e.g. Silver Card Rollout only
   // sells the ₦250k tier) instead of always listing every product.
-  const campaignProducts = activeCampaign?.productIds?.length
+  const scopedProducts = activeCampaign?.productIds?.length
     ? state.products.filter((p) => activeCampaign.productIds!.includes(p.id))
     : state.products;
+  // get_items returns the FULL company item catalog, not just what this agent
+  // actually has on hand — confirmed against a real account whose stock only
+  // covered 3 of 8 catalog items. A Sale is sold from the agent's own stock
+  // right now, so anything they have zero of isn't a real option and only
+  // clutters the list ("products not related to the agent"). An Order is a
+  // pre-order for future delivery, so it isn't gated on current stock the
+  // same way — that list stays the full scoped catalog.
+  const campaignProducts = category === 'sale'
+    ? scopedProducts.filter((p) => p.stock > 0)
+    : scopedProducts;
 
   // Hydrate a saved draft on first mount, if resuming one.
   useEffect(() => {
@@ -96,9 +108,13 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // Refresh the product catalog (price/stock) from the backend each time a sale/order
   // is started, same fetch-on-mount pattern used by Outlets/Leads.
   useEffect(() => {
+    // Always reflects exactly what the server just said, including a real
+    // empty catalog — never leaves a previous (possibly stale, possibly
+    // another agent's) product list sitting there looking current. Left
+    // untouched only on an outright failed request (no response to trust).
     getItems()
       .then((fetched) => {
-        if (fetched.length > 0) dispatch({ type: 'SET_PRODUCTS', products: fetched });
+        dispatch({ type: 'SET_PRODUCTS', products: fetched });
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -166,6 +182,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   };
 
   const handleCheckout = async () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     const mode = category as 'sale' | 'order';
     if (activeCart.cart.length === 0) return;
 
@@ -181,6 +198,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
 
     const lines: OrderLinePayload[] = activeCart.cart.map((line) => ({
       itemCode: line.productId,
+      itemName: line.productName,
       qty: line.quantity,
       rate: line.unitPrice,
     }));
@@ -188,7 +206,19 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     let ref: string;
     try {
       if (mode === 'sale') {
-        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total);
+        // Geo-tag the sale the same way outlet visits/surveys/EOD already do —
+        // best-effort: a denied/failed location read shouldn't block the sale itself.
+        let coordinates: { lat: number; lng: number } | undefined;
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status === 'granted') {
+            const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
+          }
+        } catch (locErr) {
+          // Non-fatal — sale still submits without coordinates.
+        }
+        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, coordinates);
         ref = result.ref || generateInvoiceRef();
       } else {
         const result = await submitSalesOrder(outlet.id, activeCampaign?.id || '', lines);
@@ -250,6 +280,16 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
 
     dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
     if (routeData?.resumeDraftId) dispatch({ type: 'DELETE_DRAFT', draftId: routeData.resumeDraftId });
+
+    // Reconcile local stock with the server's real post-sale/post-order figure.
+    // The optimistic DECREMENT_STOCK above has its own safety net that silently
+    // skips the decrement if local stock looked stale/insufficient — this
+    // refetch is what actually guarantees the UI shows the true number instead
+    // of quietly sitting on a pre-sale value until something else happens to
+    // refetch products.
+    getItems().then((fetched) => {
+      dispatch({ type: 'SET_PRODUCTS', products: fetched });
+    }).catch(() => {});
 
     activeCart.clear();
     setSubmitting(false);

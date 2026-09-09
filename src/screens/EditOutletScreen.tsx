@@ -20,6 +20,7 @@ import { OptionPickerSheet } from '../components/OptionPickerSheet';
 import { useFieldStore } from '../store/useFieldStore';
 import { updateOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
 import { parseGps } from '../utils/geo';
+import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Outlet } from '../types';
 
 interface EditOutletScreenProps {
@@ -91,6 +92,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   };
 
   const handleSubmit = async () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (!outletName.trim()) {
       Alert.alert('Required', 'Please enter an outlet name.');
       return;
@@ -135,6 +137,19 @@ const theme = useTheme();  const styles = createStyles(theme);
       }
     }
   };
+
+  if (!outlet) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Header title="Edit Customer" onNavigate={onNavigate} onBackPress={() => onNavigate('outlets')} />
+        <View style={styles.missingContainer}>
+          <Icon name="alert-circle" size={44} color={theme.colors.amber} />
+          <Text style={styles.missingTitle}>This outlet could not be found.</Text>
+          <Button title="Back to Outlets" onPress={() => onNavigate('outlets')} variant="navy" />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -273,6 +288,8 @@ const theme = useTheme();  const styles = createStyles(theme);
 const createStyles = (theme: any) => StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.appBg },
   scroll: { padding: theme.spacing.lg, gap: theme.spacing.md, paddingBottom: 60 },
+  missingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md, padding: theme.spacing.xl },
+  missingTitle: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark, textAlign: 'center' },
   flex1: { flex: 1 },
   sectionCard: { gap: theme.spacing.md },
   imageRow: { gap: 6 },

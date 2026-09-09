@@ -99,14 +99,6 @@ function AppInner() {
   const [appStage, setAppStage] = useState<'splash' | 'login' | 'campaignSelect' | 'app'>('splash');
   const [route, setRoute] = useState<RouteName>('home');
 
-  // Re-check the day lock periodically so an agent who leaves the app open
-  // past midnight sees it unlock on its own, without needing to relaunch.
-  const [, forceDayLockRecheck] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => forceDayLockRecheck((n) => n + 1), 30000);
-    return () => clearInterval(id);
-  }, []);
-  const dayLocked = !!state.dayLockedUntil && Date.now() < new Date(state.dayLockedUntil).getTime();
   const [routeData, setRouteData] = useState<any>(null);
   const [leadsList, setLeadsList] = useState<Lead[]>([]);
   const [splashDone, setSplashDone] = useState(false);
@@ -148,7 +140,17 @@ function AppInner() {
         setAppStage('login');
         return;
       }
-      if (state.attendanceStatus.clockedIn) {
+      // A stored clockedIn:true only counts if it's for TODAY — otherwise an agent
+      // who clocked in yesterday and never explicitly clocked out (forgot, or just
+      // killed the app) would resume straight into Home on a brand new day, skipping
+      // attendance entirely, since nothing else here is tied to a calendar day.
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === todayIso;
+      if (state.attendanceStatus.clockedIn && !clockedInToday) {
+        dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
+      }
+
+      if (clockedInToday) {
         historyRef.current = [];
         setRoute('home');
         setAppStage('app');
@@ -179,19 +181,24 @@ function AppInner() {
     // last time this agent worked (SET_OUTLETS otherwise preserves that
     // across refetches so it survives normal in-day navigation).
     dispatch({ type: 'RESET_OUTLET_VISIT_STATUS' });
+    // Claims this device's clocked-in session for whoever is actually logged
+    // in right now — checked against on the next login so a different agent
+    // never silently resumes into this agent's still-clocked-in state.
+    dispatch({ type: 'SET_SESSION_AGENT_EMAIL', email: state.user.email || null });
     historyRef.current = [];
     setAppStage('app');
     setRoute('home');
   };
 
   const handleDayComplete = () => {
-    logout();
-    dispatch({ type: 'SET_USER', user: mockUser });
+    // Not a logout — the agent stays signed in and can keep browsing the app
+    // (like a phone's safe mode); blockIfDayLocked() is what actually stops
+    // new activity (add outlet/lead, stock requests, sales, etc.) until this
+    // lock lifts at midnight or the agent explicitly logs out below.
     const nextMidnight = new Date();
     nextMidnight.setHours(24, 0, 0, 0);
     dispatch({ type: 'SET_DAY_LOCK', until: nextMidnight.toISOString() });
     historyRef.current = [];
-    setAppStage('login');
     setRoute('home');
   };
 
@@ -200,24 +207,6 @@ function AppInner() {
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={theme.colors.primaryLight} />
       </View>
-    );
-  }
-
-  // 0. Day-Complete Lock — takes priority over every other stage. Set on a real
-  // EOD submit (see handleDayComplete below); the agent is logged out at that
-  // point too, so there is no live session underneath this screen to interact
-  // with even if this check were somehow bypassed.
-  if (dayLocked) {
-    return (
-      <>
-        <View style={styles.lockedContainer}>
-          <Text style={styles.lockedTitle}>You're done for today</Text>
-          <Text style={styles.lockedSub}>
-            Your end-of-day report has been submitted. The app unlocks automatically at 12:00 AM.
-          </Text>
-        </View>
-        <StatusBar style={statusBarStyle} />
-      </>
     );
   }
 
@@ -248,13 +237,26 @@ function AppInner() {
           onSuccess={(user) => {
             if (user) dispatch({ type: 'SET_USER', user });
             historyRef.current = [];
-            if (state.attendanceStatus.clockedIn) {
-              // Already clocked in today (e.g. the agent logged out mid-day without
+            // Resuming into a clocked-in session must be the SAME agent who
+            // clocked in — this is a shared/testing device, and without this
+            // check a fresh login would silently inherit whichever agent last
+            // clocked in here, letting a brand-new agent skip straight past
+            // campaign-select and attendance into someone else's session.
+            const sameAgent = !!user?.email && !!state.sessionAgentEmail && user.email === state.sessionAgentEmail;
+            // Same day-boundary check as the splash-resume flow — a clockedIn:true
+            // left over from a previous day (forgot to clock out, or the app was
+            // just killed) must not let a fresh login skip straight past attendance.
+            const todayIso = new Date().toISOString().slice(0, 10);
+            const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === todayIso;
+            if (clockedInToday && sameAgent) {
+              // Already clocked in today (e.g. this agent logged out mid-day without
               // actually clocking out) — don't make them clock in again just to log
               // back in, go straight to the app like the splash-resume flow does.
               setRoute('home');
               setAppStage('app');
             } else {
+              if (!sameAgent) dispatch({ type: 'RESET_AGENT_SESSION' });
+              else if (state.attendanceStatus.clockedIn) dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
               setAppStage('campaignSelect');
             }
           }}
@@ -309,7 +311,7 @@ function AppInner() {
   const renderCurrentScreen = () => {
     switch (route) {
       case 'home':
-        return <DashboardScreen onNavigate={navigate} />;
+        return <DashboardScreen onNavigate={navigate} leadsList={leadsList} />;
       case 'dashboard':
         return <AgentDashboardScreen onNavigate={navigate} leadsList={leadsList} />;
       case 'outlets':
@@ -405,6 +407,10 @@ function AppInner() {
               // logging back in the same day would wrongly force them through
               // campaign-select + clock-in again (see LoginScreen onSuccess above,
               // which checks this same flag to skip straight back into the app).
+              // The day lock is the one thing logout DOES clear — this is a shared
+              // testing device where a different agent may log in next, and they
+              // shouldn't inherit someone else's "done for today" state.
+              dispatch({ type: 'SET_DAY_LOCK', until: null });
               historyRef.current = [];
               setAppStage('login');
               setRoute('home');
@@ -442,26 +448,5 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   screenArea: {
     flex: 1,
-  },
-  lockedContainer: {
-    flex: 1,
-    backgroundColor: theme.colors.darkBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 32,
-    gap: 12,
-  },
-  lockedTitle: {
-    fontFamily: theme.fonts.bold,
-    fontSize: 20,
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
-  lockedSub: {
-    fontFamily: theme.fonts.regular,
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.75)',
-    textAlign: 'center',
-    lineHeight: 20,
   },
 });
