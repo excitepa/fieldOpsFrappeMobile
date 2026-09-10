@@ -38,3 +38,24 @@ export function parseAppTimestamp(timestamp: string): Date {
   // source) — fall back to the engine's default parsing.
   return new Date(timestamp);
 }
+
+/**
+ * "Today" as YYYY-MM-DD in the DEVICE'S LOCAL calendar day — not UTC.
+ *
+ * `new Date().toISOString().slice(0, 10)` was used all over this app as a stand-in
+ * for "today's date," but `toISOString()` always returns the UTC date, not local.
+ * For any positive UTC offset (Nigeria is UTC+1), that's wrong for roughly the
+ * first hour(s) after local midnight: e.g. at 00:30 WAT (already a new local day),
+ * it's still 23:30 the *previous* day in UTC, so toISOString() reports yesterday's
+ * date — attendance clock-in dates, EOD "today" filters, lead creation dates, and
+ * day-route navigation would all silently disagree with the device's own clock
+ * right when a 12:00 AM reset is supposed to take effect. This builds the date
+ * string from the Date object's local getFullYear/getMonth/getDate instead, which
+ * always matches whatever the device itself considers "today," in any timezone.
+ */
+export function localDateStr(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}

@@ -144,6 +144,10 @@ function reducer(state: FieldState, action: Action): FieldState {
         campaignSelected: false,
         sessionAgentEmail: null,
         cachedAttendanceStats: null,
+        // A previous agent's EOD safe-mode lock must never carry over to whoever
+        // logs into this device next — otherwise a brand new agent who never
+        // submitted EOD gets blocked from every action by someone else's lock.
+        dayLockedUntil: null,
         outlets: [],
         sales: [],
         orders: [],

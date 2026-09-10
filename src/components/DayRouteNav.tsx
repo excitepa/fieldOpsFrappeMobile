@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { Icon } from './Icon';
 import { RouteAssignment } from '../types';
+import { localDateStr } from '../utils/timestamp';
 
 interface DayRouteNavProps {
   selectedDate: string; // ISO yyyy-mm-dd
@@ -10,7 +11,7 @@ interface DayRouteNavProps {
   assignments: RouteAssignment[];
 }
 
-const toIso = (d: Date) => d.toISOString().slice(0, 10);
+const toIso = (d: Date) => localDateStr(d);
 const addDays = (iso: string, days: number) => {
   const d = new Date(iso + 'T00:00:00');
   d.setDate(d.getDate() + days);

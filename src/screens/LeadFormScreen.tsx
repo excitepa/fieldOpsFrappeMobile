@@ -9,6 +9,7 @@ import { Button } from '../components/Button';
 import { createLead, NetworkError } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, Lead, LeadDraft } from '../types';
 
 interface LeadFormScreenProps {
@@ -62,7 +63,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         parentCompany: parentCompany || undefined,
         pipeline,
         next: 'Follow up within 48 hours',
-        createdAt: new Date().toISOString().slice(0, 10),
+        createdAt: localDateStr(),
       };
     } catch (e: any) {
       if (!(e instanceof NetworkError)) {
@@ -90,8 +91,8 @@ const theme = useTheme();  const styles = createStyles(theme);
         source,
         pipeline,
         notes,
-        createdAt: new Date().toISOString().slice(0, 10),
-        lastContactDate: new Date().toISOString().slice(0, 10),
+        createdAt: localDateStr(),
+        lastContactDate: localDateStr(),
       };
 
       // Persist to offline sync queue
@@ -108,7 +109,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         parentCompany: parentCompany || undefined,
         leadValue: leadValue || undefined,
         pipeline,
-        createdAt: new Date().toISOString().slice(0, 10),
+        createdAt: localDateStr(),
         pendingSync: true,
       };
       dispatch({ type: 'SAVE_LEAD_DRAFT', leadDraft });

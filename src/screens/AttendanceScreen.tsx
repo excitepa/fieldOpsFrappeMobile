@@ -10,6 +10,7 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { clockIn } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, Campaign } from '../types';
 
 interface AttendanceScreenProps {
@@ -136,15 +137,48 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
     }
 
     setIsSubmitting(true);
+    let alreadyCheckedIn = false;
     try {
-      const { attendanceId } = await clockIn(rawCoords, { imageUri: photoUri, campaignId: campaignData?.id });
-      dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: true, attendanceId, clockInDate: new Date().toISOString().slice(0, 10) });
+      const result = await clockIn(rawCoords, { imageUri: photoUri, campaignId: campaignData?.id });
+      alreadyCheckedIn = !!result.alreadyCheckedIn;
+
+      if (result.alreadyCheckedOut) {
+        // Server-confirmed proof this agent already completed a full attendance
+        // cycle (clocked in AND out) today — most likely via EOD on a different
+        // device, since that's this app's only clock-out path. The local day-lock
+        // is otherwise per-device only (see App.tsx's onLogout clearing it), so
+        // without this, a second device would never know the day was already
+        // closed out. Locking here too is what actually makes safe mode follow
+        // the agent instead of just the one device that submitted EOD.
+        setIsSubmitting(false);
+        const nextMidnight = new Date();
+        nextMidnight.setHours(24, 0, 0, 0);
+        dispatch({ type: 'SET_DAY_LOCK', until: nextMidnight.toISOString() });
+        Alert.alert(
+          'Already Completed Today',
+          'You already clocked in and out for today on another device. The app will stay in safe mode until 12:00 AM tomorrow.',
+          [{ text: 'OK', onPress: () => onNavigate('home') }]
+        );
+        return;
+      }
+
+      dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: true, attendanceId: result.attendanceId, clockInDate: localDateStr() });
     } catch (e: any) {
       setIsSubmitting(false);
       Alert.alert('Clock In Failed', e?.message || 'Could not clock in. Please try again.');
       return;
     }
     setIsSubmitting(false);
+
+    if (alreadyCheckedIn) {
+      // Real attendance already exists for today (e.g. from another device) —
+      // resume the agent into it rather than pretending this was a fresh
+      // clock-in they should get an "attendance success" celebration for.
+      Alert.alert('Already Clocked In', "You're already clocked in for today.", [
+        { text: 'OK', onPress: () => onNavigate('home') },
+      ]);
+      return;
+    }
 
     const camp: Campaign = campaignData || {
       id: 'c2',

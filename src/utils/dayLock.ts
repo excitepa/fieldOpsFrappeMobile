@@ -3,8 +3,12 @@ import { Alert } from 'react-native';
 /**
  * True while the agent is in "day complete" mode — set by submitting the
  * End-of-Day report, cleared automatically once the clock passes local
- * midnight (or immediately on logout, so a different agent testing on the
- * same device isn't wrongly locked out by someone else's EOD submission).
+ * midnight. Survives a plain logout on purpose (this device remembers the
+ * same agent already finished today, so logging back in skips straight back
+ * to safe mode instead of Attendance — see App.tsx's login/resume flows).
+ * A *different* agent logging in on this shared device is protected instead
+ * by RESET_AGENT_SESSION, which clears this along with the rest of the
+ * previous agent's session state.
  */
 export const isDayLocked = (dayLockedUntil: string | null): boolean =>
   !!dayLockedUntil && Date.now() < new Date(dayLockedUntil).getTime();

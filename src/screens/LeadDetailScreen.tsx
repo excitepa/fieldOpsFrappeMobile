@@ -11,6 +11,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { mockLeads } from '../services/mockService';
 import { getInitials, formatShortDate } from '../utils/leadDisplay';
 import { FUNNEL_STAGES, STAGE_PROBABILITY } from '../utils/pipelineMetrics';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, Lead, LeadStage } from '../types';
 
 interface LeadDetailScreenProps {
@@ -30,7 +31,7 @@ export const LeadDetailScreen: React.FC<LeadDetailScreenProps> = ({ onNavigate, 
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   const stageScrollRef = useRef<ScrollView>(null);
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = localDateStr();
   const isOverdue = !!l.nextActionDate && l.nextActionDate < todayIso;
   const stageProbabilityPct = Math.round((STAGE_PROBABILITY[l.stage] || 0) * 100);
 

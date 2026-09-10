@@ -4,7 +4,7 @@ import {
 } from '../types';
 import { getConversionRate, getWeightedPipelineValue, getTotalPipelineValue, getStageBreakdown } from './pipelineMetrics';
 import { groupSalesByInvoice, groupOrdersByRef } from './transactions';
-import { parseAppTimestamp } from './timestamp';
+import { parseAppTimestamp, localDateStr } from './timestamp';
 
 export interface DashboardContext {
   campaign: Campaign;
@@ -91,11 +91,14 @@ export function getTodayPerformanceRows(ctx: DashboardContext): PerformanceRow[]
     ];
   }
 
-  // Non-pipeline execution campaign
-  const orderTarget = parseNumericTarget(campaign.target, 20);
-  const groupedOrders = groupOrdersByRef(ctx.orders);
-  const groupedSales = groupSalesByInvoice(ctx.sales);
-  const totalSalesValue = groupedSales.reduce((sum, t) => sum + t.total, 0);
+  // Non-pipeline execution campaign — every row here is a *daily* figure (hence
+  // "Today Performance"), same reset-per-day behavior as Outlet Coverage
+  // (which reads live visited-status that resets on every fresh clock-in).
+  // "Orders" here means count of sales made today (a plain transaction count,
+  // +1 per completed sale regardless of value/customer) — not order records.
+  const salesCountTarget = parseNumericTarget(campaign.target, 20);
+  const groupedSalesToday = groupSalesByInvoice(ctx.sales.filter((s) => isToday(s.timestamp)));
+  const totalSalesValueToday = groupedSalesToday.reduce((sum, t) => sum + t.total, 0);
   const salesTarget = parseNumericTarget(campaign.target, 100000);
 
   return [
@@ -104,11 +107,11 @@ export function getTodayPerformanceRows(ctx: DashboardContext): PerformanceRow[]
       valueText: `${ctx.outlets.filter((o) => o.status === 'visited').length}/${ctx.outlets.length}`,
       progress: ctx.outlets.length ? ctx.outlets.filter((o) => o.status === 'visited').length / ctx.outlets.length : 0,
     },
-    { label: 'Orders', valueText: `${groupedOrders.length}/${Math.round(orderTarget)}`, progress: Math.min(1, groupedOrders.length / orderTarget) },
+    { label: 'Orders', valueText: `${groupedSalesToday.length}/${Math.round(salesCountTarget)}`, progress: Math.min(1, groupedSalesToday.length / salesCountTarget) },
     {
       label: 'Sales Value',
-      valueText: `₦${totalSalesValue.toLocaleString()}`,
-      progress: Math.min(1, totalSalesValue / salesTarget),
+      valueText: `₦${totalSalesValueToday.toLocaleString()}`,
+      progress: Math.min(1, totalSalesValueToday / salesTarget),
     },
   ];
 }
@@ -185,7 +188,7 @@ export function getActivityChartData(ctx: DashboardContext, range: ChartRange): 
   source.forEach(({ timestamp, amount }) => {
     if (!withinRange(timestamp)) return;
     const d = parseAppTimestamp(timestamp);
-    const key = isNaN(d.getTime()) ? timestamp.slice(0, 10) : d.toISOString().slice(0, 10);
+    const key = isNaN(d.getTime()) ? timestamp.slice(0, 10) : localDateStr(d);
     buckets.set(key, (buckets.get(key) || 0) + amount);
   });
 
@@ -227,6 +230,10 @@ export function getWidgetData(id: DashboardWidgetId, ctx: DashboardContext): Wid
   const { campaign, leads, outlets, sales, orders, surveys, products, photoCaptures, drafts } = ctx;
   const groupedSales = groupSalesByInvoice(sales);
   const groupedOrders = groupOrdersByRef(orders);
+  // Sales Value/Count are daily, same as Outlet Coverage (which is effectively
+  // "today" too, since visited status resets on every fresh clock-in) — matches
+  // the Sales Today figure on the Next Stop card rather than a campaign total.
+  const groupedSalesToday = groupSalesByInvoice(sales.filter((s) => isToday(s.timestamp)));
 
   switch (id) {
     case 'total-leads':
@@ -275,8 +282,15 @@ export function getWidgetData(id: DashboardWidgetId, ctx: DashboardContext): Wid
     }
 
     case 'sales-value': {
-      const totalValue = groupedSales.reduce((sum, t) => sum + t.total, 0);
-      return { id, title: 'Sales Value', value: `₦${totalValue.toLocaleString()}`, supportingText: `${groupedSales.length} invoice(s)` };
+      const totalValue = groupedSalesToday.reduce((sum, t) => sum + t.total, 0);
+      return { id, title: 'Sales Value', value: `₦${totalValue.toLocaleString()}`, supportingText: `${groupedSalesToday.length} sale(s) today` };
+    }
+
+    case 'sales-count': {
+      // Plain transaction count — every completed sale today is +1 regardless of
+      // its ₦ value or which outlet/customer it was to, distinct from Sales Value (₦).
+      const totalValue = groupedSalesToday.reduce((sum, t) => sum + t.total, 0);
+      return { id, title: 'Sales Count', value: `${groupedSalesToday.length}`, supportingText: `₦${totalValue.toLocaleString()} today` };
     }
 
     case 'products-sold': {

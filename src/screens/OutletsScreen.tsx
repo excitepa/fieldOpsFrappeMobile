@@ -18,13 +18,14 @@ import { Button } from '../components/Button';
 import { DayRouteNav } from '../components/DayRouteNav';
 import { useFieldStore } from '../store/useFieldStore';
 import { getOutlets, getAgentBeats } from '../services/api';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, OutletStatus, RouteAssignment } from '../types';
 
 interface OutletsScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
 }
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => localDateStr();
 
 export const OutletsScreen: React.FC<OutletsScreenProps> = ({ onNavigate }) => {
 const theme = useTheme();  const styles = createStyles(theme);

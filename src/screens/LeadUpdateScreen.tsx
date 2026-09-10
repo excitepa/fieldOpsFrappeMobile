@@ -9,6 +9,7 @@ import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
 import { mockDelay } from '../services/mockService';
 import { FUNNEL_STAGES } from '../utils/pipelineMetrics';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, Lead } from '../types';
 
 interface LeadUpdateScreenProps {
@@ -51,7 +52,7 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
     const updated: Lead = {
       ...leadData,
       stage: nextStage,
-      lastContactDate: new Date().toISOString().slice(0, 10),
+      lastContactDate: localDateStr(),
       notes: notes.trim() ? `${leadData.notes ? leadData.notes + '\n' : ''}${notes.trim()}` : leadData.notes,
     };
     onUpdateLead(updated);

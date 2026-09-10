@@ -13,6 +13,7 @@ import { getLeads, getAgentBeats } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
 import { getInitials, getStageColor, formatShortDate } from '../utils/leadDisplay';
 import { formatCompactNaira, parseLeadValue } from '../utils/pipelineMetrics';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, Lead, RouteAssignment } from '../types';
 
 interface LeadsScreenProps {
@@ -21,7 +22,7 @@ interface LeadsScreenProps {
   leadsList?: Lead[];
 }
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => localDateStr();
 
 type FilterId = 'all' | 'hot' | 'warm' | 'converted';
 const FILTERS: { id: FilterId; label: string }[] = [

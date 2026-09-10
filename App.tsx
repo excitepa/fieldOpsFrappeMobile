@@ -14,6 +14,8 @@ import { RouteName, Lead, Campaign } from './src/types';
 import { mockUser } from './src/services/mockService';
 import { logout } from './src/services/api';
 import { getAccessToken } from './src/services/apiConfig';
+import { localDateStr } from './src/utils/timestamp';
+import { isDayLocked } from './src/utils/dayLock';
 import { FieldProvider, useFieldStore } from './src/store/useFieldStore';
 import { BottomTabs } from './src/components/BottomTabs';
 
@@ -144,10 +146,23 @@ function AppInner() {
       // who clocked in yesterday and never explicitly clocked out (forgot, or just
       // killed the app) would resume straight into Home on a brand new day, skipping
       // attendance entirely, since nothing else here is tied to a calendar day.
-      const todayIso = new Date().toISOString().slice(0, 10);
+      const todayIso = localDateStr();
       const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === todayIso;
       if (state.attendanceStatus.clockedIn && !clockedInToday) {
         dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
+      }
+
+      // This device already knows the day is done (a real EOD was submitted from
+      // right here) — no need to send them back through Attendance just to be
+      // told to log out again. Only a device that DOESN'T have this local memory
+      // (a different device, or this one after a reinstall) needs to actually
+      // attempt a clock-in and let the backend's "already checked out" response
+      // (handled in AttendanceScreen) explain why it can't proceed.
+      if (isDayLocked(state.dayLockedUntil)) {
+        historyRef.current = [];
+        setRoute('home');
+        setAppStage('app');
+        return;
       }
 
       if (clockedInToday) {
@@ -246,9 +261,15 @@ function AppInner() {
             // Same day-boundary check as the splash-resume flow — a clockedIn:true
             // left over from a previous day (forgot to clock out, or the app was
             // just killed) must not let a fresh login skip straight past attendance.
-            const todayIso = new Date().toISOString().slice(0, 10);
+            const todayIso = localDateStr();
             const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === todayIso;
-            if (clockedInToday && sameAgent) {
+            if (sameAgent && isDayLocked(state.dayLockedUntil)) {
+              // This device already knows this same agent finished their day here —
+              // no point sending them back through Attendance just to be told to
+              // log out again. Straight to safe-mode Home, same as splash-resume.
+              setRoute('home');
+              setAppStage('app');
+            } else if (clockedInToday && sameAgent) {
               // Already clocked in today (e.g. this agent logged out mid-day without
               // actually clocking out) — don't make them clock in again just to log
               // back in, go straight to the app like the splash-resume flow does.
@@ -402,15 +423,15 @@ function AppInner() {
             onLogout={() => {
               logout();
               dispatch({ type: 'SET_USER', user: mockUser });
-              // Logging out is not clocking out — attendance/campaign state reflects
-              // the agent's real-world work day and must survive a plain logout, or
-              // logging back in the same day would wrongly force them through
-              // campaign-select + clock-in again (see LoginScreen onSuccess above,
-              // which checks this same flag to skip straight back into the app).
-              // The day lock is the one thing logout DOES clear — this is a shared
-              // testing device where a different agent may log in next, and they
-              // shouldn't inherit someone else's "done for today" state.
-              dispatch({ type: 'SET_DAY_LOCK', until: null });
+              // Logging out is not clocking out — attendance/campaign state AND the
+              // day lock reflect the agent's real-world work day and must survive a
+              // plain logout, or logging back in the same day would wrongly force
+              // them through attendance again (see LoginScreen onSuccess above, which
+              // checks these same flags to skip straight back into the app/safe mode).
+              // A different agent logging in next on this shared device is protected
+              // separately — RESET_AGENT_SESSION (fired there, not here) clears the
+              // day lock along with everything else, so they never inherit someone
+              // else's "done for today" state.
               historyRef.current = [];
               setAppStage('login');
               setRoute('home');

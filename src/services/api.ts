@@ -11,6 +11,7 @@ import {
   clearUserInfo,
 } from './apiConfig';
 import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { localDateStr } from '../utils/timestamp';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
 export class AuthError extends Error {}
@@ -311,7 +312,7 @@ export const getCampaignInventory = async (campaignId: string): Promise<Product[
 export const clockIn = async (
   coordinates: { lat: number; lng: number },
   options?: { imageUri?: string; campaignId?: string; remarks?: string }
-): Promise<{ attendanceId?: string }> => {
+): Promise<{ attendanceId?: string; alreadyCheckedIn?: boolean; alreadyCheckedOut?: boolean }> => {
   const body: Record<string, any> = {
     latitude: coordinates.lat,
     longitude: coordinates.lng,
@@ -331,7 +332,19 @@ export const clockIn = async (
 
   const result = data?.message ?? data?.data ?? data;
   const attendanceId = result?.attendance_id || result?.name || result?.id;
-  return { attendanceId };
+  // check_in now returns HTTP 200 with a nested error status (not a 4xx/AuthError)
+  // when the agent already has an attendance record for today — confirmed live:
+  // {"status":"error","code":"ALREADY_CHECKED_IN","already_checked_in":true,
+  //  "has_checked_out":false,"attendance_id":"ATT-00014",...}. Without checking
+  // this, the caller would treat the existing attendanceId as a fresh successful
+  // clock-in and silently let the agent "re-clock-in" — which is exactly how a
+  // second device (or a same-device relogin) was able to bypass the once-per-day
+  // rule even after the backend started rejecting duplicate check-ins.
+  return {
+    attendanceId,
+    alreadyCheckedIn: result?.already_checked_in === true || result?.code === 'ALREADY_CHECKED_IN',
+    alreadyCheckedOut: result?.has_checked_out === true,
+  };
 };
 
 /** Clocks out the agent via the RPC contract (`check_out`). `attendanceId` is the id returned by `clockIn`. */
@@ -925,7 +938,7 @@ export const submitSalesOrder = async (
     outlet_id: outletId,
     campaignId,
     campaign_id: campaignId,
-    deliveryDate: new Date().toISOString().slice(0, 10),
+    deliveryDate: localDateStr(),
     items: lines.map((l) => ({
       productId: l.itemCode,
       product_id: l.itemCode,

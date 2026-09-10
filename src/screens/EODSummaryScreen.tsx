@@ -9,7 +9,7 @@ import { Button } from '../components/Button';
 import { Icon, IconName } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { clockOut, submitEodReport, getLeads, NetworkError } from '../services/api';
-import { parseAppTimestamp } from '../utils/timestamp';
+import { parseAppTimestamp, localDateStr } from '../utils/timestamp';
 import { RouteName, Lead } from '../types';
 
 interface EODSummaryScreenProps {
@@ -60,7 +60,7 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
     });
   }, [leadsList]);
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = localDateStr();
   const outletsVisited = state.outlets.filter((o) => o.status === 'visited').length;
   const salesToday = state.sales.filter((s) => isToday(s.timestamp));
   const salesTotal = salesToday.reduce((sum, s) => sum + s.total, 0);

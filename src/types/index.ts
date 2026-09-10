@@ -91,7 +91,7 @@ export type DashboardWidgetId =
   // CRM / Pipeline
   | 'total-leads' | 'new-leads' | 'conversion-rate' | 'pipeline-value' | 'leads-by-stage' | 'agent-performance'
   // Sales / Non-pipeline
-  | 'outlets-visited' | 'orders-created' | 'sales-value' | 'products-sold' | 'target-achievement'
+  | 'outlets-visited' | 'orders-created' | 'sales-value' | 'sales-count' | 'products-sold' | 'target-achievement'
   // Merchandising
   | 'outlet-visits' | 'completed-audits' | 'compliance' | 'shelf-availability' | 'photo-captures' | 'pending-activities';
 

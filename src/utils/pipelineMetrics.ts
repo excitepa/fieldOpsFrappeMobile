@@ -1,4 +1,5 @@
 import { Lead, LeadStage } from '../types';
+import { localDateStr } from './timestamp';
 
 export const STAGE_PROBABILITY: Record<LeadStage, number> = {
   New: 0.1,
@@ -36,11 +37,11 @@ export function getWeightedPipelineValue(leads: Lead[]): number {
 }
 
 /** A lead is overdue when it has a nextActionDate strictly before today. */
-export function getOverdueLeads(leads: Lead[], todayIso: string = new Date().toISOString().slice(0, 10)): Lead[] {
+export function getOverdueLeads(leads: Lead[], todayIso: string = localDateStr()): Lead[] {
   return leads.filter((l) => l.nextActionDate && l.nextActionDate < todayIso);
 }
 
-export function getDaysSince(iso: string | undefined, todayIso: string = new Date().toISOString().slice(0, 10)): number {
+export function getDaysSince(iso: string | undefined, todayIso: string = localDateStr()): number {
   if (!iso) return 0;
   const start = new Date(iso + 'T00:00:00').getTime();
   const end = new Date(todayIso + 'T00:00:00').getTime();
