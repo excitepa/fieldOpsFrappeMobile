@@ -64,9 +64,11 @@ export const PerformanceDashboardView: React.FC<PerformanceDashboardViewProps> =
               <Text style={styles.perfLabel}>{row.label}</Text>
               <Text style={styles.perfValue}>{row.valueText}</Text>
             </View>
-            <View style={styles.track}>
-              <View style={[styles.fill, { width: `${Math.round(row.progress * 100)}%` }]} />
-            </View>
+            {row.progress !== undefined && (
+              <View style={styles.track}>
+                <View style={[styles.fill, { width: `${Math.round(row.progress * 100)}%` }]} />
+              </View>
+            )}
           </View>
         ))}
       </Card>

@@ -49,7 +49,10 @@ function isThisMonth(timestamp: string, today: Date = new Date()): boolean {
 export interface PerformanceRow {
   label: string;
   valueText: string;
-  progress: number; // 0–1
+  /** 0–1, renders a progress bar under the row. Omitted for rows with no real
+   *  ceiling to measure against (e.g. a plain unlimited count) — those render
+   *  as a bare number/value with no bar rather than a fake percentage. */
+  progress?: number;
 }
 
 const isPipelineCampaign = (campaign: Campaign) => campaign.ctaType === 'leads';
@@ -96,7 +99,8 @@ export function getTodayPerformanceRows(ctx: DashboardContext): PerformanceRow[]
   // (which reads live visited-status that resets on every fresh clock-in).
   // "Orders" here means count of sales made today (a plain transaction count,
   // +1 per completed sale regardless of value/customer) — not order records.
-  const salesCountTarget = parseNumericTarget(campaign.target, 20);
+  // It's intentionally unlimited/uncapped — a sale count has no natural daily
+  // ceiling to measure progress against, so no target/progress bar here.
   const groupedSalesToday = groupSalesByInvoice(ctx.sales.filter((s) => isToday(s.timestamp)));
   const totalSalesValueToday = groupedSalesToday.reduce((sum, t) => sum + t.total, 0);
   const salesTarget = parseNumericTarget(campaign.target, 100000);
@@ -107,7 +111,7 @@ export function getTodayPerformanceRows(ctx: DashboardContext): PerformanceRow[]
       valueText: `${ctx.outlets.filter((o) => o.status === 'visited').length}/${ctx.outlets.length}`,
       progress: ctx.outlets.length ? ctx.outlets.filter((o) => o.status === 'visited').length / ctx.outlets.length : 0,
     },
-    { label: 'Orders', valueText: `${groupedSalesToday.length}/${Math.round(salesCountTarget)}`, progress: Math.min(1, groupedSalesToday.length / salesCountTarget) },
+    { label: 'Orders', valueText: `${groupedSalesToday.length}` },
     {
       label: 'Sales Value',
       valueText: `₦${totalSalesValueToday.toLocaleString()}`,

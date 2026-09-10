@@ -242,7 +242,12 @@ const mapCampaign = (raw: any): Campaign => {
     type: raw?.campaign_type || '',
     category: deriveCampaignCategory(modules),
     progress: 0,
-    target: '',
+    // Was hardcoded to '' regardless of what the backend sent, so every progress
+    // bar/target denominator across the app (Orders, Sales Value, Target
+    // Achievement, etc.) silently fell back to a made-up default (20, 100000...)
+    // instead of the campaign's real configured target (e.g. 50.0 here) —
+    // confirmed live via /agent/campaigns, which does send a real `target` field.
+    target: raw?.target !== undefined && raw?.target !== null ? String(raw.target) : '',
     color: '#1B2559',
     beat: '',
     description: raw?.description || '',
