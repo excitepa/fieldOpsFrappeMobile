@@ -19,6 +19,34 @@ export class AuthError extends Error {}
 /** Thrown by authFetch only when the device couldn't reach the server at all (no response received) — distinct from a request that reached the server and was rejected, which should never be treated as "offline". */
 export class NetworkError extends Error {}
 
+/**
+ * Thrown by authFetch when the server answers HTTP 200 but the actual result is
+ * a *soft* failure nested inside `message` — e.g. check_in's duplicate-clock-in
+ * response: `{"message":{"status":"error","code":"ALREADY_CHECKED_IN",...}}`.
+ * Frappe's normal validation failures raise a real exception (HTTP 417/500,
+ * already caught below), but some hand-written endpoints in mobile_api.py
+ * instead return 200 with this nested shape for an expected/recoverable
+ * rejection. Before this was detected, authFetch treated the whole response as
+ * a success (only `data.status`, never `data.message.status`, was checked) —
+ * so the calling code would silently extract whatever id/fields happened to be
+ * present and act as if the action succeeded, even though nothing was actually
+ * created. That's the exact shape of "I had to do it twice before it showed up
+ * on web" for any action that hits one of these soft-error paths: the first
+ * attempt silently no-ops, and only a subsequent, genuinely-accepted attempt
+ * shows up. `data` carries the nested payload so a caller that specifically
+ * expects a given soft error (like clockIn's ALREADY_CHECKED_IN) can recover
+ * from it instead of just failing — see clockIn below for that pattern.
+ */
+export class SoftError extends Error {
+  code?: string;
+  data: any;
+  constructor(message: string, data: any) {
+    super(message);
+    this.code = data?.code;
+    this.data = data;
+  }
+}
+
 export interface LoginResult {
   success: boolean;
   message?: string;
@@ -67,6 +95,19 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
   }
   if (!response.ok || data?.status === 'error') {
     throw new Error(data?.message || `Request failed (HTTP ${response.status}).`);
+  }
+
+  // A real HTTP 200 can still carry a soft failure nested inside `message` —
+  // see SoftError's doc comment for why this matters (silent no-op actions
+  // that needed a second, genuinely-accepted attempt to show up anywhere).
+  // Only treated as an error when `message` is a plain object with its own
+  // status — get_items/get_my_leads/etc. return `message` as an array of
+  // records, and plenty of endpoints return it as a bare success string, so
+  // this can't just check "does message exist".
+  const nested = data?.message;
+  if (nested && typeof nested === 'object' && !Array.isArray(nested) && nested.status === 'error') {
+    const nestedMessage = typeof nested.message === 'string' ? nested.message : `Request failed (HTTP ${response.status}).`;
+    throw new SoftError(nestedMessage, nested);
   }
 
   return data;
@@ -329,27 +370,34 @@ export const clockIn = async (
     body.image = `data:image/jpeg;base64,${base64}`;
   }
 
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.check_in', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  const result = data?.message ?? data?.data ?? data;
-  const attendanceId = result?.attendance_id || result?.name || result?.id;
-  // check_in now returns HTTP 200 with a nested error status (not a 4xx/AuthError)
+  // check_in returns HTTP 200 with a nested error status (not a 4xx/AuthError)
   // when the agent already has an attendance record for today — confirmed live:
-  // {"status":"error","code":"ALREADY_CHECKED_IN","already_checked_in":true,
-  //  "has_checked_out":false,"attendance_id":"ATT-00014",...}. Without checking
-  // this, the caller would treat the existing attendanceId as a fresh successful
-  // clock-in and silently let the agent "re-clock-in" — which is exactly how a
-  // second device (or a same-device relogin) was able to bypass the once-per-day
-  // rule even after the backend started rejecting duplicate check-ins.
-  return {
-    attendanceId,
-    alreadyCheckedIn: result?.already_checked_in === true || result?.code === 'ALREADY_CHECKED_IN',
-    alreadyCheckedOut: result?.has_checked_out === true,
-  };
+  // {"message":{"status":"error","code":"ALREADY_CHECKED_IN","already_checked_in":true,
+  //  "has_checked_out":false,"attendance_id":"ATT-00014",...}}. authFetch now throws
+  // this as a SoftError instead of returning it as a normal success (previously it
+  // didn't, so the caller would treat the existing attendanceId as a fresh clock-in —
+  // which is how a second device, or a same-device relogin, bypassed the once-per-day
+  // rule). This is the one place that specifically expects and recovers from that
+  // exact soft error; anywhere else it surfaces, it's a real, visible failure now
+  // instead of a silent no-op.
+  try {
+    const data = await authFetch('/api/method/fieldops.api.mobile_api.check_in', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = data?.message ?? data?.data ?? data;
+    return { attendanceId: result?.attendance_id || result?.name || result?.id };
+  } catch (e: any) {
+    if (e instanceof SoftError && e.code === 'ALREADY_CHECKED_IN') {
+      return {
+        attendanceId: e.data?.attendance_id,
+        alreadyCheckedIn: true,
+        alreadyCheckedOut: e.data?.has_checked_out === true,
+      };
+    }
+    throw e;
+  }
 };
 
 /** Clocks out the agent via the RPC contract (`check_out`). `attendanceId` is the id returned by `clockIn`. */
