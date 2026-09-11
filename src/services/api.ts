@@ -429,6 +429,11 @@ export interface AttendanceStats {
   attendancePercentage: number;
   streakDays: number;
   todayStatus: string;
+  /** Real, server-confirmed "have I already clocked in/out today" — this is what lets
+   *  a device that has never seen this agent (a second phone, a reinstall) find out
+   *  without attempting a full photo+GPS clock-in first. See resolveTodayAttendance. */
+  isCheckedInToday: boolean;
+  isCheckedOutToday: boolean;
 }
 
 /** Fetch the homepage attendance KPI breakdown via the RPC contract (`get_my_attendance_stats`). */
@@ -437,6 +442,9 @@ export const getAttendanceStats = async (): Promise<AttendanceStats | null> => {
     const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_attendance_stats');
     const raw = data?.message ?? data?.data ?? data;
     if (!raw || typeof raw !== 'object') return null;
+    // `today`/`today_status` is an object ({is_checked_in, is_checked_out, status, ...}),
+    // not the plain string the old `todayStatus` field assumed — confirmed live.
+    const today = raw.today ?? raw.today_status;
     return {
       presentDays: Number(raw.present_days) || 0,
       absentDays: Number(raw.absent_days) || 0,
@@ -445,7 +453,9 @@ export const getAttendanceStats = async (): Promise<AttendanceStats | null> => {
       totalWorkingDays: Number(raw.total_working_days) || 0,
       attendancePercentage: Number(raw.attendance_percentage) || 0,
       streakDays: Number(raw.streak_days) || 0,
-      todayStatus: raw.today_status || '',
+      todayStatus: typeof today === 'object' ? (today?.status || '') : (today || ''),
+      isCheckedInToday: !!(typeof today === 'object' && today?.is_checked_in),
+      isCheckedOutToday: !!(typeof today === 'object' && today?.is_checked_out),
     };
   } catch (e: any) {
     if (e instanceof AuthError) throw e;

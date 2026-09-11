@@ -12,7 +12,7 @@ import {
 import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 import { RouteName, Lead, Campaign } from './src/types';
 import { mockUser } from './src/services/mockService';
-import { logout } from './src/services/api';
+import { logout, getAttendanceStats, getCampaigns } from './src/services/api';
 import { getAccessToken } from './src/services/apiConfig';
 import { localDateStr } from './src/utils/timestamp';
 import { isDayLocked } from './src/utils/dayLock';
@@ -67,6 +67,73 @@ import { OutletTransactionsScreen } from './src/screens/OutletTransactionsScreen
 import { OutletSurveysScreen } from './src/screens/OutletSurveysScreen';
 import { OutletSurveyFormScreen } from './src/screens/OutletSurveyFormScreen';
 import { OutletSurveyReviewScreen } from './src/screens/OutletSurveyReviewScreen';
+
+type TodayAttendanceDecision = 'home' | 'home-locked' | 'attendance-needed';
+
+/**
+ * Works out what a device should do about today's attendance/EOD state — used
+ * both on app resume and right after login. Two fast local-only paths handle
+ * the device that already personally knows the answer (it clocked in today,
+ * or it submitted EOD today); everything else asks the backend directly via
+ * get_my_attendance_stats's `today` block, which needs no photo/GPS.
+ *
+ * This is what makes a second device (agent's phone died mid-shift, they pick
+ * up another one) behave correctly: log in, and if the backend confirms
+ * they're already clocked in today, skip straight to Home in normal (not
+ * locked) mode — no repeat campaign-select/attendance. If EOD was submitted
+ * from ANY device, the backend says checked-out too, and this device locks
+ * into safe mode immediately on login rather than only discovering that after
+ * a wasted attendance attempt.
+ */
+async function resolveTodayAttendance(
+  state: { attendanceStatus: { clockedIn: boolean; clockInDate?: string }; dayLockedUntil: string | null; user: { email: string } },
+  dispatch: React.Dispatch<any>
+): Promise<TodayAttendanceDecision> {
+  const todayIso = localDateStr();
+  const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === todayIso;
+  if (state.attendanceStatus.clockedIn && !clockedInToday) {
+    dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
+  }
+
+  if (isDayLocked(state.dayLockedUntil)) return 'home-locked';
+  if (clockedInToday) return 'home';
+
+  // No reliable local memory on this device — ask the backend what's real for
+  // this agent today rather than assuming "never attended" and making them
+  // repeat campaign-select/attendance on every device they pick up.
+  try {
+    const stats = await getAttendanceStats();
+    if (!stats) return 'attendance-needed';
+
+    if (stats.isCheckedOutToday) {
+      const nextMidnight = new Date();
+      nextMidnight.setHours(24, 0, 0, 0);
+      dispatch({ type: 'SET_DAY_LOCK', until: nextMidnight.toISOString() });
+      return 'home-locked';
+    }
+
+    if (stats.isCheckedInToday) {
+      // Claim a real campaign so Home has something to render — this is a
+      // recovery path (their other device died, or this is a brand new one),
+      // so pick the agent's real campaign rather than asking them to pick
+      // again; there's normally exactly one active campaign per agent.
+      try {
+        const campaigns = await getCampaigns();
+        if (campaigns[0]) dispatch({ type: 'SET_ACTIVE_CAMPAIGN', campaign: campaigns[0] });
+      } catch {
+        // Non-fatal — Home still renders with whatever campaign is already set.
+      }
+      dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: true, clockInDate: todayIso });
+      dispatch({ type: 'SET_CAMPAIGN_SELECTED', value: true });
+      dispatch({ type: 'SET_SESSION_AGENT_EMAIL', email: state.user.email || null });
+      return 'home';
+    }
+  } catch {
+    // Network/auth failure asking the backend — fail open to the normal flow
+    // rather than blocking the agent from using the app entirely.
+  }
+  return 'attendance-needed';
+}
 
 export default function App() {
   return (
@@ -142,30 +209,9 @@ function AppInner() {
         setAppStage('login');
         return;
       }
-      // A stored clockedIn:true only counts if it's for TODAY — otherwise an agent
-      // who clocked in yesterday and never explicitly clocked out (forgot, or just
-      // killed the app) would resume straight into Home on a brand new day, skipping
-      // attendance entirely, since nothing else here is tied to a calendar day.
-      const todayIso = localDateStr();
-      const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === todayIso;
-      if (state.attendanceStatus.clockedIn && !clockedInToday) {
-        dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
-      }
 
-      // This device already knows the day is done (a real EOD was submitted from
-      // right here) — no need to send them back through Attendance just to be
-      // told to log out again. Only a device that DOESN'T have this local memory
-      // (a different device, or this one after a reinstall) needs to actually
-      // attempt a clock-in and let the backend's "already checked out" response
-      // (handled in AttendanceScreen) explain why it can't proceed.
-      if (isDayLocked(state.dayLockedUntil)) {
-        historyRef.current = [];
-        setRoute('home');
-        setAppStage('app');
-        return;
-      }
-
-      if (clockedInToday) {
+      const decision = await resolveTodayAttendance(state, dispatch);
+      if (decision === 'home' || decision === 'home-locked') {
         historyRef.current = [];
         setRoute('home');
         setAppStage('app');
@@ -249,7 +295,7 @@ function AppInner() {
     return (
       <>
         <LoginScreen
-          onSuccess={(user) => {
+          onSuccess={async (user) => {
             if (user) dispatch({ type: 'SET_USER', user });
             historyRef.current = [];
             // Resuming into a clocked-in session must be the SAME agent who
@@ -258,26 +304,22 @@ function AppInner() {
             // clocked in here, letting a brand-new agent skip straight past
             // campaign-select and attendance into someone else's session.
             const sameAgent = !!user?.email && !!state.sessionAgentEmail && user.email === state.sessionAgentEmail;
-            // Same day-boundary check as the splash-resume flow — a clockedIn:true
-            // left over from a previous day (forgot to clock out, or the app was
-            // just killed) must not let a fresh login skip straight past attendance.
-            const todayIso = localDateStr();
-            const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === todayIso;
-            if (sameAgent && isDayLocked(state.dayLockedUntil)) {
-              // This device already knows this same agent finished their day here —
-              // no point sending them back through Attendance just to be told to
-              // log out again. Straight to safe-mode Home, same as splash-resume.
-              setRoute('home');
-              setAppStage('app');
-            } else if (clockedInToday && sameAgent) {
-              // Already clocked in today (e.g. this agent logged out mid-day without
-              // actually clocking out) — don't make them clock in again just to log
-              // back in, go straight to the app like the splash-resume flow does.
+            if (!sameAgent) dispatch({ type: 'RESET_AGENT_SESSION' });
+
+            // A different agent's local state no longer applies (just reset above,
+            // but that won't be reflected in `state` until next render) — pass an
+            // equivalent fresh view in so resolveTodayAttendance correctly falls
+            // through to asking the backend for THIS agent, instead of reading the
+            // stale pre-reset closure value.
+            const effectiveState = sameAgent
+              ? state
+              : { attendanceStatus: { clockedIn: false }, dayLockedUntil: null, user: { email: user?.email || '' } };
+
+            const decision = await resolveTodayAttendance(effectiveState, dispatch);
+            if (decision === 'home' || decision === 'home-locked') {
               setRoute('home');
               setAppStage('app');
             } else {
-              if (!sameAgent) dispatch({ type: 'RESET_AGENT_SESSION' });
-              else if (state.attendanceStatus.clockedIn) dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
               setAppStage('campaignSelect');
             }
           }}
