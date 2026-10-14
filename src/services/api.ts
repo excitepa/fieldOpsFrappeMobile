@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { File } from 'expo-file-system';
 import NetInfo from '@react-native-community/netinfo';
 import {
   getBaseUrl,
@@ -97,8 +98,29 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
       clearTimeout(timeoutId);
     }
   } catch (err: any) {
-    const isTimeout = err?.name === 'AbortError';
-    console.log('[FieldOps API]', method, url, isTimeout ? '-> TIMEOUT' : '-> NETWORK ERROR', err?.message || err);
+    // Read from our own signal rather than err.name: Expo's fetch rejects an
+    // aborted request with a plain FetchError, never an AbortError.
+    const isTimeout = controller.signal.aborted;
+    // Expo's fetch (the global fetch since Expo 57) wraps every failure of the
+    // request itself in a FetchError ("fetch failed: ..."); React Native's
+    // fetch rejects with "Network request failed". Anything else was thrown
+    // while the request was still being built on the device (e.g. an
+    // unsupported multipart part), so nothing was sent — reporting that as
+    // "check your connection", or queueing it as an offline draft, hides a
+    // problem that would fail the same way on every retry.
+    const isConnectionFailure =
+      isTimeout ||
+      String(err?.message ?? '').startsWith('fetch failed') ||
+      (err instanceof TypeError && err.message === 'Network request failed');
+    console.log(
+      '[FieldOps API]', method, url,
+      isTimeout ? '-> TIMEOUT' : isConnectionFailure ? '-> NETWORK ERROR' : '-> REQUEST NOT SENT',
+      err?.message || err,
+    );
+
+    if (!isConnectionFailure) {
+      throw new Error(`The request could not be sent from this device: ${err?.message || err}`);
+    }
 
     // A failed/aborted fetch does NOT by itself mean the device is offline —
     // check real connectivity before deciding which message is actually true.
@@ -756,19 +778,20 @@ export interface CreateOutletPayload {
 }
 
 /**
- * Builds the multipart file part for an outlet photo. The name is taken from the
- * real file (minus any query string, which breaks the multipart part name) and
- * the mime type from its actual extension rather than being hardcoded to jpeg.
+ * Builds the multipart file part for an outlet photo. Since Expo 57 the global
+ * fetch is Expo's own, which only accepts strings and Blob-like parts — React
+ * Native's `{ uri, name, type }` descriptor made it throw "Unsupported
+ * FormDataPart implementation" before anything was sent, so every outlet photo
+ * upload failed. An expo-file-system File is Blob-like: fetch reads its bytes
+ * and takes the part's filename and mime type from the real file. Any query
+ * string is dropped since it isn't part of the file path.
  */
 const buildPhotoPart = (photoUri: string) => {
-  const cleanUri = photoUri.split('?')[0];
-  const name = cleanUri.split('/').pop() || 'outlet.jpg';
-  const ext = (name.split('.').pop() || 'jpg').toLowerCase();
-  const type = ext === 'png' ? 'image/png'
-    : ext === 'heic' || ext === 'heif' ? 'image/heic'
-    : ext === 'webp' ? 'image/webp'
-    : 'image/jpeg';
-  return { uri: photoUri, name, type } as any;
+  const file = new File(photoUri.split('?')[0]);
+  if (!file.exists) {
+    throw new Error('The photo file is no longer on this device. Please retake the photo and try again.');
+  }
+  return file;
 };
 
 /**

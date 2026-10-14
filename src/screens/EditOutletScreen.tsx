@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -19,10 +19,12 @@ import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { OptionPickerSheet } from '../components/OptionPickerSheet';
+import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
 import { updateOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
 import { parseGps } from '../utils/geo';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { buildStampLines, burnStampIntoPhoto, getStampLocation, keepPhotoForDraft } from '../utils/photoStamp';
 import { RouteName, Outlet, OutletDraft } from '../types';
 
 interface EditOutletScreenProps {
@@ -78,6 +80,12 @@ const theme = useTheme();  const styles = createStyles(theme);
   // separately below, so nothing here ever re-submits a photo that's already
   // on the server.
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [photoTakenAt, setPhotoTakenAt] = useState<Date | null>(null);
+  const [photoAspect, setPhotoAspect] = useState(3 / 4);
+  // Where the new photo was taken, for its watermark only — deliberately kept
+  // apart from `coords`, so taking a photo never moves the outlet's saved location.
+  const [photoLocation, setPhotoLocation] = useState<Awaited<ReturnType<typeof getStampLocation>>>(null);
+  const photoViewRef = useRef<View>(null);
 
   const handleTakePhoto = async () => {
     try {
@@ -93,7 +101,12 @@ const theme = useTheme();  const styles = createStyles(theme);
         quality: 0.7,
       });
       if (!result.canceled && result.assets?.[0]?.uri) {
-        setPhotoUri(result.assets[0].uri);
+        const asset = result.assets[0];
+        setPhotoUri(asset.uri);
+        setPhotoTakenAt(new Date());
+        if (asset.width > 0 && asset.height > 0) setPhotoAspect(asset.width / asset.height);
+        setPhotoLocation(null);
+        getStampLocation().then(setPhotoLocation);
       }
     } catch (e) {
       Alert.alert('Camera Error', 'Could not open the camera. Please try again.');
@@ -126,6 +139,9 @@ const theme = useTheme();  const styles = createStyles(theme);
     }
 
     setSubmitting(true);
+    // The watermarked snapshot, not the raw camera file, is what gets uploaded
+    // (or kept for an offline draft) — same as the attendance selfie.
+    const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
     try {
       await updateOutlet(outlet.id, {
         name: outletName.trim(),
@@ -136,14 +152,14 @@ const theme = useTheme();  const styles = createStyles(theme);
         ownerName: ownerName.trim() || undefined,
         ownerPhone: ownerPhone.trim() || undefined,
         notes: notes.trim() || undefined,
-        photoUri: photoUri || undefined,
+        photoUri: uploadPhotoUri || undefined,
         latitude: coords?.lat,
         longitude: coords?.lng,
       });
 
       const updatedOutlet: Outlet = {
         ...outlet,
-        photoUri: photoUri || outlet.photoUri,
+        photoUri: uploadPhotoUri || outlet.photoUri,
         name: outletName.trim(),
         type: outletType,
         category: subChannel || undefined,
@@ -164,9 +180,10 @@ const theme = useTheme();  const styles = createStyles(theme);
         // locally (so it shows right away, same as the optimistic update on
         // success) plus a queued draft to actually push once back online,
         // instead of just losing the changes.
+        const draftPhotoUri = uploadPhotoUri ? keepPhotoForDraft(uploadPhotoUri) : undefined;
         const updatedOutlet: Outlet = {
           ...outlet,
-          photoUri: photoUri || outlet.photoUri,
+          photoUri: draftPhotoUri || outlet.photoUri,
           name: outletName.trim(),
           type: outletType,
           category: subChannel || undefined,
@@ -190,7 +207,7 @@ const theme = useTheme();  const styles = createStyles(theme);
           ownerName: ownerName.trim() || undefined,
           ownerPhone: ownerPhone.trim() || undefined,
           notes: notes.trim() || undefined,
-          photoUri: photoUri || undefined,
+          photoUri: draftPhotoUri,
           latitude: coords?.lat,
           longitude: coords?.lng,
           createdAt: new Date().toISOString(),
@@ -240,8 +257,15 @@ const theme = useTheme();  const styles = createStyles(theme);
             {/* This button used to have no onPress at all, so an outlet whose
                 photo failed to upload during onboarding could never get one. */}
             <Pressable onPress={handleTakePhoto} style={styles.photoBox}>
-              {photoUri || outlet.photoUri ? (
-                <Image source={{ uri: (photoUri || outlet.photoUri) as string }} style={styles.photoPreview} />
+              {photoUri ? (
+                <StampedPhoto
+                  ref={photoViewRef}
+                  uri={photoUri}
+                  aspectRatio={photoAspect}
+                  lines={buildStampLines(photoTakenAt, photoLocation?.address ?? '', photoLocation?.coords ?? null)}
+                />
+              ) : outlet.photoUri ? (
+                <Image source={{ uri: outlet.photoUri }} style={styles.photoPreview} />
               ) : (
                 <View style={styles.captureRow}>
                   <View style={styles.captureIconBox}>
