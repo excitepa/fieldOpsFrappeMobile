@@ -1,58 +1,58 @@
 {
-  "expo": {
-    "name": "FieldOps",
-    "slug": "frundles",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "plugins": [
-      [
-        "expo-image-picker",
-        {
-          "cameraPermission": "Allow FieldOps to capture attendance and survey evidence.",
-          "microphonePermission": false
-        }
-      ],
-      [
-        "expo-location",
-        {
-          "locationWhenInUsePermission": "Allow FieldOps to capture your location for field activities."
-        }
-      ],
-      "expo-font",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/splash-icon.png",
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
-        }
-      ]
-    ],
-    "ios": {
-      "supportsTablet": true
-    },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "predictiveBackGestureEnabled": false,
-      "permissions": [
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
-      ],
-      "package": "com.kenephil.main"
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "7745bc07-cb41-44b9-9eaa-8ce13e9a2e3e"
-      }
-    },
-    "owner": "mrfrundless-team"
-  }
+	"expo": {
+		"name": "FieldOps",
+		"slug": "fieldops",
+		"version": "1.0.0",
+		"orientation": "portrait",
+		"icon": "./assets/icon.png",
+		"userInterfaceStyle": "light",
+		"plugins": [
+			[
+				"expo-image-picker",
+				{
+					"cameraPermission": "Allow FieldOps to capture attendance and survey evidence.",
+					"microphonePermission": false
+				}
+			],
+			[
+				"expo-location",
+				{
+					"locationWhenInUsePermission": "Allow FieldOps to capture your location for field activities."
+				}
+			],
+			"expo-font",
+			[
+				"expo-splash-screen",
+				{
+					"image": "./assets/splash-icon.png",
+					"resizeMode": "contain",
+					"backgroundColor": "#ffffff"
+				}
+			]
+		],
+		"ios": {
+			"supportsTablet": true
+		},
+		"android": {
+			"adaptiveIcon": {
+				"foregroundImage": "./assets/adaptive-icon.png",
+				"backgroundColor": "#ffffff"
+			},
+			"predictiveBackGestureEnabled": false,
+			"permissions": [
+				"android.permission.ACCESS_COARSE_LOCATION",
+				"android.permission.ACCESS_FINE_LOCATION"
+			],
+			"package": "com.kenephil.main"
+		},
+		"web": {
+			"favicon": "./assets/favicon.png"
+		},
+		"extra": {
+			"eas": {
+				"projectId": "7745bc07-cb41-44b9-9eaa-8ce13e9a2e3e"
+			}
+		},
+		"owner": "excitepa"
+	}
 }
