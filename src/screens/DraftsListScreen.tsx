@@ -8,7 +8,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { createLead, getOutlets } from '../services/api';
-import { pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts } from '../utils/offlineSync';
+import { pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, summariseSyncErrors } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
 import { RouteName, LeadDraft } from '../types';
 
@@ -42,15 +42,29 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
       if (outlets.synced > 0) {
         // Reconciles optimistic local outlet(s) with their real synced
         // versions rather than leaving temp-id duplicates in the list.
-        const campaignId = state.activeCampaign?.id;
-        if (campaignId) {
-          const fetched = await getOutlets(campaignId);
-          dispatch({ type: 'SET_OUTLETS', outlets: fetched });
+        // Non-essential: a failure here must not surface as an error, the
+        // drafts themselves already went up fine.
+        try {
+          const campaignId = state.activeCampaign?.id;
+          if (campaignId) {
+            const fetched = await getOutlets(campaignId);
+            dispatch({ type: 'SET_OUTLETS', outlets: fetched });
+          }
+        } catch {
+          // Keeps whatever's already local.
         }
       }
       const syncedCount = leads.synced + carts.synced + surveysRes.synced + outlets.synced;
       const stillPending = leads.failed + carts.failed + surveysRes.failed + outlets.failed;
-      Alert.alert('Synchronization Complete', `${syncedCount} item${syncedCount === 1 ? '' : 's'} synced. ${stillPending} item${stillPending === 1 ? '' : 's'} still pending.`);
+      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outlets.errors];
+      // A bare "0 synced, N still pending" gives nobody anything to act on —
+      // show the actual reason each item was rejected.
+      const lines = [`${syncedCount} item${syncedCount === 1 ? '' : 's'} synced. ${stillPending} item${stillPending === 1 ? '' : 's'} still pending.`];
+      if (errors.length > 0) lines.push('', summariseSyncErrors(errors));
+      Alert.alert(
+        stillPending > 0 && syncedCount === 0 ? 'Nothing Could Be Synced' : 'Synchronization Complete',
+        lines.join('\n'),
+      );
     } finally {
       setSyncing(false);
     }

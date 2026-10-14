@@ -1,11 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Pressable,
-  Image,
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,9 +17,11 @@ import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { OptionPickerSheet } from '../components/OptionPickerSheet';
+import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
 import { createOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { buildStampLines, burnStampIntoPhoto, keepPhotoForDraft, streetAddressFromPlace } from '../utils/photoStamp';
 import { RouteName, Outlet, OutletDraft } from '../types';
 
 interface AddOutletScreenProps {
@@ -70,10 +71,17 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsError, setGpsError] = useState('');
   const [gpsTime, setGpsTime] = useState('');
+  // Street-level, for the photo watermark — gpsLocation above is only area + city.
+  const [gpsStreetAddress, setGpsStreetAddress] = useState('');
   const [loadingGps, setLoadingGps] = useState(false);
 
   // Photo
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+  // When the photo was actually taken — the agent usually fills in the form
+  // afterwards, so the watermark shouldn't show the time Save was tapped.
+  const [photoTakenAt, setPhotoTakenAt] = useState<Date | null>(null);
+  const [photoAspect, setPhotoAspect] = useState(3 / 4);
+  const photoViewRef = useRef<View>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -89,6 +97,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       if (status !== 'granted') {
         setGpsError('Location permission denied. Enable it in device settings to tag this outlet.');
         setGpsLocation('');
+        setGpsStreetAddress('');
         setGpsCoords(null);
         return;
       }
@@ -105,6 +114,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       setGpsTime(nowStr);
 
       let placeLabel = '';
+      let streetAddress = '';
       try {
         const places = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
         const place = places?.[0];
@@ -112,11 +122,13 @@ const theme = useTheme();  const styles = createStyles(theme);
           placeLabel = [place.district || place.subregion, place.city || place.region]
             .filter(Boolean)
             .join(', ');
+          streetAddress = streetAddressFromPlace(place);
         }
       } catch (geocodeErr) {
         // Reverse geocoding can fail offline — real coordinates still stand on their own.
       }
 
+      setGpsStreetAddress(streetAddress);
       setGpsLocation(
         placeLabel
           ? `${placeLabel} · ${lat.toFixed(4)}, ${lng.toFixed(4)}`
@@ -125,6 +137,7 @@ const theme = useTheme();  const styles = createStyles(theme);
     } catch (e) {
       setGpsError('Could not read device location. Check GPS/location services and retry.');
       setGpsLocation('');
+      setGpsStreetAddress('');
       setGpsCoords(null);
     } finally {
       setLoadingGps(false);
@@ -135,21 +148,28 @@ const theme = useTheme();  const styles = createStyles(theme);
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
-        // Fallback sample image
-        setPhotoUri('https://images.unsplash.com/photo-1578916171728-46686eac8d58?w=500');
+        // Was silently substituting a random stock photo from the internet as
+        // if it were a real photo of the outlet — a field evidence photo that
+        // was never actually taken must never be faked.
+        Alert.alert('Camera Permission Needed', 'Enable camera access to take a photo of this outlet.');
         return;
       }
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
+        // false, matching the attendance selfie — this is field evidence, not a
+        // photo the agent should be able to crop/alter before it's saved.
+        allowsEditing: false,
         quality: 0.7,
       });
 
       if (!result.canceled && result.assets?.[0]?.uri) {
-        setPhotoUri(result.assets[0].uri);
+        const asset = result.assets[0];
+        setPhotoUri(asset.uri);
+        setPhotoTakenAt(new Date());
+        if (asset.width > 0 && asset.height > 0) setPhotoAspect(asset.width / asset.height);
       }
     } catch (e) {
-      setPhotoUri('https://images.unsplash.com/photo-1578916171728-46686eac8d58?w=500');
+      Alert.alert('Camera Error', 'Could not open the camera. Please try again.');
     }
   };
 
@@ -165,8 +185,11 @@ const theme = useTheme();  const styles = createStyles(theme);
     }
 
     setSubmitting(true);
+    // The watermarked snapshot, not the raw camera file, is what gets uploaded
+    // (or kept for an offline draft) — same as the attendance selfie.
+    const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
     try {
-      const created = await createOutlet(activeCampaignId, {
+      const { outlet: created, photoUploaded, photoError } = await createOutlet(activeCampaignId, {
         name: outletName.trim(),
         type: outletType,
         subChannel: subChannel || undefined,
@@ -174,7 +197,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         phone: phone.trim() || undefined,
         ownerName: ownerName.trim() || undefined,
         ownerPhone: ownerMobile.trim() || undefined,
-        photoUri: photoUri || undefined,
+        photoUri: uploadPhotoUri || undefined,
         latitude: gpsCoords?.lat,
         longitude: gpsCoords?.lng,
       });
@@ -190,6 +213,23 @@ const theme = useTheme();  const styles = createStyles(theme);
 
       dispatch({ type: 'ADD_OUTLET', outlet: newOutlet });
       setSubmitting(false);
+      // The outlet itself is saved either way — only say something if the photo
+      // specifically didn't make it, so the agent knows to re-add it rather
+      // than assuming the whole onboarding failed.
+      if (uploadPhotoUri && !photoUploaded) {
+        // Says *why*, otherwise this is just a dead end the agent can't act on
+        // (and we can't diagnose) — the reason is the whole point of the message.
+        Alert.alert(
+          'Outlet Saved — Photo Not Uploaded',
+          [
+            'The outlet was onboarded successfully, but its photo could not be uploaded.',
+            photoError ? `\nReason: ${photoError}` : '',
+            '\nYou can add the photo by opening this outlet and tapping Edit.',
+          ].join(''),
+          [{ text: 'OK', onPress: () => onNavigate('outlets') }]
+        );
+        return;
+      }
       onNavigate('outlets');
     } catch (e: any) {
       setSubmitting(false);
@@ -199,6 +239,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         // optimistic add on success) plus a queued draft to actually push
         // once back online, instead of just losing the work.
         const draftId = `od_${Date.now()}`;
+        const draftPhotoUri = uploadPhotoUri ? keepPhotoForDraft(uploadPhotoUri) : undefined;
         const optimisticOutlet: Outlet = {
           id: draftId,
           name: outletName.trim(),
@@ -213,7 +254,7 @@ const theme = useTheme();  const styles = createStyles(theme);
           distance: '',
           status: 'pending',
           gps: gpsLocation,
-          photoUri: photoUri || undefined,
+          photoUri: draftPhotoUri,
           campaignId: activeCampaignId,
         };
         const outletDraft: OutletDraft = {
@@ -227,7 +268,7 @@ const theme = useTheme();  const styles = createStyles(theme);
           phone: phone.trim() || undefined,
           ownerName: ownerName.trim() || undefined,
           ownerPhone: ownerMobile.trim() || undefined,
-          photoUri: photoUri || undefined,
+          photoUri: draftPhotoUri,
           latitude: gpsCoords?.lat,
           longitude: gpsCoords?.lng,
           createdAt: new Date().toISOString(),
@@ -262,7 +303,12 @@ const theme = useTheme();  const styles = createStyles(theme);
           {/* Photo */}
           <Pressable onPress={handleTakePhoto} style={styles.photoBox}>
             {photoUri ? (
-              <Image source={{ uri: photoUri }} style={styles.photoPreview} />
+              <StampedPhoto
+                ref={photoViewRef}
+                uri={photoUri}
+                aspectRatio={photoAspect}
+                lines={buildStampLines(photoTakenAt, gpsStreetAddress, gpsCoords)}
+              />
             ) : (
               <View style={styles.captureRow}>
                 <View style={styles.captureIconBox}>
@@ -430,7 +476,6 @@ const createStyles = (theme: any) => StyleSheet.create({
     overflow: 'hidden',
     justifyContent: 'center',
   },
-  photoPreview: { width: '100%', height: 140, resizeMode: 'cover' },
   captureRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.md },
   captureIconBox: { width: 48, height: 48, borderRadius: theme.radius.md, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
   captureTitle: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },

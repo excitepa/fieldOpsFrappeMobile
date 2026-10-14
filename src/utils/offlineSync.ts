@@ -1,13 +1,63 @@
 import {
   createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse,
+  getOutlets, getItems, getMyOrders, getMySales,
   OrderLinePayload,
 } from '../services/api';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey } from '../types';
 
+/**
+ * Refreshes the core server-owned datasets the app caches locally (outlets,
+ * products/stock, orders, sales). Offline-first: each dataset is only replaced
+ * if its own request actually came back — a rejected one leaves the locally
+ * cached copy untouched, so losing connectivity never blanks out data the
+ * agent already had. A genuinely empty success still clears that list, which
+ * is the honest outcome.
+ *
+ * Shared by the Sync screen's manual refresh and the automatic
+ * reconnect refresh in App.tsx, so both behave identically.
+ */
+export async function pullServerData(
+  campaignId: string | undefined,
+  dispatch: (action: any) => void
+): Promise<void> {
+  const [outletsRes, productsRes, ordersRes, salesRes] = await Promise.allSettled([
+    campaignId ? getOutlets(campaignId) : Promise.resolve([]),
+    getItems(),
+    getMyOrders(),
+    getMySales(),
+  ]);
+  if (outletsRes.status === 'fulfilled') dispatch({ type: 'SET_OUTLETS', outlets: outletsRes.value });
+  if (productsRes.status === 'fulfilled') dispatch({ type: 'SET_PRODUCTS', products: productsRes.value });
+  if (ordersRes.status === 'fulfilled') dispatch({ type: 'SET_ORDERS', orders: ordersRes.value });
+  if (salesRes.status === 'fulfilled') dispatch({ type: 'SET_SALES', sales: salesRes.value });
+}
+
 export interface SyncResult {
   synced: number;
   failed: number;
+  /** Why each item failed, so "N still pending" can actually say what's wrong
+   *  instead of leaving the agent (and us) with a bare count to guess from. */
+  errors: string[];
 }
+
+/** Records a failed push with the real reason, and logs it for a device log trail. */
+const noteFailure = (errors: string[], label: string, e: any) => {
+  const reason = e?.message || String(e) || 'Unknown error';
+  console.log('[offlineSync] failed to push', label, '->', reason);
+  errors.push(`${label}: ${reason}`);
+};
+
+/** Collapses repeated reasons so the alert stays readable. */
+export const summariseSyncErrors = (errors: string[], limit = 3): string => {
+  const seen = new Map<string, number>();
+  for (const e of errors) seen.set(e, (seen.get(e) || 0) + 1);
+  const lines = Array.from(seen.entries())
+    .slice(0, limit)
+    .map(([msg, n]) => (n > 1 ? `• ${msg} (x${n})` : `• ${msg}`));
+  const extra = seen.size - lines.length;
+  if (extra > 0) lines.push(`• …and ${extra} more`);
+  return lines.join('\n');
+};
 
 /**
  * Pushes every queued lead draft to the server, deleting each one locally as
@@ -21,6 +71,7 @@ export async function pushLeadDrafts(
 ): Promise<SyncResult> {
   let synced = 0;
   let failed = 0;
+  const errors: string[] = [];
   for (const draft of drafts) {
     try {
       await createLead(draft.campaignId, {
@@ -35,11 +86,12 @@ export async function pushLeadDrafts(
       });
       dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id });
       synced++;
-    } catch {
+    } catch (e) {
+      noteFailure(errors, `Lead "${draft.name}"`, e);
       failed++;
     }
   }
-  return { synced, failed };
+  return { synced, failed, errors };
 }
 
 /**
@@ -54,6 +106,7 @@ export async function pushCartDrafts(
 ): Promise<SyncResult> {
   let synced = 0;
   let failed = 0;
+  const errors: string[] = [];
   for (const draft of drafts) {
     try {
       const campaignId = draft.campaignId || fallbackCampaignId;
@@ -71,11 +124,12 @@ export async function pushCartDrafts(
       }
       dispatch({ type: 'DELETE_DRAFT', draftId: draft.id });
       synced++;
-    } catch {
+    } catch (e) {
+      noteFailure(errors, `${draft.mode === 'sale' ? 'Sale' : 'Order'} at ${draft.outletName}`, e);
       failed++;
     }
   }
-  return { synced, failed };
+  return { synced, failed, errors };
 }
 
 /** Pushes every locally-queued draft survey (isDraft: true) to the server. */
@@ -85,9 +139,10 @@ export async function pushSurveyDrafts(
 ): Promise<SyncResult> {
   let synced = 0;
   let failed = 0;
+  const errors: string[] = [];
   for (const draft of drafts) {
     if (!draft.surveyConfigId) {
-      // No known survey config to submit against — can't resubmit blind.
+      noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, new Error('saved without a survey id, cannot be resubmitted'));
       failed++;
       continue;
     }
@@ -101,11 +156,12 @@ export async function pushSurveyDrafts(
       );
       dispatch({ type: 'MARK_SURVEY_SYNCED', surveyId: draft.id });
       synced++;
-    } catch {
+    } catch (e) {
+      noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, e);
       failed++;
     }
   }
-  return { synced, failed };
+  return { synced, failed, errors };
 }
 
 /** Pushes every queued outlet create/edit draft to the server. */
@@ -115,6 +171,7 @@ export async function pushOutletDrafts(
 ): Promise<SyncResult> {
   let synced = 0;
   let failed = 0;
+  const errors: string[] = [];
   for (const draft of drafts) {
     try {
       if (draft.mode === 'create') {
@@ -140,18 +197,23 @@ export async function pushOutletDrafts(
           ownerName: draft.ownerName,
           ownerPhone: draft.ownerPhone,
           notes: draft.notes,
+          // Was dropped here, so a photo added to an outlet while offline was
+          // queued locally and then never actually uploaded on sync.
+          photoUri: draft.photoUri,
           latitude: draft.latitude,
           longitude: draft.longitude,
         });
       } else {
+        noteFailure(errors, `Outlet "${draft.name}"`, new Error('edit draft is missing its outlet id'));
         failed++;
         continue;
       }
       dispatch({ type: 'DELETE_OUTLET_DRAFT', draftId: draft.id });
       synced++;
-    } catch {
+    } catch (e) {
+      noteFailure(errors, `Outlet "${draft.name}"`, e);
       failed++;
     }
   }
-  return { synced, failed };
+  return { synced, failed, errors };
 }

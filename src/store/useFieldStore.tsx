@@ -155,14 +155,22 @@ function reducer(state: FieldState, action: Action): FieldState {
         outlets: [],
         sales: [],
         orders: [],
-        surveys: [],
+        // Only the previous agent's real, already-synced survey history is
+        // cleared here — a draft (isDraft: true, not yet pushed to the server)
+        // is real unsynced field work and must never be silently deleted just
+        // because a different agent is now logged in on this device. It stays
+        // queued and still shows up on the Sync/Drafts pages regardless of who's
+        // currently signed in, until it actually reaches the server.
+        surveys: state.surveys.filter((s) => s.isDraft),
         skipRecords: [],
         products: [],
         movements: [],
-        drafts: [],
+        // drafts/leadDrafts/outletDrafts are deliberately NOT cleared here for
+        // the same reason — see the surveys comment above. This was previously
+        // wiping an agent's unsynced sale/order/lead/outlet drafts the instant a
+        // different agent logged in on a shared device, which is real data loss,
+        // not a privacy/isolation concern worth that cost.
         photoCaptures: [],
-        leadDrafts: [],
-        outletDrafts: [],
         leadSurveyResponses: [],
       };
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,9 +7,11 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
+import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
@@ -17,10 +19,12 @@ import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { OptionPickerSheet } from '../components/OptionPickerSheet';
+import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
 import { updateOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
 import { parseGps } from '../utils/geo';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { buildStampLines, burnStampIntoPhoto, getStampLocation, keepPhotoForDraft } from '../utils/photoStamp';
 import { RouteName, Outlet, OutletDraft } from '../types';
 
 interface EditOutletScreenProps {
@@ -72,6 +76,42 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [coords, setCoords] = useState(parseGps(outlet?.gps));
   const [justUpdated, setJustUpdated] = useState(false);
   const [capturingLocation, setCapturingLocation] = useState(false);
+  // Only a photo taken in this session — the outlet's existing image is shown
+  // separately below, so nothing here ever re-submits a photo that's already
+  // on the server.
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [photoTakenAt, setPhotoTakenAt] = useState<Date | null>(null);
+  const [photoAspect, setPhotoAspect] = useState(3 / 4);
+  // Where the new photo was taken, for its watermark only — deliberately kept
+  // apart from `coords`, so taking a photo never moves the outlet's saved location.
+  const [photoLocation, setPhotoLocation] = useState<Awaited<ReturnType<typeof getStampLocation>>>(null);
+  const photoViewRef = useRef<View>(null);
+
+  const handleTakePhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Camera Permission Needed', 'Enable camera access to take a photo of this outlet.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        // Field evidence — not something the agent should crop/alter first.
+        allowsEditing: false,
+        quality: 0.7,
+      });
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        const asset = result.assets[0];
+        setPhotoUri(asset.uri);
+        setPhotoTakenAt(new Date());
+        if (asset.width > 0 && asset.height > 0) setPhotoAspect(asset.width / asset.height);
+        setPhotoLocation(null);
+        getStampLocation().then(setPhotoLocation);
+      }
+    } catch (e) {
+      Alert.alert('Camera Error', 'Could not open the camera. Please try again.');
+    }
+  };
 
   const handleUpdateLocation = async () => {
     setCapturingLocation(true);
@@ -99,6 +139,9 @@ const theme = useTheme();  const styles = createStyles(theme);
     }
 
     setSubmitting(true);
+    // The watermarked snapshot, not the raw camera file, is what gets uploaded
+    // (or kept for an offline draft) — same as the attendance selfie.
+    const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
     try {
       await updateOutlet(outlet.id, {
         name: outletName.trim(),
@@ -109,12 +152,14 @@ const theme = useTheme();  const styles = createStyles(theme);
         ownerName: ownerName.trim() || undefined,
         ownerPhone: ownerPhone.trim() || undefined,
         notes: notes.trim() || undefined,
+        photoUri: uploadPhotoUri || undefined,
         latitude: coords?.lat,
         longitude: coords?.lng,
       });
 
       const updatedOutlet: Outlet = {
         ...outlet,
+        photoUri: uploadPhotoUri || outlet.photoUri,
         name: outletName.trim(),
         type: outletType,
         category: subChannel || undefined,
@@ -135,8 +180,10 @@ const theme = useTheme();  const styles = createStyles(theme);
         // locally (so it shows right away, same as the optimistic update on
         // success) plus a queued draft to actually push once back online,
         // instead of just losing the changes.
+        const draftPhotoUri = uploadPhotoUri ? keepPhotoForDraft(uploadPhotoUri) : undefined;
         const updatedOutlet: Outlet = {
           ...outlet,
+          photoUri: draftPhotoUri || outlet.photoUri,
           name: outletName.trim(),
           type: outletType,
           category: subChannel || undefined,
@@ -160,6 +207,7 @@ const theme = useTheme();  const styles = createStyles(theme);
           ownerName: ownerName.trim() || undefined,
           ownerPhone: ownerPhone.trim() || undefined,
           notes: notes.trim() || undefined,
+          photoUri: draftPhotoUri,
           latitude: coords?.lat,
           longitude: coords?.lng,
           createdAt: new Date().toISOString(),
@@ -206,15 +254,33 @@ const theme = useTheme();  const styles = createStyles(theme);
         <Card style={styles.sectionCard}>
           <View style={styles.imageRow}>
             <Text style={styles.label}>Image</Text>
-            <Pressable style={styles.captureRow}>
-              <View style={styles.captureIconBox}>
-                <Icon name="camera" size={20} color={theme.colors.navy} />
-              </View>
-              <View style={styles.flex1}>
-                <Text style={styles.captureTitle}>Tap to capture</Text>
-                <Text style={styles.captureSub}>Compressed automatically</Text>
-              </View>
+            {/* This button used to have no onPress at all, so an outlet whose
+                photo failed to upload during onboarding could never get one. */}
+            <Pressable onPress={handleTakePhoto} style={styles.photoBox}>
+              {photoUri ? (
+                <StampedPhoto
+                  ref={photoViewRef}
+                  uri={photoUri}
+                  aspectRatio={photoAspect}
+                  lines={buildStampLines(photoTakenAt, photoLocation?.address ?? '', photoLocation?.coords ?? null)}
+                />
+              ) : outlet.photoUri ? (
+                <Image source={{ uri: outlet.photoUri }} style={styles.photoPreview} />
+              ) : (
+                <View style={styles.captureRow}>
+                  <View style={styles.captureIconBox}>
+                    <Icon name="camera" size={20} color={theme.colors.navy} />
+                  </View>
+                  <View style={styles.flex1}>
+                    <Text style={styles.captureTitle}>Tap to capture</Text>
+                    <Text style={styles.captureSub}>Compressed automatically</Text>
+                  </View>
+                </View>
+              )}
             </Pressable>
+            {photoUri && (
+              <Text style={styles.captureSub}>New photo ready — tap Save to upload it.</Text>
+            )}
           </View>
 
           <View style={styles.fieldGroup}>
@@ -335,6 +401,12 @@ const createStyles = (theme: any) => StyleSheet.create({
   flex1: { flex: 1 },
   sectionCard: { gap: theme.spacing.md },
   imageRow: { gap: 6 },
+  photoBox: {
+    backgroundColor: theme.colors.fieldFill,
+    borderRadius: theme.radius.md,
+    overflow: 'hidden',
+  },
+  photoPreview: { width: '100%', height: 140, resizeMode: 'cover' },
   captureRow: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
   },

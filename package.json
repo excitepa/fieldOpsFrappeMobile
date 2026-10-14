@@ -13,6 +13,7 @@
     "@expo-google-fonts/source-sans-3": "^0.4.1",
     "@expo-google-fonts/space-grotesk": "^0.4.1",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/netinfo": "^11.4.1",
     "expo": "^57.0.20",
     "expo-file-system": "~57.0.6",
     "expo-font": "~57.0.3",

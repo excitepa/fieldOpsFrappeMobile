@@ -149,14 +149,28 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
     // the already-rendered preview (image + watermark) rather than just trusting
     // the raw camera file, which on its own carries no visible proof of when/where
     // it was taken and could otherwise be swapped for an old/borrowed photo.
+    //
+    // Reported as inconsistent ("sometimes shows, sometimes doesn't") — the most
+    // likely cause is a timing race: this can fire before the native view has
+    // fully committed/painted the watermark overlay that was just added to the
+    // tree, especially on slower devices, producing a capture of a stale or
+    // not-yet-complete frame. A short settle delay plus one retry on failure
+    // (instead of silently giving up after a single attempt) hedges against
+    // that without blocking the clock-in over it.
     let uploadUri = photoUri;
-    try {
-      if (selfieViewRef.current) {
-        uploadUri = await captureRef(selfieViewRef, { format: 'jpg', quality: 0.85 });
+    if (selfieViewRef.current) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          uploadUri = await captureRef(selfieViewRef, { format: 'jpg', quality: 0.85 });
+          break;
+        } catch (e) {
+          console.log('[Attendance] watermark capture failed, attempt', attempt + 1, e);
+          if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
+          // Second failure: non-fatal — fall back to the unwatermarked photo
+          // rather than blocking the whole clock-in over a snapshot failure.
+        }
       }
-    } catch (e) {
-      // Non-fatal — fall back to the unwatermarked photo rather than blocking
-      // the whole clock-in over a snapshot failure.
     }
 
     let alreadyCheckedIn = false;
@@ -248,7 +262,8 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
                   swapped for one taken somewhere/sometime else. */}
               <View style={styles.selfieWatermark}>
                 <Text style={styles.selfieWatermarkText} numberOfLines={1}>{dateTimeText}</Text>
-                <Text style={styles.selfieWatermarkText} numberOfLines={1}>{placeLabel || coordsText}</Text>
+                {!!placeLabel && <Text style={styles.selfieWatermarkText} numberOfLines={1}>{placeLabel}</Text>}
+                {!!coordsText && <Text style={styles.selfieWatermarkText} numberOfLines={1}>GPS {coordsText}</Text>}
               </View>
             </View>
           ) : (

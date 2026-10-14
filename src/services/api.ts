@@ -1,4 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { File } from 'expo-file-system';
+import NetInfo from '@react-native-community/netinfo';
 import {
   getBaseUrl,
   getAccessToken,
@@ -55,6 +57,18 @@ export interface LoginResult {
 }
 
 /** Attaches the stored bearer token and tenant base URL to a request against a protected `/agent/*` or `/api/*` route. */
+// No timeout was ever configured on these requests, so a fetch() call just hung
+// on whatever the native HTTP stack's own default is (which can be very long) —
+// and when it finally did fail, the catch below unconditionally said "check your
+// connection," even when the device was genuinely online and the real cause was
+// a slow/unresponsive server (e.g. a free-tier backend waking up from sleep) or
+// a one-off dropped connection. That's confirmed as a real, misleading report —
+// "it says no network when there is network." Image uploads legitimately take
+// longer on a real mobile connection than a plain JSON call, so they get a
+// longer budget before being treated as stuck rather than just slow.
+const JSON_TIMEOUT_MS = 25000;
+const UPLOAD_TIMEOUT_MS = 60000;
+
 const authFetch = async (path: string, options: RequestInit = {}): Promise<any> => {
   const [token, tenantId] = await Promise.all([getAccessToken(), getTenantId()]);
   if (!token || !tenantId) {
@@ -63,21 +77,68 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
 
   const url = `${getBaseUrl(tenantId)}${path}`;
   const method = options.method || 'GET';
-  console.log('[FieldOps API]', method, url, options.body instanceof FormData ? '(form-data)' : options.body ?? '');
+  const isUpload = options.body instanceof FormData;
+  console.log('[FieldOps API]', method, url, isUpload ? '(form-data)' : options.body ?? '');
 
   let response: Response;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), isUpload ? UPLOAD_TIMEOUT_MS : JSON_TIMEOUT_MS);
   try {
-    response = await fetch(url, {
-      ...options,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-        ...(options.headers || {}),
-      },
-    });
+    try {
+      response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          ...(options.headers || {}),
+        },
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   } catch (err: any) {
-    console.log('[FieldOps API]', method, url, '-> NETWORK ERROR', err?.message || err);
-    throw new NetworkError('Could not reach the server. Check your connection and try again.');
+    // Read from our own signal rather than err.name: Expo's fetch rejects an
+    // aborted request with a plain FetchError, never an AbortError.
+    const isTimeout = controller.signal.aborted;
+    // Expo's fetch (the global fetch since Expo 57) wraps every failure of the
+    // request itself in a FetchError ("fetch failed: ..."); React Native's
+    // fetch rejects with "Network request failed". Anything else was thrown
+    // while the request was still being built on the device (e.g. an
+    // unsupported multipart part), so nothing was sent — reporting that as
+    // "check your connection", or queueing it as an offline draft, hides a
+    // problem that would fail the same way on every retry.
+    const isConnectionFailure =
+      isTimeout ||
+      String(err?.message ?? '').startsWith('fetch failed') ||
+      (err instanceof TypeError && err.message === 'Network request failed');
+    console.log(
+      '[FieldOps API]', method, url,
+      isTimeout ? '-> TIMEOUT' : isConnectionFailure ? '-> NETWORK ERROR' : '-> REQUEST NOT SENT',
+      err?.message || err,
+    );
+
+    if (!isConnectionFailure) {
+      throw new Error(`The request could not be sent from this device: ${err?.message || err}`);
+    }
+
+    // A failed/aborted fetch does NOT by itself mean the device is offline —
+    // check real connectivity before deciding which message is actually true.
+    let reallyOffline = true;
+    try {
+      const netState = await NetInfo.fetch();
+      reallyOffline = netState.isConnected === false || netState.isInternetReachable === false;
+    } catch {
+      // Connectivity check itself failed — fall back to the safer assumption
+      // (offline) rather than claiming a connectivity state we can't verify.
+    }
+
+    const message = reallyOffline
+      ? 'Could not reach the server. Check your connection and try again.'
+      : isTimeout
+        ? 'The server took too long to respond — it may be temporarily slow or waking up. Please try again.'
+        : "Could not reach the server, even though this device appears to be online. The server may be temporarily unavailable — please try again.";
+    throw new NetworkError(message);
   }
 
   const rawText = await response.text();
@@ -328,7 +389,7 @@ export const getCampaignDetails = async (
       endDate: raw?.end_date || undefined,
     };
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return null;
   }
 };
@@ -344,7 +405,7 @@ export const getCampaignInventory = async (campaignId: string): Promise<Product[
     const list = Array.isArray(raw) ? raw : [];
     return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -458,7 +519,7 @@ export const getAttendanceStats = async (): Promise<AttendanceStats | null> => {
       isCheckedOutToday: !!(typeof today === 'object' && today?.is_checked_out),
     };
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return null;
   }
 };
@@ -530,7 +591,7 @@ export const getLeads = async (campaignId: string): Promise<Lead[]> => {
       : list;
     return scoped.map(mapLead);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -656,7 +717,7 @@ export const getOutlets = async (campaignId: string): Promise<Outlet[]> => {
     const baseUrl = getBaseUrl(tenantId || '');
     return list.map((o: any) => mapOutlet(o, campaignId, baseUrl));
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -680,7 +741,7 @@ export const getOutletChannels = async (): Promise<string[]> => {
     const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_channels');
     return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -691,7 +752,7 @@ export const getOutletSubChannels = async (): Promise<string[]> => {
     const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_sub_channels');
     return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -717,12 +778,60 @@ export interface CreateOutletPayload {
 }
 
 /**
- * Submit a new outlet via the RPC contract (`submit_outlet`). When a photo was captured,
- * the request goes as multipart form-data (per the backend's images[]/photo/image upload
- * support) instead of JSON — fetch sets the multipart boundary header automatically as
- * long as we don't set Content-Type ourselves.
+ * Builds the multipart file part for an outlet photo. Since Expo 57 the global
+ * fetch is Expo's own, which only accepts strings and Blob-like parts — React
+ * Native's `{ uri, name, type }` descriptor made it throw "Unsupported
+ * FormDataPart implementation" before anything was sent, so every outlet photo
+ * upload failed. An expo-file-system File is Blob-like: fetch reads its bytes
+ * and takes the part's filename and mime type from the real file. Any query
+ * string is dropped since it isn't part of the file path.
  */
-export const createOutlet = async (campaignId: string, payload: CreateOutletPayload): Promise<Outlet> => {
+const buildPhotoPart = (photoUri: string) => {
+  const file = new File(photoUri.split('?')[0]);
+  if (!file.exists) {
+    throw new Error('The photo file is no longer on this device. Please retake the photo and try again.');
+  }
+  return file;
+};
+
+/**
+ * Attaches a photo to an outlet that already exists, via `update_outlet`'s
+ * multipart image support (confirmed live: it accepts the same
+ * images[]/images/image/photo fields `submit_outlet` does and attaches them
+ * publicly to the Outlet record).
+ */
+export const uploadOutletPhoto = async (outletId: string, photoUri: string): Promise<void> => {
+  const form = new FormData();
+  form.append('outlet', outletId);
+  form.append('outlet_id', outletId);
+  form.append('image', buildPhotoPart(photoUri));
+  await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
+    method: 'POST',
+    body: form,
+  });
+};
+
+/**
+ * Submit a new outlet via the RPC contract (`submit_outlet`).
+ *
+ * The outlet record itself is ALWAYS created with a plain JSON request, never
+ * multipart — a photo is then attached as a separate follow-up call. Doing both
+ * in one multipart request meant any problem uploading the image (a file URI the
+ * OS no longer serves, a slow/stalled upload, a timeout) failed the whole
+ * request, so the outlet was never onboarded at all — reported as "onboarding
+ * an outlet with an image isn't working," while the same outlet without a photo
+ * saved fine. Both the JSON create and the multipart attach are confirmed
+ * working server-side; splitting them means the worst case is now a missing
+ * photo on a real outlet, instead of losing the outlet entirely.
+ *
+ * `photoUploaded` tells the caller which of those happened so it can say so,
+ * and `photoError` carries the actual reason it didn't — a bare "photo not
+ * uploaded" with the reason thrown away leaves nobody anything to act on.
+ */
+export const createOutlet = async (
+  campaignId: string,
+  payload: CreateOutletPayload
+): Promise<{ outlet: Outlet; photoUploaded: boolean; photoError?: string }> => {
   const fields: Record<string, any> = {
     outlet_name: payload.name,
     outlet_type: payload.type,
@@ -735,31 +844,37 @@ export const createOutlet = async (campaignId: string, payload: CreateOutletPayl
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
 
-  let data: any;
-  if (payload.photoUri) {
-    const form = new FormData();
-    Object.entries(fields).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) form.append(key, String(value));
-    });
-    const filename = payload.photoUri.split('/').pop() || 'outlet.jpg';
-    form.append('image', { uri: payload.photoUri, name: filename, type: 'image/jpeg' } as any);
-    data = await authFetch('/api/method/fieldops.api.mobile_api.submit_outlet', {
-      method: 'POST',
-      body: form,
-    });
-  } else {
-    data = await authFetch('/api/method/fieldops.api.mobile_api.submit_outlet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fields),
-    });
-  }
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_outlet', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
 
   const result = data?.message ?? data?.data ?? data;
   const outletId = result?.outlet_id || result?.name || result?.id;
 
+  let photoUploaded = false;
+  let photoError: string | undefined;
+  if (payload.photoUri && outletId) {
+    // Attempted twice: the attach is a separate request from the create that
+    // already succeeded, so one dropped or stalled upload on a field
+    // connection shouldn't be the difference between the outlet having its
+    // photo and not. Both failures are still non-fatal — the outlet is real
+    // either way — but the reason is kept instead of discarded.
+    for (let attempt = 1; attempt <= 2 && !photoUploaded; attempt++) {
+      try {
+        await uploadOutletPhoto(String(outletId), payload.photoUri);
+        photoUploaded = true;
+        photoError = undefined;
+      } catch (e: any) {
+        photoError = e?.message || 'The photo upload failed for an unknown reason.';
+        console.log(`[createOutlet] outlet ${outletId} saved but photo upload failed (attempt ${attempt}/2) ->`, photoError, e);
+      }
+    }
+  }
+
   // Return a rich Outlet object immediately so the UI can update optimistically
-  return mapOutlet({
+  const outlet = mapOutlet({
     name: outletId,
     outlet_name: payload.name,
     outlet_type: payload.type,
@@ -775,6 +890,7 @@ export const createOutlet = async (campaignId: string, payload: CreateOutletPayl
     // a local device URI with its own scheme (file://, content://, ...), which
     // resolveImageUrl passes through untouched regardless of baseUrl.
   }, campaignId, '');
+  return { outlet, photoUploaded, photoError };
 };
 
 export interface UpdateOutletPayload {
@@ -823,8 +939,10 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
     Object.entries(fields).forEach(([key, value]) => {
       if (value !== undefined && value !== null) form.append(key, String(value));
     });
-    const filename = payload.photoUri.split('/').pop() || 'outlet.jpg';
-    form.append('image', { uri: payload.photoUri, name: filename, type: 'image/jpeg' } as any);
+    // Same part builder the onboarding upload uses, so a `?query`-suffixed or
+    // non-jpeg camera URI is handled identically here instead of being sent
+    // with a broken part name and a hardcoded mime type.
+    form.append('image', buildPhotoPart(payload.photoUri));
     await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
       method: 'POST',
       body: form,
@@ -922,7 +1040,7 @@ export const getItems = async (): Promise<Product[]> => {
     const list = Array.isArray(raw) ? raw : [];
     return list.map((it: any) => mapItem(it, getBaseUrl(tenantId || "")));
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1110,7 +1228,7 @@ export const getMyOrders = async (): Promise<OutletOrder[]> => {
     const list = Array.isArray(raw) ? raw : [];
     return list.flatMap(mapOrderDoc);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1123,7 +1241,7 @@ export const getMySales = async (): Promise<OutletSale[]> => {
     const list = Array.isArray(raw) ? raw : [];
     return list.flatMap(mapSaleDoc);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1147,7 +1265,7 @@ export const getMyInventory = async (): Promise<Product[]> => {
     const list = Array.isArray(raw) ? raw : [];
     return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1230,7 +1348,7 @@ export const getMyStockRequests = async (): Promise<StockRequestSummary[]> => {
     const list = Array.isArray(raw) ? raw : [];
     return list.map(mapStockRequest);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1294,7 +1412,7 @@ export const getSurveysForCampaign = async (campaignId: string): Promise<SurveyL
     const list = Array.isArray(raw) ? raw : [];
     return list.map(mapSurveyListItem);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1366,7 +1484,7 @@ export const getSurveyDetail = async (surveyId: string): Promise<CampaignSurveyC
     if (!raw || typeof raw !== 'object') return null;
     return mapSurveyDetail(raw);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return null;
   }
 };
@@ -1464,7 +1582,7 @@ export const getMySurveys = async (campaignId?: string): Promise<MySurveyRespons
     const list = Array.isArray(raw) ? raw : [];
     return list.map(mapMySurveyResponse);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1492,7 +1610,7 @@ export const getAgentBeats = async (): Promise<RouteAssignment[]> => {
     const list = Array.isArray(raw) ? raw : [];
     return list.map(mapBeat).filter((a: RouteAssignment) => a.date);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1541,7 +1659,7 @@ export const getNotifications = async (): Promise<NotificationItem[]> => {
     const list = Array.isArray(raw) ? raw : [];
     return list.map(mapNotification);
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return [];
   }
 };
@@ -1554,7 +1672,7 @@ export const getUnreadNotificationCount = async (): Promise<number> => {
     if (typeof raw === 'number') return raw;
     return Number(raw?.count ?? raw?.unread_count ?? 0) || 0;
   } catch (e: any) {
-    if (e instanceof AuthError) throw e;
+    if (e instanceof AuthError || e instanceof NetworkError) throw e;
     return 0;
   }
 };

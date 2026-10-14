@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, BackHandler } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, BackHandler, AppState } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
@@ -16,6 +16,8 @@ import { logout, getAttendanceStats, getCampaigns } from './src/services/api';
 import { getAccessToken } from './src/services/apiConfig';
 import { localDateStr } from './src/utils/timestamp';
 import { isDayLocked } from './src/utils/dayLock';
+import { pullServerData } from './src/utils/offlineSync';
+import NetInfo from '@react-native-community/netinfo';
 import { FieldProvider, useFieldStore } from './src/store/useFieldStore';
 import { BottomTabs } from './src/components/BottomTabs';
 import { installGlobalErrorHandlers } from './src/utils/errorReporting';
@@ -205,36 +207,73 @@ function AppInner() {
     return () => sub.remove();
   }, []);
 
-  // Forces a fresh attendance prompt the instant local midnight passes, even
-  // if the app is just sitting open on Home and never gets relaunched or
-  // re-logged-into — that resume/login path (resolveTodayAttendance) only
-  // re-checks the day boundary when it actually runs, so an agent who never
-  // force-closes the app (very plausible on a field phone left on all day)
-  // would otherwise keep showing yesterday's "clocked in" state indefinitely,
-  // with a new attendance prompt only ever appearing because EOD happened to
-  // get submitted. This makes the boundary itself the trigger, not EOD.
+  // Sends the agent back through Attendance once the local calendar day has
+  // rolled past whatever day their stored clock-in belongs to. Cheap and
+  // purely local (no network) so it's safe to run on every foreground resume;
+  // the real server-side truth is still consulted when they actually clock in
+  // (see clockIn's ALREADY_CHECKED_IN handling).
+  const forceAttendanceIfDayRolledOver = () => {
+    const { clockedIn, clockInDate } = state.attendanceStatus;
+    if (!clockedIn || clockInDate === localDateStr()) return;
+    dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
+    if (isDayLocked(state.dayLockedUntil)) {
+      dispatch({ type: 'SET_DAY_LOCK', until: null });
+    }
+    historyRef.current = [];
+    setRoute(state.campaignSelected ? 'attendance' : 'home');
+    setAppStage('campaignSelect');
+  };
+
+  // A setTimeout alone does NOT survive the night: both platforms throttle JS
+  // timers in the background and Android's Doze freezes them outright, so the
+  // midnight timer below almost never actually fires on a real field phone
+  // that's pocketed/charging at 12am. And resuming a backgrounded app doesn't
+  // re-run the splash/login day check either (that one bails on
+  // `appStage !== 'splash'`), so the agent would come back the next morning
+  // still showing yesterday's clocked-in state — which is exactly the
+  // "attendance doesn't reset at 12am" report. Only a full force-kill (cold
+  // start) happened to fix itself, which is why it looked intermittent.
+  // Foreground resume is the trigger that actually fires reliably.
   useEffect(() => {
     if (appStage !== 'app') return;
-    let timer: ReturnType<typeof setTimeout>;
-    const armForNextMidnight = () => {
-      const next = new Date();
-      next.setHours(24, 0, 0, 0);
-      timer = setTimeout(() => {
-        if (state.attendanceStatus.clockedIn) {
-          dispatch({ type: 'SET_ATTENDANCE_STATUS', clockedIn: false });
-        }
-        if (isDayLocked(state.dayLockedUntil)) {
-          dispatch({ type: 'SET_DAY_LOCK', until: null });
-        }
-        historyRef.current = [];
-        setRoute(state.campaignSelected ? 'attendance' : 'home');
-        setAppStage('campaignSelect');
-        armForNextMidnight();
-      }, Math.max(1000, next.getTime() - Date.now()));
-    };
-    armForNextMidnight();
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') forceAttendanceIfDayRolledOver();
+    });
+    return () => sub.remove();
+  }, [appStage, state.attendanceStatus.clockedIn, state.attendanceStatus.clockInDate, state.dayLockedUntil, state.campaignSelected]);
+
+  // Offline-first refresh: everything the server owns (outlets, products/stock,
+  // orders, sales) is already cached locally and persisted, so it stays
+  // readable with no signal. This re-pulls it the moment connectivity actually
+  // comes back, rather than making the agent find the Sync screen — and each
+  // dataset is only replaced if its own request really succeeded, so a partial
+  // failure never blanks out what they already had. Drafts stay deliberately
+  // manual (the Sync button pushes those), since re-submitting real sales/
+  // surveys shouldn't fire itself off the back of a network blip.
+  const wasOfflineRef = useRef(false);
+  useEffect(() => {
+    if (appStage !== 'app') return;
+    const sub = NetInfo.addEventListener((netState) => {
+      const online = netState.isConnected !== false && netState.isInternetReachable !== false;
+      if (online && wasOfflineRef.current) {
+        pullServerData(state.activeCampaign?.id, dispatch).catch(() => {
+          // Keeps whatever's already cached locally.
+        });
+      }
+      wasOfflineRef.current = !online;
+    });
+    return () => sub();
+  }, [appStage, state.activeCampaign?.id]);
+
+  // Still worth keeping for the case the timer CAN handle — the app genuinely
+  // sitting in the foreground as midnight passes (an agent working late).
+  useEffect(() => {
+    if (appStage !== 'app') return;
+    const next = new Date();
+    next.setHours(24, 0, 0, 0);
+    const timer = setTimeout(forceAttendanceIfDayRolledOver, Math.max(1000, next.getTime() - Date.now()));
     return () => clearTimeout(timer);
-  }, [appStage, state.attendanceStatus.clockedIn, state.dayLockedUntil, state.campaignSelected]);
+  }, [appStage, state.attendanceStatus.clockedIn, state.attendanceStatus.clockInDate, state.dayLockedUntil, state.campaignSelected]);
 
   // Resume a still-valid session on launch instead of forcing the user back
   // through login + campaign select + clock-in every time the app restarts —
@@ -342,7 +381,8 @@ function AppInner() {
             // check a fresh login would silently inherit whichever agent last
             // clocked in here, letting a brand-new agent skip straight past
             // campaign-select and attendance into someone else's session.
-            const sameAgent = !!user?.email && !!state.sessionAgentEmail && user.email === state.sessionAgentEmail;
+            const sameAgent = !!user?.email && !!state.sessionAgentEmail
+              && user.email.trim().toLowerCase() === state.sessionAgentEmail.trim().toLowerCase();
             if (!sameAgent) dispatch({ type: 'RESET_AGENT_SESSION' });
 
             // A different agent's local state no longer applies (just reset above,
