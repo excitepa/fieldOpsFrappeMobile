@@ -20,6 +20,10 @@ interface InputProps {
   variant?: 'default' | 'field';
   autoCapitalize?: TextInputProps['autoCapitalize'];
   autoCorrect?: boolean;
+  /** Shown under the field, which is outlined in red while it's set. */
+  error?: string;
+  /** Passed to TextInput. Not for phone numbers: see normalizePhone. */
+  maxLength?: number;
 }
 
 export const Input: React.FC<InputProps> = ({
@@ -36,6 +40,8 @@ export const Input: React.FC<InputProps> = ({
   variant = 'default',
   autoCapitalize,
   autoCorrect,
+  error,
+  maxLength,
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
@@ -55,6 +61,7 @@ export const Input: React.FC<InputProps> = ({
           isField && styles.inputWrapperField,
           isFocused && (isField ? styles.focusedField : dark ? styles.focusedDark : styles.focusedLight),
           multiline && styles.multilineWrapper,
+          !!error && styles.inputWrapperError,
         ]}
       >
         {leftIcon && (
@@ -77,6 +84,7 @@ export const Input: React.FC<InputProps> = ({
           keyboardType={keyboardType}
           autoCapitalize={autoCapitalize}
           autoCorrect={autoCorrect}
+          maxLength={maxLength}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           style={[
@@ -99,6 +107,7 @@ export const Input: React.FC<InputProps> = ({
           </Pressable>
         )}
       </View>
+      {!!error && <Text style={styles.errorText}>{error}</Text>}
     </View>
   );
 };
@@ -155,6 +164,15 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   focusedField: {
     borderColor: theme.colors.navy,
+  },
+  inputWrapperError: {
+    borderColor: theme.colors.red,
+  },
+  errorText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    color: theme.colors.red,
+    marginTop: 4,
   },
   leftIconContainer: {
     marginRight: theme.spacing.sm,

@@ -26,6 +26,7 @@ import { updateOutlet, NetworkError } from '../services/api';
 import { parseGps } from '../utils/geo';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
+import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, getStampLocation, keepPhotoForDraft } from '../utils/photoStamp';
 import { RouteName, Outlet, OutletDraft } from '../types';
 
@@ -60,9 +61,12 @@ const theme = useTheme();  const styles = createStyles(theme);
     // A sub-channel belongs to one channel.
     if (!subChannelsOf(options, id).some((s) => s.id === subChannelId)) setSubChannelId(undefined);
   };
-  const [phone, setPhone] = useState(outlet?.phone || '');
+  // Saved numbers in another format (+234 801 ..., 0801-234-...) start tidied.
+  const [phone, setPhone] = useState(normalizePhone(outlet?.phone || ''));
   const [ownerName, setOwnerName] = useState(outlet?.ownerName || '');
-  const [ownerPhone, setOwnerPhone] = useState(outlet?.ownerPhone || '');
+  const [ownerPhone, setOwnerPhone] = useState(normalizePhone(outlet?.ownerPhone || ''));
+  const [phoneProblem, setPhoneProblem] = useState<string>();
+  const [ownerPhoneProblem, setOwnerPhoneProblem] = useState<string>();
   const [address, setAddress] = useState(outlet?.address || '');
   const [notes, setNotes] = useState(outlet?.notes || '');
   const [submitting, setSubmitting] = useState(false);
@@ -141,6 +145,14 @@ const theme = useTheme();  const styles = createStyles(theme);
       Alert.alert('Required', 'Please enter an outlet name.');
       return;
     }
+    // The outlet's own phone is optional; the owner's mobile is required.
+    const nextPhoneProblem = phoneError(phone, false);
+    const nextOwnerPhoneProblem = phoneError(ownerPhone, true);
+    setPhoneProblem(nextPhoneProblem);
+    setOwnerPhoneProblem(nextOwnerPhoneProblem);
+    if (nextPhoneProblem || nextOwnerPhoneProblem) return;
+    const outletPhone = normalizePhone(phone);
+    const ownerMobile = normalizePhone(ownerPhone);
 
     const typeName = pickedName(options.types, outletTypeId, outlet.outletTypeId, outlet.outletTypeName);
     const subChannelName = pickedName(options.subChannels, subChannelId, outlet.subChannelId, outlet.subChannelName);
@@ -168,9 +180,9 @@ const theme = useTheme();  const styles = createStyles(theme);
         distributorId,
         subChannel: subChannelName,
         address: address.trim(),
-        phone: phone.trim(),
+        phone: outletPhone,
         ownerName: ownerName.trim() || undefined,
-        ownerPhone: ownerPhone.trim() || undefined,
+        ownerPhone: ownerMobile,
         notes: notes.trim() || undefined,
         photoUri: uploadPhotoUri || undefined,
         latitude: coords?.lat,
@@ -184,9 +196,9 @@ const theme = useTheme();  const styles = createStyles(theme);
         name: outletName.trim(),
         type: typeName || outlet.type,
         category: subChannelName,
-        phone: phone.trim(),
+        phone: outletPhone,
         ownerName: ownerName.trim(),
-        ownerPhone: ownerPhone.trim(),
+        ownerPhone: ownerMobile,
         address: address.trim(),
         notes: notes.trim(),
         gps: coords ? `${coords.lat}, ${coords.lng}` : outlet.gps,
@@ -209,9 +221,9 @@ const theme = useTheme();  const styles = createStyles(theme);
           name: outletName.trim(),
           type: typeName || outlet.type,
           category: subChannelName,
-          phone: phone.trim(),
+          phone: outletPhone,
           ownerName: ownerName.trim(),
-          ownerPhone: ownerPhone.trim(),
+          ownerPhone: ownerMobile,
           address: address.trim(),
           notes: notes.trim(),
           gps: coords ? `${coords.lat}, ${coords.lng}` : outlet.gps,
@@ -229,9 +241,9 @@ const theme = useTheme();  const styles = createStyles(theme);
           subChannelId,
           distributorId,
           address: address.trim(),
-          phone: phone.trim(),
+          phone: outletPhone,
           ownerName: ownerName.trim() || undefined,
-          ownerPhone: ownerPhone.trim() || undefined,
+          ownerPhone: ownerMobile,
           notes: notes.trim() || undefined,
           photoUri: draftPhotoUri,
           latitude: coords?.lat,
@@ -377,10 +389,11 @@ const theme = useTheme();  const styles = createStyles(theme);
           <Input
             label="Phone Number"
             value={phone}
-            onChangeText={setPhone}
-            placeholder="+234 801 000 0000"
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
             keyboardType="phone-pad"
             variant="field"
+            error={phoneProblem}
           />
 
           <Input
@@ -389,6 +402,16 @@ const theme = useTheme();  const styles = createStyles(theme);
             onChangeText={setOwnerName}
             placeholder="Mr. Emeka Obi"
             variant="field"
+          />
+
+          <Input
+            label="Owner's Mobile"
+            value={ownerPhone}
+            onChangeText={(text) => { setOwnerPhone(normalizePhone(text)); setOwnerPhoneProblem(undefined); }}
+            placeholder="08012345678"
+            keyboardType="phone-pad"
+            variant="field"
+            error={ownerPhoneProblem}
           />
 
           <Input

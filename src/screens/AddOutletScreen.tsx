@@ -23,6 +23,7 @@ import { useOutletFormOptions } from '../hooks/useOutletFormOptions';
 import { createOutlet, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
+import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, keepPhotoForDraft, streetAddressFromPlace } from '../utils/photoStamp';
 import { RouteName, Outlet, OutletDraft } from '../types';
 
@@ -64,6 +65,8 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [ownerName, setOwnerName] = useState('');
   const [ownerMobile, setOwnerMobile] = useState('');
   const [address, setAddress] = useState('');
+  const [phoneProblem, setPhoneProblem] = useState<string>();
+  const [ownerMobileProblem, setOwnerMobileProblem] = useState<string>();
 
   // Location Auto-Captured
   const [gpsLocation, setGpsLocation] = useState('');
@@ -187,6 +190,14 @@ const theme = useTheme();  const styles = createStyles(theme);
       Alert.alert('Required', 'Please enter the outlet address.');
       return;
     }
+    // The outlet's own phone is optional; the owner's mobile is required.
+    const nextPhoneProblem = phoneError(phone, false);
+    const nextOwnerMobileProblem = phoneError(ownerMobile, true);
+    setPhoneProblem(nextPhoneProblem);
+    setOwnerMobileProblem(nextOwnerMobileProblem);
+    if (nextPhoneProblem || nextOwnerMobileProblem) return;
+    const outletPhone = normalizePhone(phone) || undefined;
+    const ownerPhone = normalizePhone(ownerMobile);
 
     const typeName = pickedName(options.types, outletTypeId);
     const subChannelName = pickedName(options.subChannels, subChannelId);
@@ -214,9 +225,9 @@ const theme = useTheme();  const styles = createStyles(theme);
         distributorId,
         subChannel: subChannelName,
         address: address.trim(),
-        phone: phone.trim() || undefined,
+        phone: outletPhone,
         ownerName: ownerName.trim() || undefined,
-        ownerPhone: ownerMobile.trim() || undefined,
+        ownerPhone,
         photoUri: uploadPhotoUri || undefined,
         latitude: gpsCoords?.lat,
         longitude: gpsCoords?.lng,
@@ -270,9 +281,9 @@ const theme = useTheme();  const styles = createStyles(theme);
           category: subChannelName,
           area: address.includes('Oniru') ? 'Oniru' : address.includes('Ikoyi') ? 'Ikoyi' : 'Lekki Phase 1',
           address: address.trim(),
-          phone: phone.trim(),
+          phone: outletPhone || '',
           ownerName: ownerName.trim() || undefined,
-          ownerPhone: ownerMobile.trim() || undefined,
+          ownerPhone,
           isOpen: true,
           distance: '',
           status: 'pending',
@@ -292,9 +303,9 @@ const theme = useTheme();  const styles = createStyles(theme);
           subChannelId,
           distributorId,
           address: address.trim(),
-          phone: phone.trim() || undefined,
+          phone: outletPhone,
           ownerName: ownerName.trim() || undefined,
-          ownerPhone: ownerMobile.trim() || undefined,
+          ownerPhone,
           photoUri: draftPhotoUri,
           latitude: gpsCoords?.lat,
           longitude: gpsCoords?.lng,
@@ -413,10 +424,11 @@ const theme = useTheme();  const styles = createStyles(theme);
           <Input
             label="Phone Number"
             value={phone}
-            onChangeText={setPhone}
-            placeholder="+234 801 000 0000"
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
             keyboardType="phone-pad"
             variant="field"
+            error={phoneProblem}
           />
 
           <Input
@@ -430,10 +442,11 @@ const theme = useTheme();  const styles = createStyles(theme);
           <Input
             label="Owner's Mobile"
             value={ownerMobile}
-            onChangeText={setOwnerMobile}
-            placeholder="+234 802 000 0000"
+            onChangeText={(text) => { setOwnerMobile(normalizePhone(text)); setOwnerMobileProblem(undefined); }}
+            placeholder="08012345678"
             keyboardType="phone-pad"
             variant="field"
+            error={ownerMobileProblem}
           />
 
           {/* Auto-Captured GPS Box — real device location, reverse-geocoded when possible */}

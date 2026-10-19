@@ -8,6 +8,7 @@ import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { mockLeads } from '../services/mockService';
 import { parseLeadValue } from '../utils/pipelineMetrics';
+import { normalizePhone, phoneError } from '../utils/phone';
 import { RouteName, Lead } from '../types';
 
 interface EditLeadScreenProps {
@@ -25,7 +26,8 @@ export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, lead
   const l = leadData || mockLeads[0];
 
   const [fullName, setFullName] = useState(l.name);
-  const [phone, setPhone] = useState(l.phone);
+  const [phone, setPhone] = useState(normalizePhone(l.phone || ''));
+  const [phoneProblem, setPhoneProblem] = useState<string>();
   const [email, setEmail] = useState(l.email || '');
   const [parentCompany, setParentCompany] = useState(l.parentCompany || '');
   const [outlet, setOutlet] = useState(l.company);
@@ -40,12 +42,15 @@ export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, lead
       Alert.alert('Required Fields', 'Full name, phone, and outlet are required.');
       return;
     }
+    const nextPhoneProblem = phoneError(phone, true);
+    setPhoneProblem(nextPhoneProblem);
+    if (nextPhoneProblem) return;
 
     const numericValue = parseFloat(estValue) || 0;
     const updated: Lead = {
       ...l,
       name: fullName.trim(),
-      phone: phone.trim(),
+      phone: normalizePhone(phone),
       email: email.trim() || undefined,
       parentCompany: parentCompany.trim() || undefined,
       company: outlet.trim(),
@@ -67,7 +72,16 @@ export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, lead
         <Card style={styles.formCard}>
           <Text style={styles.sectionTitle}>LEAD INFORMATION</Text>
           <Input label="Full Name" value={fullName} onChangeText={setFullName} required variant="field" />
-          <Input label="Phone" value={phone} onChangeText={setPhone} keyboardType="phone-pad" required variant="field" />
+          <Input
+            label="Phone"
+            value={phone}
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
+            keyboardType="phone-pad"
+            required
+            variant="field"
+            error={phoneProblem}
+          />
           <Input label="Email" value={email} onChangeText={setEmail} placeholder="ada@example.com" keyboardType="email-address" variant="field" />
           <Input label="Company" value={parentCompany} onChangeText={setParentCompany} placeholder="QuickShop Ltd." variant="field" />
           <Input label="Outlet" value={outlet} onChangeText={setOutlet} required variant="field" />

@@ -10,6 +10,7 @@ import { createLead, NetworkError } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { localDateStr } from '../utils/timestamp';
+import { normalizePhone, phoneError } from '../utils/phone';
 import { RouteName, Lead, LeadDraft } from '../types';
 
 interface LeadFormScreenProps {
@@ -26,6 +27,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   const campaignId = state.activeCampaign?.id || '';
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [phoneProblem, setPhoneProblem] = useState<string>();
   const [email, setEmail] = useState('');
   const [parentCompany, setParentCompany] = useState('');
   const [outlet, setOutlet] = useState('');
@@ -42,6 +44,10 @@ const theme = useTheme();  const styles = createStyles(theme);
       Alert.alert('Required Information', 'Full name, phone, and outlet are required.');
       return;
     }
+    const nextPhoneProblem = phoneError(phone, true);
+    setPhoneProblem(nextPhoneProblem);
+    if (nextPhoneProblem) return;
+    const leadPhone = normalizePhone(phone);
     setLoading(true);
 
     let newLead: Lead;
@@ -50,7 +56,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       newLead = await createLead(campaignId, {
         name,
         company: outlet,
-        phone,
+        phone: leadPhone,
         email: email || undefined,
         address: address || undefined,
         source,
@@ -79,7 +85,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       newLead = {
         id: `l_${Date.now()}`,
         name,
-        phone,
+        phone: leadPhone,
         email: email || undefined,
         parentCompany: parentCompany || undefined,
         company: outlet,
@@ -101,7 +107,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         campaignId,
         name,
         company: outlet,
-        phone,
+        phone: leadPhone,
         email: email || undefined,
         address: address || undefined,
         source,
@@ -133,7 +139,16 @@ const theme = useTheme();  const styles = createStyles(theme);
         <Card style={styles.formCard}>
           <Text style={styles.sectionTitle}>LEAD INFORMATION</Text>
           <Input label="Full Name" value={name} onChangeText={setName} placeholder="Ada Obi" required variant="field" />
-          <Input label="Phone" value={phone} onChangeText={setPhone} placeholder="+234 803 000 0000" keyboardType="phone-pad" required variant="field" />
+          <Input
+            label="Phone"
+            value={phone}
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
+            keyboardType="phone-pad"
+            required
+            variant="field"
+            error={phoneProblem}
+          />
           <Input label="Email" value={email} onChangeText={setEmail} placeholder="ada@example.com" keyboardType="email-address" variant="field" />
           <Input label="Company" value={parentCompany} onChangeText={setParentCompany} placeholder="QuickShop Ltd." variant="field" />
           <Input label="Outlet" value={outlet} onChangeText={setOutlet} placeholder="QuickShop Express" required variant="field" />
