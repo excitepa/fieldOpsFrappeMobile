@@ -12,7 +12,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, ProductUnit, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
@@ -1014,6 +1014,27 @@ const mapUnits = (raw: any): ProductUnit[] | undefined => {
   return units.length > 0 ? units : undefined;
 };
 
+/** The promotions earned by buying a product (get_items' `promotions`; none from an older backend). */
+const mapPromotions = (raw: any): ProductPromotion[] | undefined => {
+  if (!Array.isArray(raw?.promotions)) return undefined;
+  return raw.promotions
+    .filter((p: any) => p?.id && p?.uom && p?.reward_item && Number(p?.buy_quantity) > 0 && Number(p?.free_quantity) > 0)
+    .map((p: any): ProductPromotion => ({
+      id: String(p.id),
+      name: p.name || String(p.id),
+      buyQuantity: Number(p.buy_quantity),
+      uom: String(p.uom),
+      rewardItem: String(p.reward_item),
+      rewardItemName: p.reward_item_name || String(p.reward_item),
+      freeQuantity: Number(p.free_quantity),
+      // The server resolves the unit free goods come in; it falls back to the
+      // promotion's own uom here only if a response ever leaves it out.
+      freeUom: String(p.free_uom || p.uom),
+      requiresCode: Boolean(p.requires_code),
+      validTo: p.valid_to || undefined,
+    }));
+};
+
 const mapItem = (raw: any, baseUrl: string): Product => {
   const price = Number(raw?.rate ?? raw?.standard_rate ?? raw?.selling_price ?? raw?.price) || 0;
   // current_stock/on_hand/qty are the field names the backend documented for get_items/
@@ -1036,6 +1057,7 @@ const mapItem = (raw: any, baseUrl: string): Product => {
     size: raw?.size || undefined,
     salesUom: raw?.sales_uom || undefined,
     units: mapUnits(raw),
+    promotions: mapPromotions(raw),
   };
 };
 
@@ -1147,7 +1169,8 @@ export const submitFieldSale = async (
   campaignId: string,
   lines: OrderLinePayload[],
   amountPaid: number,
-  coordinates?: { lat: number; lng: number }
+  coordinates?: { lat: number; lng: number },
+  promoCode?: string
 ): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
@@ -1176,6 +1199,7 @@ export const submitFieldSale = async (
     body.latitude = coordinates.lat;
     body.longitude = coordinates.lng;
   }
+  if (promoCode?.trim()) body.promo_code = promoCode.trim();
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_field_sale', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1200,10 +1224,11 @@ export const submitFieldSale = async (
 export const submitSalesOrder = async (
   outletId: string,
   campaignId: string,
-  lines: OrderLinePayload[]
+  lines: OrderLinePayload[],
+  promoCode?: string
 ): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
-  const body = {
+  const body: Record<string, any> = {
     outletId,
     outlet_id: outletId,
     campaignId,
@@ -1221,6 +1246,7 @@ export const submitSalesOrder = async (
     })),
     total_amount: totalAmount,
   };
+  if (promoCode?.trim()) body.promo_code = promoCode.trim();
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_sales_order', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1262,7 +1288,6 @@ const mapOrderDoc = (raw: any): OutletOrder[] => {
       productName: item?.item_name || item?.item_code || 'Item',
       quantity: qty,
       unitPrice,
-      discount: 0,
       total: Number(item?.amount) || unitPrice * qty,
       customerId: outletId,
       customerName,
@@ -1291,7 +1316,6 @@ const mapSaleDoc = (raw: any): OutletSale[] => {
       productName: item?.item_name || item?.item_code || 'Item',
       quantity: qty,
       unitPrice,
-      discount: 0,
       total: Number(item?.amount) || unitPrice * qty,
       customerId: outletId,
       customerName,

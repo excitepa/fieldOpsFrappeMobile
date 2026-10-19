@@ -8,8 +8,10 @@ export interface TransactionLine {
   uom?: string;
   stockQty?: number;
   unitPrice: number;
-  discount: number;
   total: number;
+  /** Free goods a promotion added — shown as "Free", not priced. */
+  isFree?: boolean;
+  promotionName?: string;
 }
 
 export interface GroupedTransaction {
@@ -21,10 +23,8 @@ export interface GroupedTransaction {
   timestamp: string;
   lines: TransactionLine[];
   subtotal: number;
-  discount: number;
   total: number;
   status?: OutletOrder['status'];
-  promoLabel?: string;
 }
 
 function toLine(item: OutletSale | OutletOrder): TransactionLine {
@@ -35,8 +35,9 @@ function toLine(item: OutletSale | OutletOrder): TransactionLine {
     uom: item.uom,
     stockQty: item.stockQty,
     unitPrice: item.unitPrice,
-    discount: item.discount,
     total: item.total,
+    isFree: item.isFree,
+    promotionName: item.promotionName,
   };
 }
 
@@ -66,9 +67,7 @@ export function groupSalesByInvoice(sales: OutletSale[]): GroupedTransaction[] {
       timestamp: first.timestamp,
       lines,
       subtotal: lines.reduce((acc, l) => acc + l.unitPrice * l.quantity, 0),
-      discount: lines.reduce((acc, l) => acc + l.discount, 0),
       total: lines.reduce((acc, l) => acc + l.total, 0),
-      promoLabel: first.promoLabel,
     };
   });
 }
@@ -99,7 +98,6 @@ export function groupOrdersByRef(orders: OutletOrder[]): GroupedTransaction[] {
       timestamp: first.timestamp,
       lines,
       subtotal: lines.reduce((acc, l) => acc + l.unitPrice * l.quantity, 0),
-      discount: lines.reduce((acc, l) => acc + l.discount, 0),
       total: lines.reduce((acc, l) => acc + l.total, 0),
       status: first.status,
     };

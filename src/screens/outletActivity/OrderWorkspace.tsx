@@ -5,6 +5,7 @@ import { Icon } from '../../components/Icon';
 import { CartLine, Product, ProductUnit } from '../../types';
 import { findLine, getSellingUnits, getStockUnit, lineStockQty } from '../../utils/cart';
 import { formatUnitQty, unitWord, formatQty } from '../../utils/units';
+import { currentPromotions, describePromotion } from '../../utils/promotions';
 
 interface OrderWorkspaceProps {
   mode: 'sale' | 'order';
@@ -43,6 +44,7 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
           const amount = lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
           const outOfStock = p.stock <= 0;
           const meta = [p.brand, p.size, `₦${stockUnit.price.toLocaleString()} / ${unitWord(stockUnit.uom, 1)}`].filter(Boolean).join(' · ');
+          const promotions = currentPromotions(p);
 
           return (
             <View key={p.id} style={[styles.productCard, outOfStock && styles.productCardDisabled]}>
@@ -60,6 +62,13 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
                   </View>
                 )}
               </View>
+
+              {promotions.map((promo) => (
+                <View key={promo.id} style={styles.promoBadge}>
+                  <Icon name="tag" size={12} color={theme.colors.emerald} />
+                  <Text style={styles.promoBadgeText}>{describePromotion(promo, p)}</Text>
+                </View>
+              ))}
 
               {!outOfStock && (
                 <>
@@ -159,6 +168,11 @@ const createStyles = (theme: any) => StyleSheet.create({
   productMeta: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
   oosBadge: { backgroundColor: theme.colors.redLight, paddingHorizontal: 9, paddingVertical: 4, borderRadius: theme.radius.full },
   oosBadgeText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.red },
+  promoBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+    backgroundColor: theme.colors.emeraldLight, borderRadius: theme.radius.full, paddingHorizontal: 10, paddingVertical: 4,
+  },
+  promoBadgeText: { fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.emerald, flexShrink: 1 },
 
   stepperRow: { flexDirection: 'row', gap: theme.spacing.sm },
   stepperCard: {

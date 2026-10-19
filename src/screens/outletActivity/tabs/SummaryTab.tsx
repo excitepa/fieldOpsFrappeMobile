@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { View, Text, StyleSheet, Pressable, TextInput } from 'react-native';
 import { useTheme } from '../../../theme/ThemeContext';
 import { Icon } from '../../../components/Icon';
 import { Button } from '../../../components/Button';
@@ -7,6 +7,7 @@ import { CartLine, Product } from '../../../types';
 import { StockShortfall, getStockQtyByProduct, lineKey } from '../../../utils/cart';
 import { formatQty, formatUnitQty } from '../../../utils/units';
 import { describeShortfall } from '../../../utils/stock';
+import { FreeGoodsLine } from '../../../utils/promotions';
 
 interface SummaryTabProps {
   mode: 'sale' | 'order';
@@ -15,6 +16,10 @@ interface SummaryTabProps {
   products: Product[];
   total: number;
   stockShortfalls: StockShortfall[];
+  /** The free goods the cart earns, previewed — the server adds the real ones on submit. */
+  freeGoods: FreeGoodsLine[];
+  promoCode: string;
+  onPromoCodeChange: (code: string) => void;
   submitting: boolean;
   onDeleteLine: (key: string) => void;
   onEdit: () => void;
@@ -26,7 +31,7 @@ interface SummaryTabProps {
 // card, the current cart's line items (editable only by removal — quantity
 // is adjusted back on the Sale/Order tab), then Edit/Save Draft/Submit.
 export const SummaryTab: React.FC<SummaryTabProps> = ({
-  mode, customerName, cart, products, total, stockShortfalls, submitting,
+  mode, customerName, cart, products, total, stockShortfalls, freeGoods, promoCode, onPromoCodeChange, submitting,
   onDeleteLine, onEdit, onSaveDraft, onSubmit,
 }) => {
   const theme = useTheme();
@@ -92,6 +97,31 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
                 </View>
               );
             })}
+            {freeGoods.map((free) => {
+              // A reward product the cart doesn't buy itself shows its shortfall here.
+              const shortfall = cart.some((l) => l.productId === free.productId)
+                ? undefined
+                : stockShortfalls.find((s) => s.productId === free.productId);
+              return (
+                <View key={`free-${free.qualifyingProductId}-${free.promotionId}`} style={[styles.lineRow, styles.freeLineRow, shortfall && styles.lineRowError]}>
+                  <View style={styles.flex1}>
+                    <View style={styles.freeTitleRow}>
+                      <Text style={styles.lineName}>{free.productName}</Text>
+                      <View style={styles.freeBadge}>
+                        <Text style={styles.freeBadgeText}>FREE</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.lineSub}>{formatUnitQty(free.quantity, free.uom)} · {free.promotionName}</Text>
+                    {shortfall && (
+                      <Text style={styles.shortfallText}>{describeShortfall(shortfall, shortfall.product)}</Text>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+            {freeGoods.length > 0 && (
+              <Text style={styles.freeNote}>Free goods are a preview — they're confirmed when you submit.</Text>
+            )}
           </View>
         ) : (
           <View style={styles.emptyState}>
@@ -99,6 +129,22 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
             <Text style={styles.emptyText}>No products added yet.</Text>
           </View>
         )}
+      </View>
+
+      <View style={styles.promoCard}>
+        <Text style={styles.productsLabel}>PROMO CODE (OPTIONAL)</Text>
+        <TextInput
+          style={styles.promoInput}
+          value={promoCode}
+          onChangeText={onPromoCodeChange}
+          placeholder="Enter a promo code"
+          placeholderTextColor={theme.colors.textLight}
+          autoCapitalize="characters"
+          autoCorrect={false}
+        />
+        {promoCode.trim() ? (
+          <Text style={styles.promoHint}>Checked when you submit — any free goods it unlocks are added then.</Text>
+        ) : null}
       </View>
 
       <View style={styles.bottomBlock}>
@@ -160,6 +206,21 @@ const createStyles = (theme: any) => StyleSheet.create({
   lineName: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.textDark },
   lineSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
   shortfallText: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.red, marginTop: 2 },
+  freeLineRow: { backgroundColor: theme.colors.emeraldLight, borderColor: theme.colors.emeraldLight },
+  freeTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  freeBadge: { backgroundColor: theme.colors.emerald, borderRadius: theme.radius.full, paddingHorizontal: 7, paddingVertical: 2 },
+  freeBadgeText: { fontFamily: theme.fonts.bold, fontSize: 9, color: '#FFFFFF', letterSpacing: 0.5 },
+  freeNote: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
+
+  promoCard: {
+    backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder,
+    borderRadius: theme.radius.lg, padding: theme.spacing.lg, gap: theme.spacing.sm,
+  },
+  promoInput: {
+    backgroundColor: theme.colors.fieldFill, borderWidth: 1, borderColor: theme.colors.fieldBorder, borderRadius: theme.radius.md,
+    paddingHorizontal: theme.spacing.md, paddingVertical: 12, fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.textDark,
+  },
+  promoHint: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted },
   removeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder },
 
   bottomBlock: { gap: theme.spacing.sm, marginTop: theme.spacing.xs },

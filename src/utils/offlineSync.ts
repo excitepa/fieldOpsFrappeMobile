@@ -122,9 +122,9 @@ export async function pushCartDrafts(
       }));
       if (draft.mode === 'sale') {
         const total = draft.cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
-        await submitFieldSale(draft.outletId, campaignId, lines, total);
+        await submitFieldSale(draft.outletId, campaignId, lines, total, undefined, draft.promoCode);
       } else {
-        await submitSalesOrder(draft.outletId, campaignId, lines);
+        await submitSalesOrder(draft.outletId, campaignId, lines, draft.promoCode);
       }
       dispatch({ type: 'DELETE_DRAFT', draftId: draft.id });
       synced++;

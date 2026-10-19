@@ -13,6 +13,7 @@ import { getItems, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePay
 import { blockIfDayLocked } from '../../utils/dayLock';
 import { RouteName, CartLine, Draft, OutletSale, OutletOrder } from '../../types';
 import { getStockShortfalls, lineFactor, lineStockQty } from '../../utils/cart';
+import { previewFreeGoods } from '../../utils/promotions';
 import { useCart } from './useCart';
 import { OrderWorkspace } from './OrderWorkspace';
 import { SurveyTab } from './tabs/SurveyTab';
@@ -71,6 +72,8 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   const orderCart = useCart(routeData?.orderCart || []);
   const activeCart = category === 'order' ? orderCart : saleCart;
   const [submitting, setSubmitting] = useState(false);
+  // Optional, sent with the order; a resumed draft brings back the one it was saved with.
+  const [promoCode, setPromoCode] = useState(resumeDraft?.promoCode || '');
 
   // The outlet itself is the customer for a Sale/Order — there is no separate
   // "choose a customer" step (matches the reference OrderWorkspace, which
@@ -91,6 +94,13 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   const campaignProducts = category === 'sale'
     ? scopedProducts.filter((p) => p.stock > 0)
     : scopedProducts;
+
+  // The free goods the cart earns, previewed on the phone (the server adds the
+  // real ones on submit). Looked up in the full catalog: a reward item doesn't
+  // have to be one of this campaign's products.
+  const freeGoods = category === 'merchandising' ? [] : previewFreeGoods(activeCart.cart, state.products);
+  // A sale also needs stock for its free goods.
+  const stockShortfalls = category === 'sale' ? getStockShortfalls(activeCart.cart, state.products, freeGoods) : [];
 
   // Hydrate a saved draft on first mount, if resuming one.
   useEffect(() => {
@@ -142,6 +152,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     customerName: outlet.name,
     campaignId: activeCampaign?.id,
     cart,
+    promoCode: mode === category ? promoCode.trim() || undefined : undefined,
     updatedAt: new Date().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }),
     pendingSync: true,
   });
@@ -187,10 +198,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     const mode = category as 'sale' | 'order';
     if (activeCart.cart.length === 0) return;
 
-    if (mode === 'sale') {
-      const shortfalls = getStockShortfalls(activeCart.cart, state.products);
-      if (shortfalls.length > 0) return;
-    }
+    if (mode === 'sale' && stockShortfalls.length > 0) return;
 
     setSubmitting(true);
     const nowStr = new Date().toLocaleString('en-US', {
@@ -225,11 +233,11 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         } catch (locErr) {
           // Non-fatal — sale still submits without coordinates.
         }
-        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, coordinates);
+        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, coordinates, promoCode);
         ref = result.ref || generateInvoiceRef();
         savedLines = result.items;
       } else {
-        const result = await submitSalesOrder(outlet.id, activeCampaign?.id || '', lines);
+        const result = await submitSalesOrder(outlet.id, activeCampaign?.id || '', lines, promoCode);
         ref = result.ref || generateOrderRef();
         savedLines = result.items;
       }
@@ -257,59 +265,53 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
       return;
     }
 
-    activeCart.cart.forEach((line, idx) => {
+    // The local records — and so the receipt / order confirmation — are the
+    // lines the server saved: priced by it, free goods included, adding up to
+    // its total. A backend that doesn't return them leaves the cart as the record.
+    const recorded: SavedOrderLine[] = savedLines || activeCart.cart.map((line) => ({
+      itemCode: line.productId,
+      itemName: line.productName,
+      uom: line.uom,
+      qty: line.quantity,
+      conversionFactor: lineFactor(line),
+      stockQty: lineStockQty(line),
+      rate: line.unitPrice,
+      amount: line.unitPrice * line.quantity,
+      isFree: false,
+    }));
+    const records = recorded.map((line, idx) => ({
+      id: `${mode}-${Date.now()}-${idx}`,
+      outletId: outlet.id,
+      campaignId: activeCampaign?.id || 'c2',
+      productId: line.itemCode,
+      productName: line.itemName,
+      quantity: line.qty,
+      uom: line.uom,
+      conversionFactor: line.conversionFactor,
+      stockQty: line.stockQty,
+      unitPrice: line.rate,
+      total: line.amount,
+      isFree: line.isFree || undefined,
+      promotionName: line.promotionName,
+      customerId: outlet.id,
+      customerName: outlet.name,
+      timestamp: nowStr,
+    }));
+    // ADD_SALE/ADD_ORDER prepend, so the last line goes in first to keep the server's order.
+    [...records].reverse().forEach((record) => {
       if (mode === 'sale') {
-        const sale: OutletSale = {
-          id: `sale-${Date.now()}-${idx}`,
-          outletId: outlet.id,
-          campaignId: activeCampaign?.id || 'c2',
-          productId: line.productId,
-          productName: line.productName,
-          quantity: line.quantity,
-          uom: line.uom,
-          conversionFactor: lineFactor(line),
-          stockQty: lineStockQty(line),
-          unitPrice: line.unitPrice,
-          discount: 0,
-          total: line.unitPrice * line.quantity,
-          customerId: outlet.id,
-          customerName: outlet.name,
-          timestamp: nowStr,
-          invoiceRef: ref,
-        };
+        const sale: OutletSale = { ...record, invoiceRef: ref };
         dispatch({ type: 'ADD_SALE', sale });
-        if (!savedLines) dispatch({ type: 'DECREMENT_STOCK', productId: line.productId, qty: lineStockQty(line), outletId: outlet.id });
+        // Local stock comes down by every saved line, paid and free, in stock
+        // units — free goods leave the agent's stock too.
+        if (record.stockQty > 0) {
+          dispatch({ type: 'DECREMENT_STOCK', productId: record.productId, qty: record.stockQty, outletId: outlet.id });
+        }
       } else {
-        const order: OutletOrder = {
-          id: `order-${Date.now()}-${idx}`,
-          outletId: outlet.id,
-          campaignId: activeCampaign?.id || 'c2',
-          productId: line.productId,
-          productName: line.productName,
-          quantity: line.quantity,
-          uom: line.uom,
-          conversionFactor: lineFactor(line),
-          stockQty: lineStockQty(line),
-          unitPrice: line.unitPrice,
-          discount: 0,
-          total: line.unitPrice * line.quantity,
-          customerId: outlet.id,
-          customerName: outlet.name,
-          status: 'Pending',
-          timestamp: nowStr,
-          orderRef: ref,
-        };
+        const order: OutletOrder = { ...record, status: 'Pending', orderRef: ref };
         dispatch({ type: 'ADD_ORDER', order });
       }
     });
-
-    // Local stock comes down by every line the server saved, paid and free, in
-    // stock units — free goods leave the agent's stock too.
-    if (mode === 'sale' && savedLines) {
-      savedLines.forEach((line) => {
-        dispatch({ type: 'DECREMENT_STOCK', productId: line.itemCode, qty: line.stockQty, outletId: outlet.id });
-      });
-    }
 
     dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
     if (routeData?.resumeDraftId) dispatch({ type: 'DELETE_DRAFT', draftId: routeData.resumeDraftId });
@@ -325,6 +327,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     }).catch(() => {});
 
     activeCart.clear();
+    setPromoCode('');
     setSubmitting(false);
 
     if (mode === 'sale') {
@@ -368,7 +371,10 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
             cart={activeCart.cart}
             products={campaignProducts}
             total={activeCart.total}
-            stockShortfalls={category === 'sale' ? getStockShortfalls(activeCart.cart, state.products) : []}
+            stockShortfalls={stockShortfalls}
+            freeGoods={freeGoods}
+            promoCode={promoCode}
+            onPromoCodeChange={setPromoCode}
             submitting={submitting}
             onDeleteLine={activeCart.remove}
             onEdit={() => setActiveTabId(category)}

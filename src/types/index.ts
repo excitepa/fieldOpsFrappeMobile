@@ -157,6 +157,24 @@ export interface ProductUnit {
   mustBeWholeNumber: boolean;
 }
 
+/** A promotion earned by buying a product (it's the promotion's qualifying item), as get_items sends it. */
+export interface ProductPromotion {
+  id: string;
+  name: string;
+  /** Buy this many of `uom` (whole multiples count)... */
+  buyQuantity: number;
+  uom: string;
+  /** ...to get `freeQuantity` of `rewardItem`, in `freeUom`, free. */
+  rewardItem: string;
+  rewardItemName: string;
+  freeQuantity: number;
+  freeUom: string;
+  /** Applies only with the right promo code — which only the server can check. */
+  requiresCode: boolean;
+  /** YYYY-MM-DD, or undefined for no end date. */
+  validTo?: string;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -181,6 +199,8 @@ export interface Product {
    *  (and mock data): it then sells only in its stock unit at `price` — see
    *  getProductUnits. */
   units?: ProductUnit[];
+  /** Promotions earned by buying this product. */
+  promotions?: ProductPromotion[];
   /** Campaign-highlighted product — shown with a "Focus product" badge on Stock Request. */
   focusProduct?: boolean;
 }
@@ -312,13 +332,14 @@ export interface OutletSale {
   conversionFactor?: number;
   /** The line's quantity in stock units. */
   stockQty?: number;
-  /** Price for one `uom`. */
+  /** Price for one `uom` (0 for free goods). */
   unitPrice: number;
-  discount: number;
   total: number;
+  /** Free goods a promotion added — their own line, at no charge. */
+  isFree?: boolean;
+  promotionName?: string;
   customerId: string;
   customerName: string;
-  promoLabel?: string;
   timestamp: string;
   invoiceRef: string;
 }
@@ -336,10 +357,12 @@ export interface OutletOrder {
   conversionFactor?: number;
   /** The line's quantity in stock units. */
   stockQty?: number;
-  /** Price for one `uom`. */
+  /** Price for one `uom` (0 for free goods). */
   unitPrice: number;
-  discount: number;
   total: number;
+  /** Free goods a promotion added — their own line, at no charge. */
+  isFree?: boolean;
+  promotionName?: string;
   customerId: string;
   customerName: string;
   status: 'Pending' | 'Confirmed' | 'Delivered';
@@ -428,6 +451,8 @@ export interface Draft {
    *  it's still queued when the agent's active campaign has since changed. */
   campaignId?: string;
   cart: CartLine[];
+  /** Entered on the Summary tab; sent with the order when the draft is submitted. */
+  promoCode?: string;
   updatedAt: string;
   pendingSync: true;
 }

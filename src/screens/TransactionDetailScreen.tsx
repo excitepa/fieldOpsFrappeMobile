@@ -77,12 +77,6 @@ export const TransactionDetailScreen: React.FC<TransactionDetailScreenProps> = (
                 </View>
               ))}
               <View style={styles.divider} />
-              {(sale || order)!.discount > 0 && (
-                <View style={styles.lineRow}>
-                  <Text style={styles.lineText}>Discount</Text>
-                  <Text style={[styles.lineAmount, { color: theme.colors.emerald }]}>-₦{(sale || order)!.discount.toLocaleString()}</Text>
-                </View>
-              )}
               <View style={styles.lineRow}>
                 <Text style={styles.totalLabel}>TOTAL AMOUNT</Text>
                 <Text style={styles.totalVal}>₦{(sale || order)!.total.toLocaleString()}</Text>
