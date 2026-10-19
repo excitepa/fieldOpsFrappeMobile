@@ -9,6 +9,7 @@ import { Button } from '../components/Button';
 import { DynamicSurveyForm } from '../components/DynamicSurveyForm';
 import { useFieldStore } from '../store/useFieldStore';
 import { keepSurveyPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
+import { confirmUnanswered } from '../utils/surveyAnswers';
 import { RouteName, CampaignSurveyConfig } from '../types';
 
 interface OutletSurveyFormScreenProps {
@@ -80,7 +81,8 @@ export const OutletSurveyFormScreen: React.FC<OutletSurveyFormScreenProps> = ({ 
       Alert.alert('Incomplete Survey', 'Please answer all required questions highlighted in red before continuing.');
       return;
     }
-    onNavigate('outletSurveyReview', { outletId: outlet?.id, survey, answers, photoUris });
+    confirmUnanswered(allQuestions, answers, () =>
+      onNavigate('outletSurveyReview', { outletId: outlet?.id, survey, answers, photoUris }));
   };
 
   if (!outlet || !survey) {

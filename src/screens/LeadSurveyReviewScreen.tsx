@@ -11,6 +11,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
+import { surveyRejectionMessage } from '../utils/surveyAnswers';
 import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
 
 interface LeadSurveyReviewScreenProps {
@@ -102,7 +103,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
       if (e instanceof NetworkError) {
         Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
       } else {
-        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+        Alert.alert('Could Not Submit', surveyRejectionMessage(e));
       }
     }
   };

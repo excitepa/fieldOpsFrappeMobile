@@ -6,7 +6,7 @@ import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getSurveysForCampaign, getSurveyDetail, getMySurveys } from '../services/api';
+import { getSurveysForCampaign, getSurveyDetail, getMySurveys, MySurveyResponseSummary } from '../services/api';
 import { RouteName, CampaignSurveyConfig } from '../types';
 
 interface OutletSurveysScreenProps {
@@ -23,7 +23,7 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
   const activeCampaign = state.activeCampaign;
 
   const [surveyConfigs, setSurveyConfigs] = useState<CampaignSurveyConfig[]>([]);
-  const [submittedSurveyIds, setSubmittedSurveyIds] = useState<Set<string>>(new Set());
+  const [submittedResponses, setSubmittedResponses] = useState<MySurveyResponseSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -44,7 +44,7 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
       ]);
       const details = await Promise.all(list.map((s) => getSurveyDetail(s.id)));
       setSurveyConfigs(details.filter((d): d is CampaignSurveyConfig => !!d));
-      setSubmittedSurveyIds(new Set(mySurveys.filter((r) => r.status === 'Submitted').map((r) => r.surveyId)));
+      setSubmittedResponses(mySurveys.filter((r) => r.status === 'Submitted'));
     } catch (e: any) {
       setError(e?.message || 'Could not load surveys.');
     } finally {
@@ -61,10 +61,12 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
     const questionCount = sections.length > 0
       ? sections.reduce((sum, s) => sum + s.questions.length, 0)
       : survey.questions.length;
-    // Submitted-for-this-campaign (server) OR submitted-for-this-outlet-this-session (local) —
-    // the backend has no outlet dimension on survey responses, so the local record is what
-    // actually distinguishes "done for this outlet" (see submitSurveyResponse's doc comment).
-    const completed = submittedSurveyIds.has(survey.id) || submittedLocally.some((s) => s.surveyConfigId === survey.id);
+    // Completed for THIS outlet only: a submitted response that names this outlet,
+    // or a local record for it. Any response for the survey used to count, so one
+    // outlet's survey showed as done at every outlet. A backend that doesn't say
+    // which outlet a response is for leaves only the local records.
+    const completed = submittedResponses.some((r) => r.surveyId === survey.id && !!outletId && r.outletIds.includes(outletId))
+      || submittedLocally.some((s) => s.surveyConfigId === survey.id);
     return { survey, questionCount, completed };
   });
   const pendingCount = rows.filter((r) => !r.completed).length;

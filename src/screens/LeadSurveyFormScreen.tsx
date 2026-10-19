@@ -8,6 +8,7 @@ import { Icon } from '../components/Icon';
 import { Button } from '../components/Button';
 import { DynamicSurveyForm } from '../components/DynamicSurveyForm';
 import { keepSurveyPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
+import { confirmUnanswered } from '../utils/surveyAnswers';
 import { RouteName, Lead, CampaignSurveyConfig } from '../types';
 
 interface LeadSurveyFormScreenProps {
@@ -77,7 +78,8 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
       Alert.alert('Incomplete Survey', 'Please answer all required questions highlighted in red before continuing.');
       return;
     }
-    onNavigate('leadSurveyReview', { lead, survey, answers, photoUris });
+    confirmUnanswered(allQuestions, answers, () =>
+      onNavigate('leadSurveyReview', { lead, survey, answers, photoUris }));
   };
 
   if (!lead || !survey) {

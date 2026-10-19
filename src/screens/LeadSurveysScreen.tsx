@@ -6,7 +6,7 @@ import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getSurveysForCampaign, getSurveyDetail, getMySurveys } from '../services/api';
+import { getSurveysForCampaign, getSurveyDetail, getMySurveys, MySurveyResponseSummary } from '../services/api';
 import { RouteName, Lead, CampaignSurveyConfig } from '../types';
 
 interface LeadSurveysScreenProps {
@@ -22,7 +22,7 @@ export const LeadSurveysScreen: React.FC<LeadSurveysScreenProps> = ({ onNavigate
   const activeCampaign = state.activeCampaign;
 
   const [surveys, setSurveys] = useState<CampaignSurveyConfig[]>([]);
-  const [submittedSurveyIds, setSubmittedSurveyIds] = useState<Set<string>>(new Set());
+  const [submittedResponses, setSubmittedResponses] = useState<MySurveyResponseSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -41,7 +41,7 @@ export const LeadSurveysScreen: React.FC<LeadSurveysScreenProps> = ({ onNavigate
       ]);
       const details = await Promise.all(list.map((s) => getSurveyDetail(s.id)));
       setSurveys(details.filter((d): d is CampaignSurveyConfig => !!d));
-      setSubmittedSurveyIds(new Set(mySurveys.filter((r) => r.status === 'Submitted').map((r) => r.surveyId)));
+      setSubmittedResponses(mySurveys.filter((r) => r.status === 'Submitted'));
     } catch (e: any) {
       setError(e?.message || 'Could not load surveys.');
     } finally {
@@ -67,11 +67,12 @@ export const LeadSurveysScreen: React.FC<LeadSurveysScreenProps> = ({ onNavigate
 
   const rows = surveys.map((survey) => {
     const questionCount = survey.sections?.reduce((sum, s) => sum + s.questions.length, 0) ?? survey.questions.length;
-    // A lead survey response is completed if the backend has one for this survey
-    // (agent+survey scoped) or a local record ties it to this specific lead — the
-    // backend's Survey Response has no lead-level uniqueness, so the local record is
-    // what actually distinguishes "done for this lead" per submitSurveyResponse's note.
-    const completed = submittedSurveyIds.has(survey.id) || !!getLeadSurveyResponse(lead.id, survey.id);
+    // Completed for THIS lead only: a submitted response that names this lead
+    // (lead_id), or a local record for it. Any response for the survey used to
+    // count, so one lead's survey showed as done for every lead. A backend that
+    // doesn't send lead_id leaves only the local records.
+    const completed = submittedResponses.some((r) => r.surveyId === survey.id && r.leadId === lead.id)
+      || !!getLeadSurveyResponse(lead.id, survey.id);
     return { survey, questionCount, completed };
   });
   const pendingCount = rows.filter((r) => !r.completed).length;

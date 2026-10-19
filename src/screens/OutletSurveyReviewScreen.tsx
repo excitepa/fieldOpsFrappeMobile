@@ -11,6 +11,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
+import { surveyRejectionMessage } from '../utils/surveyAnswers';
 import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
 
 interface OutletSurveyReviewScreenProps {
@@ -132,7 +133,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
       } else {
         // The request reached the server and was rejected — this will never
         // succeed on retry, so don't disguise it as an offline save.
-        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+        Alert.alert('Could Not Submit', surveyRejectionMessage(e));
       }
     }
   };

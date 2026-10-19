@@ -11,6 +11,7 @@ import { useFieldStore } from '../../../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../../../services/api';
 import { blockIfDayLocked } from '../../../utils/dayLock';
 import { keepSurveyPhoto, discardSurveyPhoto, uploadSurveyPhotos, photosNotUploadedMessage } from '../../../utils/surveyPhotos';
+import { confirmUnanswered, missingQuestionIds, surveyRejectionMessage } from '../../../utils/surveyAnswers';
 import { CampaignSurveyConfig, DynamicSurveyQuestion, SurveyAnswer, OutletSurvey } from '../../../types';
 
 interface SurveyTabProps {
@@ -113,12 +114,17 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     return valid;
   };
 
-  const handleSubmit = async (isDraft = false) => {
+  const handleSubmit = async (isDraft = false, confirmed = false) => {
     if (!isDraft && !validate()) {
       Alert.alert('Incomplete Survey', 'Please answer all required questions highlighted in red before submitting.');
       return;
     }
     if (!isDraft && blockIfDayLocked(state.dayLockedUntil)) return;
+    // Optional questions left blank: ask before submitting (drafts are saved as they are).
+    if (!isDraft && !confirmed) {
+      confirmUnanswered(questions, answers, () => handleSubmit(false, true));
+      return;
+    }
 
     setSubmitting(true);
 
@@ -197,7 +203,9 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
       if (e instanceof NetworkError) {
         Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
       } else {
-        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+        const missing = missingQuestionIds(e);
+        if (missing.length > 0) setValidationErrors(Object.fromEntries(missing.map((id) => [id, true])));
+        Alert.alert('Could Not Submit', surveyRejectionMessage(e));
       }
     }
   };

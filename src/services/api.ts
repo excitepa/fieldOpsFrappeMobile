@@ -1596,11 +1596,8 @@ const APP_TO_BACKEND_QUESTION_TYPE: Record<QuestionType, string> = {
  * the flat list is wrapped as a single synthetic section rather than inventing section
  * boundaries the backend never sends.
  *
- * Note: as of the branch this was checked against, the backend's `required` field on
- * each question is hardcoded to 0 server-side regardless of how the question was
- * configured (not a client mapping choice) — so client-side required-question
- * validation on these forms won't currently trigger for any fetched survey. Passed
- * through as-is rather than guessed at; flagged to the backend team separately.
+ * `required` comes as 1 / 0. Older backends always sent 0, so no question is
+ * required there and the forms' required checks stay quiet.
  */
 const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
   const questions: DynamicSurveyQuestion[] = Array.isArray(raw?.questions)
@@ -1608,7 +1605,7 @@ const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
         id: q?.name || q?.id || '',
         type: BACKEND_TO_APP_QUESTION_TYPE[q?.question_type] || 'text',
         question: q?.question || q?.question_text || '',
-        required: !!q?.required,
+        required: Number(q?.required) === 1,
         options: Array.isArray(q?.options) && q.options.length > 0 ? q.options : undefined,
       }))
     : [];
@@ -1731,6 +1728,10 @@ export interface MySurveyResponseSummary {
   surveyId: string;
   status: string;
   submissionDate?: string;
+  /** Every id the response names its outlet by (outlet, outlet_id, customer, customer_id) — empty from an older backend. */
+  outletIds: string[];
+  /** The lead it was for (lead_id), where the backend sends it. */
+  leadId?: string;
 }
 
 const mapMySurveyResponse = (raw: any): MySurveyResponseSummary => ({
@@ -1738,12 +1739,18 @@ const mapMySurveyResponse = (raw: any): MySurveyResponseSummary => ({
   surveyId: raw?.survey || '',
   status: raw?.status || '',
   submissionDate: raw?.submission_date || undefined,
+  outletIds: Array.from(new Set([raw?.outlet, raw?.outlet_id, raw?.customer, raw?.customer_id].filter(Boolean).map(String))),
+  leadId: raw?.lead_id ? String(raw.lead_id) : undefined,
 });
 
-/** Fetch this agent's own submitted survey responses via `get_my_surveys`, optionally scoped to a campaign. */
+/**
+ * Fetch this agent's own submitted survey responses via `get_my_surveys`, optionally scoped to a campaign.
+ * Asks for up to 500: the backend's default page is 20, and a survey counts as done per outlet or
+ * lead, so an older response left off the page would show its survey as not done.
+ */
 export const getMySurveys = async (campaignId?: string): Promise<MySurveyResponseSummary[]> => {
   try {
-    const qs = campaignId ? `?campaign=${encodeURIComponent(campaignId)}` : '';
+    const qs = `?limit_page_length=500${campaignId ? `&campaign=${encodeURIComponent(campaignId)}` : ''}`;
     const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_my_surveys${qs}`);
     const raw = data?.message ?? data?.data ?? data;
     const list = Array.isArray(raw) ? raw : [];
