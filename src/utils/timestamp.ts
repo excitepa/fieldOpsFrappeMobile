@@ -59,3 +59,20 @@ export function localDateStr(date: Date = new Date()): string {
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+
+/**
+ * A Frappe date or datetime as the server sends it ("2026-10-20" or
+ * "2026-10-20 15:04:05.123456"), for display: "Oct 20, 2026, 3:04 PM". Parsed
+ * by hand for the same Hermes reason as parseAppTimestamp; anything else is
+ * shown as it came.
+ */
+export function formatServerDateTime(value?: string): string {
+  if (!value) return '';
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (!match) return value;
+  const [, year, month, day, hour, minute] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour || 0), Number(minute || 0));
+  return date.toLocaleString('en-US', hour
+    ? { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }
+    : { month: 'short', day: 'numeric', year: 'numeric' });
+}

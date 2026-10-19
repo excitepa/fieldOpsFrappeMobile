@@ -9,6 +9,11 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { getItems, getMyInventory, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
 import { mslFirst } from '../utils/msl';
+import { getSellingUnits, getStockUnit } from '../utils/cart';
+import { formatQty, formatUnitQty, unitWord } from '../utils/units';
+import { formatStockBreakdown } from '../utils/stock';
+import { formatServerDateTime } from '../utils/timestamp';
+import { buildBasketLine, toStockRequestLine } from '../utils/stockRequest';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Product } from '../types';
 
@@ -18,7 +23,8 @@ interface InventoryScreenProps {
 
 type MainTab = 'request' | 'stock' | 'requests';
 type StockView = 'list' | 'basket' | 'review';
-interface BasketQty { cases: number; units: number }
+/** How many of each unit (by uom) of one product are in the basket. */
+type BasketQty = Record<string, number>;
 
 export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) => {
   const theme = useTheme();
@@ -118,21 +124,19 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     return matchesSearch && matchesCategory;
   }));
 
-  const setQty = (productId: string, next: Partial<BasketQty>) => {
-    setQuantities((prev) => {
-      const current = prev[productId] || { cases: 0, units: 0 };
-      return { ...prev, [productId]: { ...current, ...next } };
-    });
+  const setUnitQty = (productId: string, uom: string, qty: number) => {
+    setQuantities((prev) => ({ ...prev, [productId]: { ...(prev[productId] || {}), [uom]: Math.max(0, qty) } }));
   };
 
+  // A basket line is a product, how many of each of its units (cartons, packs,
+  // loose units — as set up in Product Management), and the total in stock
+  // units, which is what the request is approved and stocked in.
   const basketLines = Object.entries(quantities)
     .map(([productId, q]) => {
       const product = products.find((p) => p.id === productId);
-      if (!product) return null;
-      const totalUnits = q.cases * product.unitsPerCase + q.units;
-      return { productId, product, cases: q.cases, units: q.units, totalUnits };
+      return product ? buildBasketLine(product, q) : null;
     })
-    .filter((l): l is NonNullable<typeof l> => !!l && l.totalUnits > 0);
+    .filter((l): l is NonNullable<typeof l> => !!l);
 
   const basketTotalUnits = basketLines.reduce((sum, l) => sum + l.totalUnits, 0);
 
@@ -151,7 +155,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     try {
       await submitStockRequest(
         state.activeCampaign?.id || '',
-        basketLines.map((l) => ({ itemCode: l.productId, itemName: l.product.name, qty: l.totalUnits, cases: l.cases, units: l.units })),
+        basketLines.map(toStockRequestLine),
         note.trim() || undefined
       );
     } catch (e: any) {
@@ -178,7 +182,8 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   // `products` catalog Request Stock uses, since only get_my_inventory reflects
   // an approved stock request transfer.
   const myStockProducts = myInventory.filter((p) => p.stock > 0);
-  const lowStockItems = myStockProducts.filter((p) => p.stock < (p.minStock ?? 0));
+  // The server marks low stock per item ("Low Stock"); a minimum, if one is sent, counts too.
+  const lowStockItems = myStockProducts.filter((p) => p.stockStatus === 'Low Stock' || (p.minStock !== undefined && p.stock < p.minStock));
 
   const headerProps = (() => {
     if (view === 'basket') {
@@ -268,8 +273,12 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
             </View>
 
             {filteredProducts.map((p) => {
-              const q = quantities[p.id] || { cases: 0, units: 0 };
-              const totalUnits = q.cases * p.unitsPerCase + q.units;
+              const q = quantities[p.id] || {};
+              const units = getSellingUnits(p);
+              const stockUnit = getStockUnit(p);
+              const totalUnits = units.reduce((sum, u) => sum + (q[u.uom] || 0) * u.conversionFactor, 0);
+              const onHandBreakdown = formatStockBreakdown(p.stock, p);
+              const details = [p.brand, p.size].filter(Boolean).join(' · ');
               return (
                 <View key={p.id} style={styles.productRow}>
                   <View style={styles.productTopRow}>
@@ -287,41 +296,39 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                         </View>
                       )}
                       <Text style={styles.productName}>{p.name}</Text>
-                      <Text style={styles.productMeta}>{p.unitsPerCase} per case · {p.stock} on hand</Text>
+                      {details ? <Text style={styles.productMeta}>{details}</Text> : null}
+                      <Text style={styles.productMeta}>
+                        {formatUnitQty(p.stock, stockUnit.uom)} on hand{onHandBreakdown ? ` (${onHandBreakdown})` : ''}
+                      </Text>
                     </View>
                   </View>
 
-                  <View style={styles.stepperRow}>
-                    {/* Cases requests aren't live on the web admin yet — dimmed and
-                        locked at 0 so agents only ever request whole units for now. */}
-                    <View style={[styles.stepperCol, styles.stepperColDisabled]}>
-                      <Text style={styles.stepperLabel}>CASES (SOON)</Text>
-                      <View style={styles.stepperControl}>
-                        <View style={[styles.stepperBtn, styles.stepperBtnDisabled]}>
-                          <Icon name="minus" size={16} color={theme.colors.textMuted} />
+                  {/* One stepper per unit the product comes in (as set up in
+                      Product Management), largest-selling unit first. The request
+                      itself is sent in stock units. */}
+                  <View style={styles.unitList}>
+                    {units.map((u) => {
+                      const value = q[u.uom] || 0;
+                      const size = u.conversionFactor !== 1 ? ` · ${formatQty(u.conversionFactor)} ${unitWord(stockUnit.uom, u.conversionFactor)}` : '';
+                      return (
+                        <View key={u.uom} style={styles.unitRow}>
+                          <Text style={styles.unitRowLabel} numberOfLines={1}>{u.uom.toUpperCase()}{size}</Text>
+                          <View style={styles.unitStepper}>
+                            <Pressable onPress={() => setUnitQty(p.id, u.uom, value - 1)} disabled={value <= 0} style={[styles.stepperBtn, value <= 0 && styles.stepperBtnDisabled]}>
+                              <Icon name="minus" size={16} color={theme.colors.textDark} />
+                            </Pressable>
+                            <Text style={styles.stepperValue}>{value}</Text>
+                            <Pressable onPress={() => setUnitQty(p.id, u.uom, value + 1)} style={styles.stepperBtn}>
+                              <Icon name="plus" size={16} color={theme.colors.textDark} />
+                            </Pressable>
+                          </View>
                         </View>
-                        <Text style={[styles.stepperValue, styles.stepperValueDisabled]}>0</Text>
-                        <View style={[styles.stepperBtn, styles.stepperBtnDisabled]}>
-                          <Icon name="plus" size={16} color={theme.colors.textMuted} />
-                        </View>
-                      </View>
-                    </View>
-                    <View style={styles.stepperCol}>
-                      <Text style={styles.stepperLabel}>UNITS</Text>
-                      <View style={styles.stepperControl}>
-                        <Pressable onPress={() => setQty(p.id, { units: Math.max(0, q.units - 1) })} style={styles.stepperBtn}>
-                          <Icon name="minus" size={16} color={theme.colors.textDark} />
-                        </Pressable>
-                        <Text style={styles.stepperValue}>{q.units}</Text>
-                        <Pressable onPress={() => setQty(p.id, { units: q.units + 1 })} style={styles.stepperBtn}>
-                          <Icon name="plus" size={16} color={theme.colors.textDark} />
-                        </Pressable>
-                      </View>
-                    </View>
+                      );
+                    })}
                   </View>
 
                   {totalUnits > 0 && (
-                    <Text style={styles.addedText}>{totalUnits} units added to basket</Text>
+                    <Text style={styles.addedText}>{formatUnitQty(totalUnits, stockUnit.uom)} added to basket</Text>
                   )}
                 </View>
               );
@@ -365,27 +372,44 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
           {myStockProducts.length === 0 && !loadingMyStock && (
             <Text style={styles.emptyStockText}>You don't have any stock in hand right now — request some from the Request Stock tab.</Text>
           )}
-          {myStockProducts.map((p) => (
-            <Card key={p.id} style={styles.myStockCard}>
-              <View style={styles.productTopRow}>
-                <View style={styles.productIcon}>
-                  {p.imageUrl ? (
-                    <Image source={{ uri: p.imageUrl }} style={styles.productImage} resizeMode="cover" />
-                  ) : (
-                    <Icon name="package" size={18} color={theme.colors.navy} />
-                  )}
+          {myStockProducts.map((p, idx) => {
+            const stockUnit = getStockUnit(p);
+            const breakdown = formatStockBreakdown(p.stock, p);
+            const details = [p.brand, p.size].filter(Boolean).join(' · ');
+            const isLow = lowStockItems.includes(p);
+            return (
+              <Card key={`${p.id}-${idx}`} style={styles.myStockCard}>
+                <View style={styles.productTopRow}>
+                  <View style={styles.productIcon}>
+                    {p.imageUrl ? (
+                      <Image source={{ uri: p.imageUrl }} style={styles.productImage} resizeMode="cover" />
+                    ) : (
+                      <Icon name="package" size={18} color={theme.colors.navy} />
+                    )}
+                  </View>
+                  <View style={styles.flex1}>
+                    {p.isMsl && (
+                      <View style={styles.focusBadge}>
+                        <Text style={styles.focusBadgeText}>MSL</Text>
+                      </View>
+                    )}
+                    <Text style={styles.productName}>{p.name}</Text>
+                    <Text style={styles.productMeta}>{details || `SKU ${p.sku}`}</Text>
+                    {breakdown ? <Text style={styles.productMeta}>{breakdown}</Text> : null}
+                  </View>
+                  <View style={styles.myStockQtyCol}>
+                    <Text style={styles.myStockQty}>{formatQty(p.stock)}</Text>
+                    <Text style={styles.myStockQtyLabel}>{unitWord(stockUnit.uom, p.stock).toUpperCase()}</Text>
+                    {isLow && (
+                      <View style={styles.lowChip}>
+                        <Text style={styles.lowChipText}>Low stock</Text>
+                      </View>
+                    )}
+                  </View>
                 </View>
-                <View style={styles.flex1}>
-                  <Text style={styles.productName}>{p.name}</Text>
-                  <Text style={styles.productMeta}>SKU {p.sku}</Text>
-                </View>
-                <View style={styles.myStockQtyCol}>
-                  <Text style={styles.myStockQty}>{p.stock}</Text>
-                  <Text style={styles.myStockQtyLabel}>{(p.unit || 'unit').toUpperCase()}</Text>
-                </View>
-              </View>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </ScrollView>
       )}
 
@@ -419,18 +443,24 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                 <View style={styles.requestTopRow}>
                   <View style={styles.flex1}>
                     <Text style={styles.requestId}>{r.id}</Text>
-                    {r.createdAt ? <Text style={styles.productMeta}>{r.createdAt}</Text> : null}
+                    {r.createdAt ? <Text style={styles.productMeta}>{formatServerDateTime(r.createdAt)}</Text> : null}
                   </View>
                   <View style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}>
                     <Text style={[styles.statusBadgeText, { color: statusStyle.text }]}>{r.status}</Text>
                   </View>
                 </View>
-                {r.items.map((it, idx) => (
-                  <View key={`${it.itemCode}-${idx}`} style={styles.requestLineRow}>
-                    <Text style={styles.requestLineName}>{it.itemName}</Text>
-                    <Text style={styles.requestLineQty}>{it.qty}</Text>
-                  </View>
-                ))}
+                {r.items.map((it, idx) => {
+                  // Requests are stored in stock units; shown in the product's own units where it's known.
+                  const product = products.find((p) => p.id === it.itemCode);
+                  const qtyText = formatUnitQty(it.qty, product ? getStockUnit(product).uom : 'unit');
+                  const breakdown = product ? formatStockBreakdown(it.qty, product) : '';
+                  return (
+                    <View key={`${it.itemCode}-${idx}`} style={styles.requestLineRow}>
+                      <Text style={styles.requestLineName}>{it.itemName}</Text>
+                      <Text style={styles.requestLineQty}>{qtyText}{breakdown ? ` (${breakdown})` : ''}</Text>
+                    </View>
+                  );
+                })}
                 {r.note ? <Text style={styles.requestNote}>{r.note}</Text> : null}
               </Card>
             );
@@ -452,7 +482,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.productName}>{l.product.name}</Text>
-                  <Text style={styles.productMeta}>{l.cases} cases · {l.units} units · {l.totalUnits} total</Text>
+                  <Text style={styles.productMeta}>{l.partsText ? `${l.partsText} = ${l.total}` : l.total}</Text>
                 </View>
                 <Pressable onPress={() => removeBasketLine(l.productId)} style={styles.deleteBtn}>
                   <Icon name="x" size={18} color={theme.colors.red} />
@@ -477,9 +507,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               <View key={l.productId} style={styles.reviewLineRow}>
                 <View style={styles.flex1}>
                   <Text style={styles.productName}>{l.product.name}</Text>
-                  <Text style={styles.productMeta}>{l.cases} case · {l.units} unit</Text>
+                  {l.partsText ? <Text style={styles.productMeta}>{l.partsText}</Text> : null}
                 </View>
-                <Text style={styles.reviewLineUnits}>{l.totalUnits} units</Text>
+                <Text style={styles.reviewLineUnits}>{l.total}</Text>
               </View>
             ))}
           </Card>
@@ -544,16 +574,14 @@ const createStyles = (theme: any) => StyleSheet.create({
   focusBadgeText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.tintGoldIcon },
   productName: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },
   productMeta: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
-  stepperRow: { flexDirection: 'row', gap: theme.spacing.sm },
-  stepperCol: { flex: 1, gap: 4 },
-  stepperColDisabled: { opacity: 0.45 },
-  stepperBtnDisabled: { opacity: 0.6 },
-  stepperValueDisabled: { color: theme.colors.textMuted },
-  stepperLabel: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.textMuted, letterSpacing: 0.6, textAlign: 'center' },
-  stepperControl: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  unitList: { gap: 6 },
+  unitRow: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
     backgroundColor: theme.colors.fieldFill, borderRadius: theme.radius.md, height: 48, paddingHorizontal: theme.spacing.sm,
   },
+  unitRowLabel: { flex: 1, fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.textMuted, letterSpacing: 0.6, paddingLeft: 4 },
+  unitStepper: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  stepperBtnDisabled: { opacity: 0.4 },
   stepperBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
   stepperValue: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark },
   addedText: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.navy },
@@ -591,6 +619,8 @@ const createStyles = (theme: any) => StyleSheet.create({
   myStockQtyCol: { alignItems: 'flex-end' },
   myStockQty: { fontFamily: theme.fonts.display, fontSize: 20, color: theme.colors.textDark },
   myStockQtyLabel: { fontFamily: theme.fonts.bold, fontSize: 9, color: theme.colors.textMuted, letterSpacing: 0.5 },
+  lowChip: { marginTop: 4, backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 2 },
+  lowChipText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.amber },
   basketLineCard: { gap: 0 },
   deleteBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   basketActionsRow: { flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.xs },

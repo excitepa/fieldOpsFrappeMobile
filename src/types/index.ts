@@ -201,6 +201,8 @@ export interface Product {
   units?: ProductUnit[];
   /** Promotions earned by buying this product. */
   promotions?: ProductPromotion[];
+  /** The server's stock status for the agent ("In Stock", "Low Stock", "Out of Stock"), where it sends one. */
+  stockStatus?: string;
   /** On the must-stock list (is_msl): badged "MSL", listed first, and in the
    *  reminder before a sale/order is submitted without it. */
   isMsl?: boolean;
