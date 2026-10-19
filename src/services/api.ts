@@ -67,6 +67,43 @@ export interface LoginResult {
 // "it says no network when there is network." Image uploads legitimately take
 // longer on a real mobile connection than a plain JSON call, so they get a
 // longer budget before being treated as stuck rather than just slow.
+/**
+ * The message for the agent in an error response. Endpoints that answer with
+ * `message: "..."` say it there; Frappe's own errors (frappe.throw, permission
+ * errors) put it in `_server_messages` — a JSON list of JSON-encoded messages —
+ * or in `exception` ("frappe.exceptions.ValidationError: ..."). Without this,
+ * every such refusal showed only "Request failed (HTTP 417)". Any HTML in the
+ * message is dropped.
+ */
+const serverErrorMessage = (data: any): string | undefined => {
+  const clean = (text: string) => text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (typeof data?.message === 'string' && data.message.trim()) return clean(data.message);
+  if (typeof data?._server_messages === 'string') {
+    try {
+      const messages = (JSON.parse(data._server_messages) as unknown[])
+        .map((m) => {
+          if (typeof m !== 'string') return '';
+          try {
+            const parsed = JSON.parse(m);
+            return typeof parsed === 'string' ? parsed : parsed?.message || '';
+          } catch {
+            return m;
+          }
+        })
+        .map((m) => clean(String(m)))
+        .filter(Boolean);
+      if (messages.length > 0) return messages.join('\n');
+    } catch {
+      // Not the usual shape — fall through to `exception`.
+    }
+  }
+  if (typeof data?.exception === 'string') {
+    const text = clean(data.exception.replace(/^[\w.]+?(?:Error|Exception):\s*/, ''));
+    if (text) return text;
+  }
+  return undefined;
+};
+
 const JSON_TIMEOUT_MS = 25000;
 const UPLOAD_TIMEOUT_MS = 60000;
 
@@ -153,10 +190,10 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
   }
 
   if (response.status === 401) {
-    throw new AuthError(data?.message || 'Your session has expired. Please sign in again.');
+    throw new AuthError(serverErrorMessage(data) || 'Your session has expired. Please sign in again.');
   }
   if (!response.ok || data?.status === 'error') {
-    throw new Error(data?.message || `Request failed (HTTP ${response.status}).`);
+    throw new Error(serverErrorMessage(data) || `Request failed (HTTP ${response.status}).`);
   }
 
   // A real HTTP 200 can still carry a soft failure nested inside `message` —
@@ -274,7 +311,7 @@ export const login = async (email: string, password: string, tenantId: string): 
   const token = data?.access_token || data?.data?.access_token || data?.message?.access_token;
 
   if (!token) {
-    const message = typeof data?.message === 'string' ? data.message : data?.error || 'Login failed. Please check your credentials.';
+    const message = serverErrorMessage(data) || data?.error || 'Login failed. Please check your credentials.';
     return { success: false, message };
   }
 
