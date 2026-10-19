@@ -1514,9 +1514,9 @@ export interface SurveyRespondent {
  * preserved server-side under this contract — needs backend confirmation if outlet-
  * scoped survey responses are actually required.
  *
- * Also: 'photo' (Image) question answers are sent as the local file URI string since
- * this endpoint has no documented multipart/file-upload path — the photo itself is not
- * confirmed to reach the server through this call.
+ * 'photo' (Image) questions are always sent with an empty answer — the device's local
+ * file path means nothing server-side. The photo itself goes up afterwards through
+ * uploadSurveyPhoto, against the `response_id` this returns.
  */
 export const submitSurveyResponse = async (
   surveyId: string,
@@ -1530,7 +1530,7 @@ export const submitSurveyResponse = async (
     responses: responses.map((r) => ({
       question: r.questionId,
       question_type: APP_TO_BACKEND_QUESTION_TYPE[r.questionType] || 'Text',
-      answer: Array.isArray(r.answer) ? r.answer.join(', ') : r.answer,
+      answer: r.questionType === 'photo' ? '' : Array.isArray(r.answer) ? r.answer.join(', ') : r.answer,
     })),
   };
   if (coordinates) {
@@ -1557,6 +1557,25 @@ export const submitSurveyResponse = async (
   });
   const result = data?.message ?? data?.data ?? data;
   return { responseId: String(result?.response_id || '') };
+};
+
+/**
+ * Attaches a photo to a survey response that's already on the server, via
+ * `upload_survey_photo` (multipart: response_id, question_id, photo) — the
+ * response itself carries an empty answer for the question, see
+ * submitSurveyResponse. The file part is built the same way as outlet photos.
+ */
+export const uploadSurveyPhoto = async (responseId: string, questionId: string, photoUri: string): Promise<{ fileUrl: string }> => {
+  const form = new FormData();
+  form.append('response_id', responseId);
+  form.append('question_id', questionId);
+  form.append('photo', buildPhotoPart(photoUri));
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.upload_survey_photo', {
+    method: 'POST',
+    body: form,
+  });
+  const result = data?.message ?? data?.data ?? data;
+  return { fileUrl: String(result?.file_url || '') };
 };
 
 export interface MySurveyResponseSummary {

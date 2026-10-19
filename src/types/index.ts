@@ -337,6 +337,18 @@ export interface OutletSurvey {
   timestamp: string;
 }
 
+/** A survey photo whose response already reached the server but whose upload
+ *  (upload_survey_photo) didn't — queued and retried from the Sync page. */
+export interface PendingSurveyPhoto {
+  id: string;
+  responseId: string;
+  questionId: string;
+  /** Local copy in the app's documents folder, deleted once it uploads. */
+  photoUri: string;
+  surveyName?: string;
+  createdAt: string;
+}
+
 export interface SkipRecord {
   id: string;
   outletId: string;

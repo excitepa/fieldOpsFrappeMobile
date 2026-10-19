@@ -10,6 +10,7 @@ import { OptionPickerSheet } from '../../../components/OptionPickerSheet';
 import { useFieldStore } from '../../../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../../../services/api';
 import { blockIfDayLocked } from '../../../utils/dayLock';
+import { keepSurveyPhoto, discardSurveyPhoto, uploadSurveyPhotos, photosNotUploadedMessage } from '../../../utils/surveyPhotos';
 import { CampaignSurveyConfig, DynamicSurveyQuestion, SurveyAnswer, OutletSurvey } from '../../../types';
 
 interface SurveyTabProps {
@@ -65,7 +66,10 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
       }
       const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
       if (!result.canceled && result.assets?.[0]?.uri) {
-        const uri = result.assets[0].uri;
+        // Shrunk and kept in the app's documents folder until it's uploaded
+        // after submit — see keepSurveyPhoto. A retake replaces the old copy.
+        const uri = await keepSurveyPhoto(result.assets[0].uri, result.assets[0].width);
+        releasePhoto(photoUris[qId]);
         setPhotoUris((prev) => ({ ...prev, [qId]: uri }));
         handleAnswerChange(qId, uri);
       }
@@ -74,7 +78,16 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     }
   };
 
+  // A "Save Local Draft" survey keeps pointing at the photo it was saved with,
+  // so a later retake/remove here must not delete that file out from under it.
+  const releasePhoto = (uri?: string) => {
+    if (uri && !state.surveys.some((s) => s.isDraft && s.answers.some((a) => a.answer === uri))) {
+      discardSurveyPhoto(uri);
+    }
+  };
+
   const handleRemovePhoto = (qId: string) => {
+    releasePhoto(photoUris[qId]);
     setPhotoUris((prev) => {
       const next = { ...prev };
       delete next[qId];
@@ -116,6 +129,9 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     const surveyAnswers: SurveyAnswer[] = questions.map((q) => ({
       questionId: q.id,
       question: q.question,
+      // Lets a synced draft send photo answers empty and upload the photo
+      // instead — see pushSurveyDrafts.
+      questionType: q.type,
       answer: answers[q.id] ?? null,
     }));
 
@@ -151,7 +167,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
         coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
       }
 
-      await submitSurveyResponse(
+      const { responseId } = await submitSurveyResponse(
         surveyConfig.id,
         questions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
         coordinates,
@@ -162,8 +178,17 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
       dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
       dispatch({ type: 'MARK_OUTLET_VISITED', outletId });
 
+      // The response is in — its photos go up against it now. One that still
+      // won't upload is queued for the Sync page; never throws.
+      const { failed: photosLeft, reason } = await uploadSurveyPhotos(responseId, photoUris, surveyConfig.name);
+      if (photosLeft.length > 0) dispatch({ type: 'QUEUE_SURVEY_PHOTOS', photos: photosLeft });
+
       setSubmitting(false);
-      Alert.alert('Survey Submitted', `${surveyConfig.name} recorded for this visit.`);
+      if (photosLeft.length > 0) {
+        Alert.alert('Survey Saved — Photo Not Uploaded', photosNotUploadedMessage(photosLeft.length, reason));
+      } else {
+        Alert.alert('Survey Submitted', `${surveyConfig.name} recorded for this visit.`);
+      }
       setAnswers({});
       setPhotoUris({});
       onSubmitted?.();

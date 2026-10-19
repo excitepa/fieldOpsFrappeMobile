@@ -8,6 +8,7 @@ import { Icon } from '../components/Icon';
 import { Button } from '../components/Button';
 import { DynamicSurveyForm } from '../components/DynamicSurveyForm';
 import { useFieldStore } from '../store/useFieldStore';
+import { keepSurveyPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
 import { RouteName, CampaignSurveyConfig } from '../types';
 
 interface OutletSurveyFormScreenProps {
@@ -49,7 +50,10 @@ export const OutletSurveyFormScreen: React.FC<OutletSurveyFormScreenProps> = ({ 
       }
       const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
       if (!result.canceled && result.assets?.[0]?.uri) {
-        const uri = result.assets[0].uri;
+        // Shrunk and kept in the app's documents folder until it's uploaded
+        // after submit — see keepSurveyPhoto. A retake replaces the old copy.
+        const uri = await keepSurveyPhoto(result.assets[0].uri, result.assets[0].width);
+        discardSurveyPhoto(photoUris[qId]);
         setPhotoUris((prev) => ({ ...prev, [qId]: uri }));
         setAnswer(qId, uri);
       }

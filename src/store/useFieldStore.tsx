@@ -2,7 +2,7 @@ import React, { createContext, useContext, useReducer, useEffect, ReactNode } fr
 import {
   Outlet, OutletSale, OutletOrder, OutletSurvey, SkipRecord, Product, Campaign,
   StockMovement, StockMovementType, Draft, LeadDraft, OutletDraft, OutletPhotoCapture, LeadSurveyResponse,
-  UserProfile,
+  UserProfile, PendingSurveyPhoto,
 } from '../types';
 import { mockCampaigns, mockUser } from '../services/mockService';
 import { getUserInfo } from '../services/apiConfig';
@@ -33,6 +33,8 @@ interface FieldState {
   photoCaptures: OutletPhotoCapture[];
   leadDrafts: LeadDraft[];
   outletDrafts: OutletDraft[];
+  /** Survey photos still to upload for responses that already reached the server. */
+  pendingSurveyPhotos: PendingSurveyPhoto[];
   leadSurveyResponses: LeadSurveyResponse[];
   user: UserProfile;
   /** `clockInDate` (YYYY-MM-DD, set whenever clockedIn is set true) is what makes a
@@ -94,6 +96,8 @@ type Action =
   | { type: 'DELETE_LEAD_DRAFT'; draftId: string }
   | { type: 'SAVE_OUTLET_DRAFT'; outletDraft: OutletDraft }
   | { type: 'DELETE_OUTLET_DRAFT'; draftId: string }
+  | { type: 'QUEUE_SURVEY_PHOTOS'; photos: PendingSurveyPhoto[] }
+  | { type: 'DELETE_SURVEY_PHOTO'; photoId: string }
   | { type: 'ADD_LEAD_SURVEY_RESPONSE'; response: LeadSurveyResponse }
   | { type: 'SET_DAY_LOCK'; until: string | null }
   | { type: 'SET_SESSION_AGENT_EMAIL'; email: string | null }
@@ -368,6 +372,18 @@ function reducer(state: FieldState, action: Action): FieldState {
         outletDrafts: state.outletDrafts.filter((d) => d.id !== action.draftId),
       };
 
+    case 'QUEUE_SURVEY_PHOTOS':
+      return {
+        ...state,
+        pendingSurveyPhotos: [...action.photos, ...state.pendingSurveyPhotos],
+      };
+
+    case 'DELETE_SURVEY_PHOTO':
+      return {
+        ...state,
+        pendingSurveyPhotos: state.pendingSurveyPhotos.filter((p) => p.id !== action.photoId),
+      };
+
     case 'ADD_LEAD_SURVEY_RESPONSE':
       return {
         ...state,
@@ -402,6 +418,7 @@ const initialState: FieldState = {
   drafts: [],
   leadDrafts: [],
   outletDrafts: [],
+  pendingSurveyPhotos: [],
   photoCaptures: [],
   leadSurveyResponses: [],
   user: mockUser,

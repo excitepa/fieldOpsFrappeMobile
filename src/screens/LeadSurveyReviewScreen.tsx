@@ -10,6 +10,7 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
 import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
 
 interface LeadSurveyReviewScreenProps {
@@ -57,7 +58,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
       const firstName = nameParts[0] || undefined;
       const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined;
 
-      await submitSurveyResponse(
+      const { responseId } = await submitSurveyResponse(
         survey.id,
         allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
         coordinates,
@@ -80,7 +81,19 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
           submittedAt: new Date().toISOString(),
         },
       });
+
+      // The response is in — its photos go up against it now. One that still
+      // won't upload is queued for the Sync page; never throws.
+      const { failed: photosLeft, reason } = await uploadSurveyPhotos(responseId, photoUris, survey.name);
+      if (photosLeft.length > 0) dispatch({ type: 'QUEUE_SURVEY_PHOTOS', photos: photosLeft });
+
       setSubmitting(false);
+      if (photosLeft.length > 0) {
+        Alert.alert('Survey Saved — Photo Not Uploaded', photosNotUploadedMessage(photosLeft.length, reason), [
+          { text: 'OK', onPress: () => onNavigate('leadSurveys', lead) },
+        ]);
+        return;
+      }
       Alert.alert('Survey Submitted', `${survey.name} has been recorded for ${lead.name}.`, [
         { text: 'OK', onPress: () => onNavigate('leadSurveys', lead) },
       ]);

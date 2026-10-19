@@ -8,7 +8,7 @@ import { Card } from '../components/Card';
 import { useFieldStore } from '../store/useFieldStore';
 import { createLead, getOutlets, getItems, getMyOrders, getMySales } from '../services/api';
 import {
-  pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts,
+  pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos,
   pullServerData as pullServerDataShared, summariseSyncErrors,
 } from '../utils/offlineSync';
 import { RouteName, LeadDraft } from '../types';
@@ -27,7 +27,7 @@ interface ServerDataSet {
 
 /** Rows for data captured on-device that hasn't reached the backend yet. */
 interface PendingUploadSet {
-  id: 'leadDrafts' | 'cartDrafts' | 'surveyDrafts' | 'outletDrafts';
+  id: 'leadDrafts' | 'cartDrafts' | 'surveyDrafts' | 'outletDrafts' | 'surveyPhotos';
   label: string;
   icon: IconName;
   pending: number;
@@ -47,13 +47,15 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const surveyDraftsList = state.surveys.filter((s) => s.isDraft);
   const surveyDraftsPending = surveyDraftsList.length;
   const outletDraftsPending = state.outletDrafts.length;
-  const pendingTotal = cartDraftsPending + leadDraftsPending + surveyDraftsPending + outletDraftsPending;
+  const surveyPhotosPending = state.pendingSurveyPhotos.length;
+  const pendingTotal = cartDraftsPending + leadDraftsPending + surveyDraftsPending + outletDraftsPending + surveyPhotosPending;
 
   const pendingUploadSets: PendingUploadSet[] = [
     { id: 'leadDrafts', label: 'Lead Drafts', icon: 'users', pending: leadDraftsPending },
     { id: 'cartDrafts', label: 'Sale / Order Drafts', icon: 'shopping-bag', pending: cartDraftsPending },
     { id: 'surveyDrafts', label: 'Survey Drafts', icon: 'clipboard-list', pending: surveyDraftsPending },
     { id: 'outletDrafts', label: 'Outlet Drafts', icon: 'map-pin', pending: outletDraftsPending },
+    { id: 'surveyPhotos', label: 'Survey Photos', icon: 'camera', pending: surveyPhotosPending },
   ];
 
   const serverDataSets: ServerDataSet[] = [
@@ -73,16 +75,17 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     setSyncingAll(true);
     try {
       const fallbackCampaignId = state.activeCampaign?.id || '';
-      const [leads, carts, surveysRes, outletsRes2] = await Promise.all([
+      const [leads, carts, surveysRes, outletsRes2, photosRes] = await Promise.all([
         pushLeadDrafts(state.leadDrafts, dispatch),
         pushCartDrafts(state.drafts, dispatch, fallbackCampaignId),
         pushSurveyDrafts(surveyDraftsList, dispatch),
         pushOutletDrafts(state.outletDrafts, dispatch),
+        pushSurveyPhotos(state.pendingSurveyPhotos, dispatch),
       ]);
       await pullServerData();
-      const synced = leads.synced + carts.synced + surveysRes.synced + outletsRes2.synced;
-      const failed = leads.failed + carts.failed + surveysRes.failed + outletsRes2.failed;
-      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outletsRes2.errors];
+      const synced = leads.synced + carts.synced + surveysRes.synced + outletsRes2.synced + photosRes.synced;
+      const failed = leads.failed + carts.failed + surveysRes.failed + outletsRes2.failed + photosRes.failed;
+      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outletsRes2.errors, ...photosRes.errors];
       const parts: string[] = [];
       if (synced > 0) parts.push(`${synced} item${synced === 1 ? '' : 's'} uploaded`);
       if (failed > 0) parts.push(`${failed} item${failed === 1 ? '' : 's'} still pending`);
@@ -137,6 +140,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
       const result = id === 'leadDrafts' ? await pushLeadDrafts(state.leadDrafts, dispatch)
         : id === 'cartDrafts' ? await pushCartDrafts(state.drafts, dispatch, fallbackCampaignId)
         : id === 'surveyDrafts' ? await pushSurveyDrafts(surveyDraftsList, dispatch)
+        : id === 'surveyPhotos' ? await pushSurveyPhotos(state.pendingSurveyPhotos, dispatch)
         : await pushOutletDrafts(state.outletDrafts, dispatch);
       if (result.synced > 0 || result.failed > 0) {
         const lines = [`${result.synced} uploaded${result.failed > 0 ? `, ${result.failed} still pending` : ''}.`];

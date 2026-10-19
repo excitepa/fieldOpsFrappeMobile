@@ -1,9 +1,10 @@
 import {
-  createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse,
+  createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse, uploadSurveyPhoto,
   getOutlets, getItems, getMyOrders, getMySales,
   OrderLinePayload,
 } from '../services/api';
-import { LeadDraft, Draft, OutletDraft, OutletSurvey } from '../types';
+import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto } from '../types';
+import { uploadSurveyPhotos, discardSurveyPhoto, surveyPhotoExists } from './surveyPhotos';
 
 /**
  * Refreshes the core server-owned datasets the app caches locally (outlets,
@@ -132,7 +133,20 @@ export async function pushCartDrafts(
   return { synced, failed, errors };
 }
 
-/** Pushes every locally-queued draft survey (isDraft: true) to the server. */
+/**
+ * A draft's photo answers hold the photo's local path. Drafts saved before
+ * answers carried questionType can still hold one as a plain answer, so a
+ * local file path counts as a photo too — it must never be submitted as text.
+ */
+const isPhotoAnswer = (a: SurveyAnswer) =>
+  a.questionType === 'photo' || (!a.questionType && typeof a.answer === 'string' && a.answer.startsWith('file://'));
+
+/**
+ * Pushes every locally-queued draft survey (isDraft: true) to the server, then
+ * uploads its photos against the response id it gets back. A photo that still
+ * won't upload is queued on its own (see pushSurveyPhotos) — the survey itself
+ * counts as synced.
+ */
 export async function pushSurveyDrafts(
   drafts: OutletSurvey[],
   dispatch: (action: any) => void
@@ -147,17 +161,63 @@ export async function pushSurveyDrafts(
       continue;
     }
     try {
-      await submitSurveyResponse(
+      const { responseId } = await submitSurveyResponse(
         draft.surveyConfigId,
-        draft.answers.map((a) => ({ questionId: a.questionId, questionType: a.questionType || 'text', answer: a.answer })),
+        draft.answers.map((a) => ({ questionId: a.questionId, questionType: isPhotoAnswer(a) ? 'photo' : a.questionType || 'text', answer: a.answer })),
         undefined,
         undefined,
         draft.outletId
       );
       dispatch({ type: 'MARK_SURVEY_SYNCED', surveyId: draft.id });
       synced++;
+
+      const photoUris: Record<string, string> = {};
+      draft.answers.forEach((a) => {
+        if (isPhotoAnswer(a) && typeof a.answer === 'string' && a.answer) photoUris[a.questionId] = a.answer;
+      });
+      const { failed: photosLeft, reason } = await uploadSurveyPhotos(responseId, photoUris, draft.surveyName);
+      if (photosLeft.length > 0) {
+        dispatch({ type: 'QUEUE_SURVEY_PHOTOS', photos: photosLeft });
+        noteFailure(errors, `Photo for survey "${draft.surveyName || 'draft'}"`, new Error(`${reason} (queued to retry)`));
+      }
     } catch (e) {
       noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, e);
+      failed++;
+    }
+  }
+  return { synced, failed, errors };
+}
+
+/**
+ * Retries every queued survey photo — its survey response is already on the
+ * server, only the photo upload didn't make it. Each is removed from the queue
+ * (and its local copy deleted) once it's up. One with no response id or no
+ * local file left can never upload, so it's dropped with the reason instead of
+ * staying "pending" forever.
+ */
+export async function pushSurveyPhotos(
+  photos: PendingSurveyPhoto[],
+  dispatch: (action: any) => void
+): Promise<SyncResult> {
+  let synced = 0;
+  let failed = 0;
+  const errors: string[] = [];
+  for (const photo of photos) {
+    const label = `Photo for survey "${photo.surveyName || 'survey'}"`;
+    if (!photo.responseId || !surveyPhotoExists(photo.photoUri)) {
+      const why = !photo.responseId ? 'there is no survey response to attach it to' : 'the photo file is no longer on this device';
+      noteFailure(errors, label, new Error(`${why}, removed from the queue`));
+      dispatch({ type: 'DELETE_SURVEY_PHOTO', photoId: photo.id });
+      failed++;
+      continue;
+    }
+    try {
+      await uploadSurveyPhoto(photo.responseId, photo.questionId, photo.photoUri);
+      discardSurveyPhoto(photo.photoUri);
+      dispatch({ type: 'DELETE_SURVEY_PHOTO', photoId: photo.id });
+      synced++;
+    } catch (e) {
+      noteFailure(errors, label, e);
       failed++;
     }
   }

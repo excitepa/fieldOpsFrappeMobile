@@ -10,6 +10,7 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
 import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
 
 interface OutletSurveyReviewScreenProps {
@@ -67,7 +68,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
       }
 
-      await submitSurveyResponse(
+      const { responseId } = await submitSurveyResponse(
         survey.id,
         allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
         coordinates,
@@ -88,7 +89,22 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
 
       dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
       dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
+
+      // The response is in — its photos go up against it now. One that still
+      // won't upload is queued for the Sync page; never throws, so it can't
+      // land in the offline-draft path below and resubmit the survey.
+      const { failed: photosLeft, reason } = await uploadSurveyPhotos(responseId, photoUris, survey.name);
+      if (photosLeft.length > 0) dispatch({ type: 'QUEUE_SURVEY_PHOTOS', photos: photosLeft });
+
       setSubmitting(false);
+      if (photosLeft.length > 0) {
+        Alert.alert(
+          'Survey Saved — Photo Not Uploaded',
+          photosNotUploadedMessage(photosLeft.length, reason),
+          [{ text: 'OK', onPress: () => onNavigate('surveySuccess', { survey: newSurvey, outletId: outlet.id }) }]
+        );
+        return;
+      }
       onNavigate('surveySuccess', { survey: newSurvey, outletId: outlet.id });
     } catch (e: any) {
       setSubmitting(false);
