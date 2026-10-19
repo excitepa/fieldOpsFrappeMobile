@@ -1278,25 +1278,28 @@ const mapOrderDoc = (raw: any): OutletOrder[] => {
       : 'Pending';
   const items = Array.isArray(raw?.items) ? raw.items : [];
 
-  return items.map((item: any, idx: number) => {
-    const qty = Number(item?.qty) || 0;
-    const unitPrice = Number(item?.rate) || 0;
-    return {
-      id: `${ref}-${item?.item_code || idx}`,
-      outletId,
-      campaignId: String(raw?.campaign || ''),
-      productId: item?.item_code || '',
-      productName: item?.item_name || item?.item_code || 'Item',
-      quantity: qty,
-      unitPrice,
-      total: Number(item?.amount) || unitPrice * qty,
-      customerId: outletId,
-      customerName,
-      status,
-      timestamp: String(timestamp),
-      orderRef: ref,
-    };
-  });
+  // Each line in its own unit, free goods included (a line from an older
+  // backend has no uom and is in stock units).
+  return items.map(mapSavedLine).map((line: SavedOrderLine, idx: number) => ({
+    id: `${ref}-${idx}`,
+    outletId,
+    campaignId: String(raw?.campaign || ''),
+    productId: line.itemCode,
+    productName: line.itemName,
+    quantity: line.qty,
+    uom: line.uom,
+    conversionFactor: line.conversionFactor,
+    stockQty: line.stockQty,
+    unitPrice: line.rate,
+    total: line.amount,
+    isFree: line.isFree || undefined,
+    promotionName: line.promotionName,
+    customerId: outletId,
+    customerName,
+    status,
+    timestamp: String(timestamp),
+    orderRef: ref,
+  }));
 };
 
 const mapSaleDoc = (raw: any): OutletSale[] => {
@@ -1306,24 +1309,27 @@ const mapSaleDoc = (raw: any): OutletSale[] => {
   const timestamp = raw?.posting_date || raw?.transaction_date || raw?.creation || '';
   const items = Array.isArray(raw?.items) ? raw.items : [];
 
-  return items.map((item: any, idx: number) => {
-    const qty = Number(item?.qty) || 0;
-    const unitPrice = Number(item?.rate) || 0;
-    return {
-      id: `${ref}-${item?.item_code || idx}`,
-      outletId,
-      campaignId: String(raw?.campaign || ''),
-      productId: item?.item_code || '',
-      productName: item?.item_name || item?.item_code || 'Item',
-      quantity: qty,
-      unitPrice,
-      total: Number(item?.amount) || unitPrice * qty,
-      customerId: outletId,
-      customerName,
-      timestamp: String(timestamp),
-      invoiceRef: ref,
-    };
-  });
+  // Each line in its own unit, free goods included (a line from an older
+  // backend has no uom and is in stock units).
+  return items.map(mapSavedLine).map((line: SavedOrderLine, idx: number) => ({
+    id: `${ref}-${idx}`,
+    outletId,
+    campaignId: String(raw?.campaign || ''),
+    productId: line.itemCode,
+    productName: line.itemName,
+    quantity: line.qty,
+    uom: line.uom,
+    conversionFactor: line.conversionFactor,
+    stockQty: line.stockQty,
+    unitPrice: line.rate,
+    total: line.amount,
+    isFree: line.isFree || undefined,
+    promotionName: line.promotionName,
+    customerId: outletId,
+    customerName,
+    timestamp: String(timestamp),
+    invoiceRef: ref,
+  }));
 };
 
 /** Fetch this agent's orders via the RPC contract (`get_my_orders`). Falls back to an empty array on error. */

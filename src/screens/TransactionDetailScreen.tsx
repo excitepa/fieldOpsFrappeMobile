@@ -7,6 +7,7 @@ import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { groupSalesByInvoice, groupOrdersByRef } from '../utils/transactions';
+import { formatUnitQty } from '../utils/units';
 import { RouteName } from '../types';
 
 interface TransactionDetailScreenProps {
@@ -70,10 +71,16 @@ export const TransactionDetailScreen: React.FC<TransactionDetailScreenProps> = (
 
             <Card style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>PRODUCTS & QUANTITIES</Text>
-              {(sale || order)!.lines.map((line) => (
-                <View key={line.productId} style={styles.lineRow}>
-                  <Text style={styles.lineText}>{line.productName} × {line.quantity}</Text>
-                  <Text style={styles.lineAmount}>₦{line.total.toLocaleString()}</Text>
+              {/* Each line in its own unit; free goods a promotion added show as Free. */}
+              {(sale || order)!.lines.map((line, idx) => (
+                <View key={`${line.productId}-${idx}`} style={styles.lineRow}>
+                  <View style={styles.lineTextCol}>
+                    <Text style={styles.lineText}>{line.productName} × {formatUnitQty(line.quantity, line.uom)}</Text>
+                    {line.isFree && line.promotionName ? <Text style={styles.freeNote}>{line.promotionName}</Text> : null}
+                  </View>
+                  <Text style={[styles.lineAmount, line.isFree && styles.freeAmount]}>
+                    {line.isFree ? 'Free' : `₦${line.total.toLocaleString()}`}
+                  </Text>
                 </View>
               ))}
               <View style={styles.divider} />
@@ -120,6 +127,9 @@ const createStyles = (theme: any) => StyleSheet.create({
   lineRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 3 },
   lineText: { fontFamily: theme.fonts.regular, fontSize: 14, color: theme.colors.textMuted },
   lineAmount: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.textDark },
+  lineTextCol: { flex: 1, paddingRight: theme.spacing.sm },
+  freeNote: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.emerald, marginTop: 1 },
+  freeAmount: { color: theme.colors.emerald, fontFamily: theme.fonts.bold },
   divider: { height: 1, backgroundColor: theme.colors.cardBorder, marginVertical: 4 },
   totalLabel: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.textDark },
   totalVal: { fontFamily: theme.fonts.display, fontSize: 18, color: theme.colors.navy },

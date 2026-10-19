@@ -306,7 +306,8 @@ export function getWidgetData(id: DashboardWidgetId, ctx: DashboardContext): Wid
     }
 
     case 'products-sold': {
-      const units = sales.reduce((sum, s) => sum + s.quantity, 0);
+      // In stock units: sales lines can be cartons and packs as well as units.
+      const units = sales.reduce((sum, s) => sum + (s.stockQty ?? s.quantity), 0);
       return { id, title: 'Products Sold', value: `${units}`, supportingText: 'Units moved this campaign' };
     }
 
