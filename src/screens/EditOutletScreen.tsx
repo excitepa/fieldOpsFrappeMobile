@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeContext';
+import { typography } from '../theme/typography';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Input } from '../components/Input';
@@ -463,26 +464,29 @@ const createStyles = (theme: any) => StyleSheet.create({
   sectionCard: { gap: theme.spacing.md },
   imageRow: { gap: 6 },
   photoBox: {
+    width: '100%',
+    minHeight: 88,
     backgroundColor: theme.colors.fieldFill,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
     overflow: 'hidden',
+    justifyContent: 'center',
   },
   photoPreview: { width: '100%', height: 140, resizeMode: 'cover' },
   captureRow: {
-    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.md,
   },
   captureIconBox: {
-    width: 64, height: 64, borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.fieldFill, alignItems: 'center', justifyContent: 'center',
+    width: 48, height: 48, borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center',
   },
-  captureTitle: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },
-  captureSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
-  label: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textDark },
+  captureTitle: { ...typography.title, color: theme.colors.textDark },
+  captureSub: { ...typography.caption, color: theme.colors.textMuted, marginTop: 1 },
+  label: { ...typography.fieldLabel, color: theme.colors.textMuted },
   updateLocationBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-end',
     backgroundColor: theme.colors.fieldFill, borderRadius: theme.radius.full,
     paddingHorizontal: theme.spacing.md, paddingVertical: 10, marginTop: 4,
   },
-  updateLocationText: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.navy },
+  updateLocationText: { ...typography.body, color: theme.colors.navy },
   saveBtn: { marginTop: theme.spacing.sm },
 });

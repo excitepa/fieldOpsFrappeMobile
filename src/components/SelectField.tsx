@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
+import { typography } from '../theme/typography';
 import { Icon } from './Icon';
 import { OptionPickerSheet } from './OptionPickerSheet';
 import { MasterOption } from '../types';
@@ -19,7 +20,11 @@ interface SelectFieldProps {
   disabled?: boolean;
 }
 
-/** A form field that picks one option by id, in a sheet; searchable when the list is long. */
+/**
+ * A form field that picks one option by id, in a sheet; searchable when the
+ * list is long. Labelled and sized like Input's field variant, so pickers and
+ * text fields line up on a form.
+ */
 export const SelectField: React.FC<SelectFieldProps> = ({
   label,
   options,
@@ -75,8 +80,8 @@ export const SelectField: React.FC<SelectFieldProps> = ({
 };
 
 const createStyles = (theme: any) => StyleSheet.create({
-  fieldGroup: { gap: 6 },
-  label: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textDark },
+  fieldGroup: { gap: 6, marginVertical: theme.spacing.xs },
+  label: { ...typography.fieldLabel, color: theme.colors.textMuted },
   dropdownBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -88,6 +93,6 @@ const createStyles = (theme: any) => StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
   },
   dropdownDisabled: { opacity: 0.6 },
-  dropdownText: { flex: 1, fontFamily: theme.fonts.regular, fontSize: 15, color: theme.colors.textDark },
+  dropdownText: { flex: 1, ...typography.inputText, color: theme.colors.textDark },
   dropdownPlaceholder: { color: theme.colors.textMuted },
 });

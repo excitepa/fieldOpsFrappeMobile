@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Pressable, KeyboardTypeOptions, TextInputProps } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
+import { typography } from '../theme/typography';
 import { Icon, IconName } from './Icon';
 
 interface InputProps {
@@ -126,11 +127,8 @@ const createStyles = (theme: any) => StyleSheet.create({
     color: theme.colors.darkText,
   },
   labelField: {
-    fontFamily: theme.fonts.bold,
-    fontSize: 11,
+    ...typography.fieldLabel,
     color: theme.colors.textMuted,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
   },
   required: {
     color: theme.colors.red,
@@ -179,8 +177,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   input: {
     flex: 1,
-    fontFamily: theme.fonts.regular,
-    fontSize: 15,
+    ...typography.inputText,
     color: theme.colors.textDark,
     paddingVertical: theme.spacing.sm,
   },

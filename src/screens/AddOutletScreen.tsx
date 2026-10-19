@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeContext';
+import { typography } from '../theme/typography';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Input } from '../components/Input';
@@ -497,9 +498,9 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   pinCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
   autoCapturedTextCol: { flex: 1, gap: 2 },
-  autoCapturedTag: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.navy, letterSpacing: 0.8 },
-  autoCapturedCoords: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textDark },
-  autoCapturedTime: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted },
+  autoCapturedTag: { ...typography.fieldLabel, color: theme.colors.navy },
+  autoCapturedCoords: { ...typography.body, color: theme.colors.textDark },
+  autoCapturedTime: { ...typography.caption, color: theme.colors.textMuted },
   retryBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
   photoBox: {
     width: '100%',
@@ -511,7 +512,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   captureRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.md },
   captureIconBox: { width: 48, height: 48, borderRadius: theme.radius.md, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
-  captureTitle: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },
-  captureSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
+  captureTitle: { ...typography.title, color: theme.colors.textDark },
+  captureSub: { ...typography.caption, color: theme.colors.textMuted, marginTop: 1 },
   saveBtn: { marginTop: theme.spacing.sm },
 });
