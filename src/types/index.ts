@@ -310,6 +310,38 @@ export interface Outlet {
   beatName?: string;
   /** Visit order within that beat's stop list — lower comes first. */
   sequence?: number;
+  /** Its Outlet Type, Outlet Channel, Outlet Sub Channel and distributor, by id and name — from a backend that sends them. */
+  outletTypeId?: string;
+  outletTypeName?: string;
+  channelId?: string;
+  channelName?: string;
+  subChannelId?: string;
+  subChannelName?: string;
+  distributorId?: string;
+  distributorName?: string;
+}
+
+/** A choice from the backend's master data, kept by id: an outlet type, channel, sub-channel or distributor. */
+export interface MasterOption {
+  id: string;
+  name: string;
+  /** A sub-channel's channel (its id). */
+  parent?: string;
+  /** A distributor's phone number. */
+  phone?: string;
+}
+
+/**
+ * The Add/Edit Outlet pickers' lists as last loaded, kept on the device so
+ * the pickers work offline. A list is unset until it has loaded once.
+ */
+export interface OutletFormOptions {
+  types?: MasterOption[];
+  channels?: MasterOption[];
+  subChannels?: MasterOption[];
+  distributors?: MasterOption[];
+  /** The distributor to preselect, when the agent has exactly one. */
+  defaultDistributorId?: string;
 }
 
 // ─── Customer ─────────────────────────────────────────────────────────────────
@@ -486,8 +518,14 @@ export interface OutletDraft {
   outletId?: string;
   campaignId: string;
   name: string;
+  /** The outlet type's name; on a draft saved before the pickers kept ids, the channel's name. */
   type: string;
+  /** The sub-channel's name. */
   subChannel?: string;
+  outletTypeId?: string;
+  channelId?: string;
+  subChannelId?: string;
+  distributorId?: string;
   address: string;
   phone?: string;
   ownerName?: string;

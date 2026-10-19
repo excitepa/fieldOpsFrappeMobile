@@ -2,7 +2,7 @@ import React, { createContext, useContext, useReducer, useEffect, ReactNode } fr
 import {
   Outlet, OutletSale, OutletOrder, OutletSurvey, SkipRecord, Product, Campaign,
   StockMovement, StockMovementType, Draft, LeadDraft, OutletDraft, OutletPhotoCapture, LeadSurveyResponse,
-  UserProfile, PendingSurveyPhoto,
+  UserProfile, PendingSurveyPhoto, OutletFormOptions,
 } from '../types';
 import { mockCampaigns, mockUser } from '../services/mockService';
 import { getUserInfo } from '../services/apiConfig';
@@ -66,6 +66,8 @@ interface FieldState {
    *  RESET_AGENT_SESSION so a different agent never sees a stale cached
    *  attendance card that isn't theirs. */
   cachedAttendanceStats: AttendanceStats | null;
+  /** The Add/Edit Outlet pickers' lists as last loaded, so those forms work offline. */
+  outletFormOptions: OutletFormOptions;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -102,6 +104,7 @@ type Action =
   | { type: 'SET_DAY_LOCK'; until: string | null }
   | { type: 'SET_SESSION_AGENT_EMAIL'; email: string | null }
   | { type: 'SET_CACHED_ATTENDANCE_STATS'; stats: AttendanceStats | null }
+  | { type: 'SET_OUTLET_FORM_OPTIONS'; options: Partial<OutletFormOptions> }
   | { type: 'RESET_AGENT_SESSION' }
   | { type: 'HYDRATE'; state: Partial<FieldState> };
 
@@ -131,6 +134,9 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_CACHED_ATTENDANCE_STATS':
       return { ...state, cachedAttendanceStats: action.stats };
+
+    case 'SET_OUTLET_FORM_OPTIONS':
+      return { ...state, outletFormOptions: { ...state.outletFormOptions, ...action.options } };
 
     // A different agent just logged in than whoever this device's clocked-in/
     // campaign state belongs to (App.tsx compares emails before resuming) —
@@ -176,6 +182,9 @@ function reducer(state: FieldState, action: Action): FieldState {
         // not a privacy/isolation concern worth that cost.
         photoCaptures: [],
         leadSurveyResponses: [],
+        // Distributors depend on the agent's warehouse; the outlet types and
+        // channels are the same for everyone.
+        outletFormOptions: { ...state.outletFormOptions, distributors: undefined, defaultDistributorId: undefined },
       };
 
     case 'SET_OUTLETS': {
@@ -428,6 +437,7 @@ const initialState: FieldState = {
   dayLockedUntil: null,
   sessionAgentEmail: null,
   cachedAttendanceStats: null,
+  outletFormOptions: {},
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────

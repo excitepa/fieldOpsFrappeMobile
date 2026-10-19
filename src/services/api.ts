@@ -12,7 +12,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, MasterOption, Outlet, OutletStatus, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
 
@@ -715,11 +715,15 @@ const mapOutlet = (raw: any, campaignId: string, baseUrl: string): Outlet => {
 
   const images = Array.isArray(raw?.images) ? raw.images : Array.isArray(raw?.image_urls) ? raw.image_urls : [];
 
+  const text = (value: any): string | undefined => (value ? String(value) : undefined);
+
   return {
     id: raw?.name || String(raw?.id || ''),
     name: raw?.outlet_name || raw?.name || 'Unknown Outlet',
-    type: raw?.outlet_type || '',
-    category: raw?.sub_channel || raw?.category || undefined,
+    // The Outlet Type's own name where the backend sends it; older backends
+    // only have outlet_type, forced into Retail/Wholesale/Distributor/Other.
+    type: raw?.outlet_type_name || raw?.outlet_type || '',
+    category: raw?.outlet_sub_channel_name || raw?.sub_channel || raw?.category || undefined,
     area: raw?.area || raw?.territory || '',
     address: raw?.address || raw?.location || '',
     phone: raw?.phone_number || raw?.phone || '',
@@ -737,6 +741,14 @@ const mapOutlet = (raw: any, campaignId: string, baseUrl: string): Outlet => {
     scheduledDate: raw?.scheduled_date || undefined,
     beatName: raw?.beat_name || undefined,
     sequence: raw?.sequence !== undefined && raw?.sequence !== null ? Number(raw.sequence) : undefined,
+    outletTypeId: text(raw?.outlet_type_id),
+    outletTypeName: text(raw?.outlet_type_name),
+    channelId: text(raw?.outlet_channel_id),
+    channelName: text(raw?.outlet_channel_name),
+    subChannelId: text(raw?.outlet_sub_channel_id),
+    subChannelName: text(raw?.outlet_sub_channel_name),
+    distributorId: text(raw?.distributor_id),
+    distributorName: text(raw?.distributor_name),
   };
 };
 
@@ -770,38 +782,81 @@ const unwrapMasterDataList = (data: any): any[] => {
   return Array.isArray(inner) ? inner : [];
 };
 
-/** Fetch the master list of outlet channels via `get_outlet_channels`. */
-export const getOutletChannels = async (): Promise<string[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_channels');
-    return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** A master-data row as a choice: id and name kept; inactive rows and rows without an id are left out. */
+const mapMasterOptions = (rows: any[]): MasterOption[] =>
+  rows
+    .filter((r) => r?.id && r?.isActive !== false)
+    .map((r) => ({
+      id: String(r.id),
+      name: String(r?.name || r.id),
+      parent: r?.parent ? String(r.parent) : undefined,
+      phone: r?.phone ? String(r.phone) : undefined,
+    }));
+
+/**
+ * The outlet master lists for the Add/Edit Outlet pickers. Each throws when
+ * it can't load, so the caller can tell a list that loaded empty from one
+ * that didn't load, and fall back to the copy kept on the device.
+ */
+export const getOutletTypes = async (): Promise<MasterOption[]> =>
+  mapMasterOptions(unwrapMasterDataList(await authFetch('/api/method/fieldops.api.master_data.get_outlet_types')));
+
+export const getOutletChannels = async (): Promise<MasterOption[]> =>
+  mapMasterOptions(unwrapMasterDataList(await authFetch('/api/method/fieldops.api.master_data.get_outlet_channels')));
+
+/** Each sub-channel's `parent` is its channel's id. */
+export const getOutletSubChannels = async (): Promise<MasterOption[]> =>
+  mapMasterOptions(unwrapMasterDataList(await authFetch('/api/method/fieldops.api.master_data.get_outlet_sub_channels')));
+
+/**
+ * The distributors this agent can sell through, via `get_my_distributors`
+ * ({data: [{id, name, phone}], default_id}). Throws on a backend without it,
+ * which then shows no distributor picker.
+ */
+export const getMyDistributors = async (): Promise<{ distributors: MasterOption[]; defaultId?: string }> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_distributors');
+  const body = data?.message ?? data;
+  const rows = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
+  const distributors = mapMasterOptions(rows);
+  const defaultId = body?.default_id ? String(body.default_id) : undefined;
+  return { distributors, defaultId: defaultId && distributors.some((d) => d.id === defaultId) ? defaultId : undefined };
 };
 
-/** Fetch the master list of outlet sub-channels via `get_outlet_sub_channels`. */
-export const getOutletSubChannels = async (): Promise<string[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_sub_channels');
-    return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** The outlet's type, channel, sub-channel and distributor, by id. */
+export interface OutletClassificationPayload {
+  /** Outlet Type id, sent as `outlet_type`. */
+  outletTypeId?: string;
+  /** Outlet Channel id, sent as `outlet_channel`. */
+  channelId?: string;
+  /** Outlet Sub Channel id, sent as `outlet_sub_channel`. */
+  subChannelId?: string;
+  /** Distributor (Customer) id, sent as `distributor`. */
+  distributorId?: string;
+}
+
+/** The classification fields of a submit_outlet / update_outlet request. */
+const classificationFields = (payload: OutletClassificationPayload & { type?: string; subChannel?: string }): Record<string, any> => {
+  const fields: Record<string, any> = {};
+  // A draft saved before the pickers kept ids has only `type` (a channel's
+  // name), which the backend still recognises.
+  const outletType = payload.outletTypeId || payload.type;
+  if (outletType) fields.outlet_type = outletType;
+  if (payload.channelId) fields.outlet_channel = payload.channelId;
+  if (payload.subChannelId) fields.outlet_sub_channel = payload.subChannelId;
+  if (payload.distributorId) fields.distributor = payload.distributorId;
+  // The sub-channel's name: what older backends store.
+  if (payload.subChannel) fields.category = payload.subChannel;
+  return fields;
 };
 
-export interface CreateOutletPayload {
+export interface CreateOutletPayload extends OutletClassificationPayload {
   name: string;
-  type: string;
   /**
-   * Sent as `category` — the one free-text field `submit_outlet` actually stores
-   * (`outlet_doc.category = outlet_data.get("category") or ...`), unlike `type`
-   * which the backend force-matches into just Retail/Wholesale/Distributor/Other
-   * (substring match — most real channel names collapse to "Other" server-side,
-   * a backend-side limitation, not something fixable from here).
+   * Sent as `outlet_type` only when there's no `outletTypeId`: a draft saved
+   * before the pickers kept ids carries a channel's name here.
    */
+  type?: string;
+  /** The sub-channel's name, sent as `category` — what older backends store. */
   subChannel?: string;
   address: string;
   phone?: string;
@@ -869,13 +924,12 @@ export const createOutlet = async (
 ): Promise<{ outlet: Outlet; photoUploaded: boolean; photoError?: string }> => {
   const fields: Record<string, any> = {
     outlet_name: payload.name,
-    outlet_type: payload.type,
+    ...classificationFields(payload),
     address: payload.address,
     phone_number: payload.phone,
     owner_name: payload.ownerName,
     owner_phone: payload.ownerPhone,
   };
-  if (payload.subChannel) fields.category = payload.subChannel;
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
 
@@ -928,9 +982,11 @@ export const createOutlet = async (
   return { outlet, photoUploaded, photoError };
 };
 
-export interface UpdateOutletPayload {
+export interface UpdateOutletPayload extends OutletClassificationPayload {
   name?: string;
+  /** As CreateOutletPayload's: only from a draft saved before the pickers kept ids. */
   type?: string;
+  /** The sub-channel's name, sent as `category`. */
   subChannel?: string;
   address?: string;
   phone?: string;
@@ -952,12 +1008,7 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
     outlet_id: outletId,
   };
   if (payload.name !== undefined) fields.outlet_name = payload.name;
-  if (payload.type !== undefined) fields.outlet_type = payload.type;
-  // NOTE: as of the branch this was checked against, update_outlet's Outlet-record
-  // branch never actually reads/persists `category` (unlike submit_outlet, which
-  // does) — sending it anyway in case that's added server-side later, but editing
-  // an existing outlet's sub-channel currently has no effect.
-  if (payload.subChannel !== undefined) fields.category = payload.subChannel;
+  Object.assign(fields, classificationFields(payload));
   if (payload.address !== undefined) fields.address = payload.address;
   if (payload.phone !== undefined) fields.phone_number = payload.phone;
   if (payload.ownerName !== undefined) fields.owner_name = payload.ownerName;

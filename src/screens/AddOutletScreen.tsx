@@ -16,11 +16,13 @@ import { Card } from '../components/Card';
 import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
-import { OptionPickerSheet } from '../components/OptionPickerSheet';
+import { SelectField } from '../components/SelectField';
 import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
-import { createOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
+import { useOutletFormOptions } from '../hooks/useOutletFormOptions';
+import { createOutlet, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
 import { buildStampLines, burnStampIntoPhoto, keepPhotoForDraft, streetAddressFromPlace } from '../utils/photoStamp';
 import { RouteName, Outlet, OutletDraft } from '../types';
 
@@ -28,33 +30,30 @@ interface AddOutletScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
 }
 
-// Fallback lists used only if the live `get_outlet_channels`/`get_outlet_sub_channels`
-// fetch fails or returns nothing (e.g. offline) — so the picker is never empty.
-const FALLBACK_OUTLET_CHANNELS = [
-  'Supermarket', 'Mini Mart', 'Kiosk', 'Pharmacy', 'Open Market Stall', 'Wholesaler',
-  'Distributor', 'Convenience Store', 'Provision Store', 'Cosmetics Shop',
-  'Restaurant', 'Bar / Lounge', 'Hotel', 'Bakery', 'Fuel Station Shop',
-  'Beauty Salon', 'Electronics Shop', 'Mobile Money Agent', 'POS Agent', 'Filling Station',
-  'School Canteen', 'Hospital Store', 'Cold Room', 'Poultry Shop', 'Table Top Seller',
-];
-const FALLBACK_OUTLET_SUB_CHANNELS = ['Modern Trade', 'Traditional Trade', 'Wholesale', 'Distributor', 'Pharmacy', 'HORECA', 'Key Account'];
-
 export const AddOutletScreen: React.FC<AddOutletScreenProps> = ({ onNavigate }) => {
 const theme = useTheme();  const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
   const activeCampaignId = state.activeCampaign?.id || 'c2';
 
-  const [outletType, setOutletType] = useState('Supermarket');
-  const [showChannelPicker, setShowChannelPicker] = useState(false);
-  const [subChannel, setSubChannel] = useState('');
-  const [showSubChannelPicker, setShowSubChannelPicker] = useState(false);
-  const [outletChannels, setOutletChannels] = useState<string[]>(FALLBACK_OUTLET_CHANNELS);
-  const [outletSubChannels, setOutletSubChannels] = useState<string[]>(FALLBACK_OUTLET_SUB_CHANNELS);
+  // Outlet type, channel, sub-channel and distributor, kept by id. The lists
+  // come from the backend (kept on the device for offline use); nothing is
+  // picked for the agent except their only distributor.
+  const { options, loading: optionsLoading } = useOutletFormOptions();
+  const [outletTypeId, setOutletTypeId] = useState<string>();
+  const [channelId, setChannelId] = useState<string>();
+  const [subChannelId, setSubChannelId] = useState<string>();
+  const [distributorId, setDistributorId] = useState<string>();
+  const channelSubChannels = subChannelsOf(options, channelId);
 
   useEffect(() => {
-    getOutletChannels().then((list) => { if (list.length > 0) setOutletChannels(list); }).catch(() => {});
-    getOutletSubChannels().then((list) => { if (list.length > 0) setOutletSubChannels(list); }).catch(() => {});
-  }, []);
+    if (options.defaultDistributorId) setDistributorId((current) => current || options.defaultDistributorId);
+  }, [options.defaultDistributorId]);
+
+  const handleChannelChange = (id: string) => {
+    setChannelId(id);
+    // A sub-channel belongs to one channel.
+    if (!subChannelsOf(options, id).some((s) => s.id === subChannelId)) setSubChannelId(undefined);
+  };
   // These previously defaulted to real-looking demo text ('QuickShop Express',
   // etc.) as the actual field VALUE, not just a placeholder — an agent who
   // didn't touch a field would silently submit that fake data as if it were
@@ -175,6 +174,11 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
+    const missing = missingPick(options, { outletTypeId, channelId, subChannelId, distributorId });
+    if (missing) {
+      Alert.alert('Required', missing);
+      return;
+    }
     if (!outletName.trim()) {
       Alert.alert('Required', 'Please enter an outlet name.');
       return;
@@ -184,6 +188,19 @@ const theme = useTheme();  const styles = createStyles(theme);
       return;
     }
 
+    const typeName = pickedName(options.types, outletTypeId);
+    const subChannelName = pickedName(options.subChannels, subChannelId);
+    const classification = {
+      outletTypeId,
+      outletTypeName: typeName,
+      channelId,
+      channelName: pickedName(options.channels, channelId),
+      subChannelId,
+      subChannelName,
+      distributorId,
+      distributorName: pickedName(options.distributors, distributorId),
+    };
+
     setSubmitting(true);
     // The watermarked snapshot, not the raw camera file, is what gets uploaded
     // (or kept for an offline draft) — same as the attendance selfie.
@@ -191,8 +208,11 @@ const theme = useTheme();  const styles = createStyles(theme);
     try {
       const { outlet: created, photoUploaded, photoError } = await createOutlet(activeCampaignId, {
         name: outletName.trim(),
-        type: outletType,
-        subChannel: subChannel || undefined,
+        outletTypeId,
+        channelId,
+        subChannelId,
+        distributorId,
+        subChannel: subChannelName,
         address: address.trim(),
         phone: phone.trim() || undefined,
         ownerName: ownerName.trim() || undefined,
@@ -205,7 +225,9 @@ const theme = useTheme();  const styles = createStyles(theme);
       // Enrich with fields the API doesn't return/accept yet
       const newOutlet: Outlet = {
         ...created,
-        category: subChannel || undefined,
+        ...classification,
+        type: typeName || created.type,
+        category: subChannelName,
         area: address.includes('Oniru') ? 'Oniru' : address.includes('Ikoyi') ? 'Ikoyi' : 'Lekki Phase 1',
         distance: '',
         gps: gpsLocation,
@@ -243,8 +265,9 @@ const theme = useTheme();  const styles = createStyles(theme);
         const optimisticOutlet: Outlet = {
           id: draftId,
           name: outletName.trim(),
-          type: outletType,
-          category: subChannel || undefined,
+          ...classification,
+          type: typeName || '',
+          category: subChannelName,
           area: address.includes('Oniru') ? 'Oniru' : address.includes('Ikoyi') ? 'Ikoyi' : 'Lekki Phase 1',
           address: address.trim(),
           phone: phone.trim(),
@@ -262,8 +285,12 @@ const theme = useTheme();  const styles = createStyles(theme);
           mode: 'create',
           campaignId: activeCampaignId,
           name: outletName.trim(),
-          type: outletType,
-          subChannel: subChannel || undefined,
+          type: typeName || '',
+          subChannel: subChannelName,
+          outletTypeId,
+          channelId,
+          subChannelId,
+          distributorId,
           address: address.trim(),
           phone: phone.trim() || undefined,
           ownerName: ownerName.trim() || undefined,
@@ -322,25 +349,50 @@ const theme = useTheme();  const styles = createStyles(theme);
             )}
           </Pressable>
 
-          {/* Outlet Channel Dropdown */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Outlet Channel</Text>
-            <Pressable onPress={() => setShowChannelPicker(true)} style={styles.dropdownBtn}>
-              <Text style={styles.dropdownText}>{outletType}</Text>
-              <Icon name="chevron-down" size={18} color={theme.colors.textMuted} />
-            </Pressable>
-          </View>
+          <SelectField
+            label="Outlet Type"
+            title="Select outlet type"
+            options={options.types || []}
+            value={outletTypeId}
+            placeholder={listPlaceholder(options.types, optionsLoading, 'Select outlet type')}
+            onChange={setOutletTypeId}
+          />
 
-          {/* Outlet Sub-channel Dropdown */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Outlet sub-channel</Text>
-            <Pressable onPress={() => setShowSubChannelPicker(true)} style={styles.dropdownBtn}>
-              <Text style={[styles.dropdownText, !subChannel && styles.dropdownPlaceholder]}>
-                {subChannel || 'Select outlet sub-channel'}
-              </Text>
-              <Icon name="chevron-down" size={18} color={theme.colors.textMuted} />
-            </Pressable>
-          </View>
+          <SelectField
+            label="Outlet Channel"
+            title="Select outlet channel"
+            options={options.channels || []}
+            value={channelId}
+            placeholder={listPlaceholder(options.channels, optionsLoading, 'Select outlet channel')}
+            onChange={handleChannelChange}
+          />
+
+          <SelectField
+            label="Outlet sub-channel"
+            title="Select outlet sub-channel"
+            options={channelSubChannels}
+            value={subChannelId}
+            placeholder={
+              options.subChannels === undefined ? listPlaceholder(undefined, optionsLoading, '')
+                : !channelId ? 'Select a channel first'
+                : channelSubChannels.length === 0 ? 'None for this channel'
+                : 'Select outlet sub-channel'
+            }
+            onChange={setSubChannelId}
+          />
+
+          {/* Only when the agent has distributors to choose from — a backend
+              without get_my_distributors leaves this out. */}
+          {!!options.distributors?.length && (
+            <SelectField
+              label="Distributor"
+              title="Select distributor"
+              options={options.distributors}
+              value={distributorId}
+              placeholder="Select distributor"
+              onChange={setDistributorId}
+            />
+          )}
 
           <Input
             label="Outlet Name"
@@ -412,25 +464,6 @@ const theme = useTheme();  const styles = createStyles(theme);
         />
       </ScrollView>
 
-      <OptionPickerSheet
-        visible={showChannelPicker}
-        title="Select outlet channel"
-        options={outletChannels}
-        selected={outletType}
-        searchable
-        searchPlaceholder="Search outlet channel"
-        onConfirm={(v) => setOutletType(v as string)}
-        onClose={() => setShowChannelPicker(false)}
-      />
-
-      <OptionPickerSheet
-        visible={showSubChannelPicker}
-        title="Select outlet category"
-        options={outletSubChannels}
-        selected={subChannel || null}
-        onConfirm={(v) => setSubChannel(v as string)}
-        onClose={() => setShowSubChannelPicker(false)}
-      />
     </SafeAreaView>
   );
 };
@@ -440,19 +473,6 @@ const createStyles = (theme: any) => StyleSheet.create({
   scroll: { padding: theme.spacing.lg, gap: theme.spacing.md, paddingBottom: 60 },
   flex1: { flex: 1 },
   sectionCard: { gap: theme.spacing.md },
-  fieldGroup: { gap: 6 },
-  label: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textDark },
-  dropdownBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: theme.colors.fieldFill,
-    borderRadius: theme.radius.md,
-    height: 52,
-    paddingHorizontal: theme.spacing.md,
-  },
-  dropdownText: { fontFamily: theme.fonts.regular, fontSize: 15, color: theme.colors.textDark },
-  dropdownPlaceholder: { color: theme.colors.textMuted },
   autoCapturedBox: {
     flexDirection: 'row',
     alignItems: 'center',

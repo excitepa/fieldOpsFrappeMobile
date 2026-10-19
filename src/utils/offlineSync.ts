@@ -242,6 +242,10 @@ export async function pushOutletDrafts(
         await createOutlet(draft.campaignId, {
           name: draft.name,
           type: draft.type,
+          outletTypeId: draft.outletTypeId,
+          channelId: draft.channelId,
+          subChannelId: draft.subChannelId,
+          distributorId: draft.distributorId,
           subChannel: draft.subChannel,
           address: draft.address,
           phone: draft.phone,
@@ -255,6 +259,10 @@ export async function pushOutletDrafts(
         await updateOutlet(draft.outletId, {
           name: draft.name,
           type: draft.type,
+          outletTypeId: draft.outletTypeId,
+          channelId: draft.channelId,
+          subChannelId: draft.subChannelId,
+          distributorId: draft.distributorId,
           subChannel: draft.subChannel,
           address: draft.address,
           phone: draft.phone,
