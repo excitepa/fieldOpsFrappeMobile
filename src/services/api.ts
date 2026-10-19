@@ -1503,18 +1503,15 @@ export const getMySales = async (): Promise<OutletSale[]> => {
  * does, since the app keeps a single flat product list rather than two parallel ones.
  */
 export const getMyInventory = async (): Promise<Product[]> => {
-  try {
-    const [data, tenantId] = await Promise.all([
-      authFetch('/api/method/fieldops.api.mobile_api.get_my_inventory'),
-      getTenantId(),
-    ]);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  // Every failure is thrown, so My Stock can tell "couldn't load" from "no
+  // stock" (an empty list), which isn't an error.
+  const [data, tenantId] = await Promise.all([
+    authFetch('/api/method/fieldops.api.mobile_api.get_my_inventory'),
+    getTenantId(),
+  ]);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
 };
 
 export interface StockRequestLine {

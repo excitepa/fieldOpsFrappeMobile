@@ -82,10 +82,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
       // meaning what the agent is holding right now, has to read from here and not
       // from the shared get_items-backed product catalog used by Request Stock.
       const fetched = await getMyInventory();
+      // No stock isn't a load failure: the list's own empty message says so,
+      // and the red row is kept for a load that failed.
       setMyInventory(fetched);
-      if (fetched.length === 0) {
-        setMyStockError("You don't have any stock in hand right now.");
-      }
     } catch (e: any) {
       setMyStockError(e?.message || 'Could not load your stock.');
     } finally {
@@ -369,7 +368,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               </Text>
             </View>
           )}
-          {myStockProducts.length === 0 && !loadingMyStock && (
+          {myStockProducts.length === 0 && !loadingMyStock && !myStockError && (
             <Text style={styles.emptyStockText}>You don't have any stock in hand right now — request some from the Request Stock tab.</Text>
           )}
           {myStockProducts.map((p, idx) => {

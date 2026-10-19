@@ -17,20 +17,11 @@ interface OrderWorkspaceProps {
 export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, cart, onSetQty }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const anyOutOfStock = products.some((p) => p.stock <= 0);
 
+  // Out-of-stock products say so on their own card; a banner above the list
+  // said it again.
   return (
     <View style={styles.container}>
-      {anyOutOfStock && (
-        <View style={styles.stockWarning}>
-          <Icon name="alert-circle" size={16} color={theme.colors.amber} />
-          <View style={styles.flex1}>
-            <Text style={styles.stockWarningTitle}>Some products are out of stock</Text>
-            <Text style={styles.stockWarningSub}>You need available stock to {mode === 'sale' ? 'sell' : 'order'}.</Text>
-          </View>
-        </View>
-      )}
-
       {products.length === 0 && (
         <Text style={styles.emptyText}>No products available for this {mode === 'sale' ? 'sale' : 'order'}.</Text>
       )}
@@ -156,14 +147,6 @@ const createStyles = (theme: any) => StyleSheet.create({
   container: { gap: theme.spacing.md },
   flex1: { flex: 1 },
   emptyText: { fontFamily: theme.fonts.regular, fontSize: 13, color: theme.colors.textMuted, textAlign: 'center', paddingVertical: theme.spacing.xl },
-
-  stockWarning: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm,
-    backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.md,
-    borderLeftWidth: 3, borderLeftColor: theme.colors.amber, padding: theme.spacing.md,
-  },
-  stockWarningTitle: { fontFamily: theme.fonts.bold, fontSize: 12, color: theme.colors.textDark },
-  stockWarningSub: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted, marginTop: 1 },
 
   list: { gap: theme.spacing.sm },
   productCard: {
