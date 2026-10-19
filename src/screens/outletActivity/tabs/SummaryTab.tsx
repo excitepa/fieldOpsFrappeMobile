@@ -6,6 +6,7 @@ import { Button } from '../../../components/Button';
 import { CartLine, Product } from '../../../types';
 import { StockShortfall, getStockQtyByProduct, lineKey } from '../../../utils/cart';
 import { formatQty, formatUnitQty } from '../../../utils/units';
+import { describeShortfall } from '../../../utils/stock';
 
 interface SummaryTabProps {
   mode: 'sale' | 'order';
@@ -70,7 +71,9 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
         <Text style={styles.productsLabel}>PRODUCTS</Text>
         {hasItems ? (
           <View style={styles.linesList}>
-            {cart.map((line) => {
+            {cart.map((line, idx) => {
+              // A product's shortfall covers all its lines: shown once, on its first.
+              const isFirstOfProduct = cart.findIndex((l) => l.productId === line.productId) === idx;
               const shortfall = stockShortfalls.find((s) => s.productId === line.productId);
               return (
                 <View key={lineKey(line)} style={[styles.lineRow, shortfall && styles.lineRowError]}>
@@ -79,8 +82,8 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
                     <Text style={styles.lineSub}>
                       ₦{line.unitPrice.toLocaleString()} × {formatUnitQty(line.quantity, line.uom)} · ₦{(line.unitPrice * line.quantity).toLocaleString()}
                     </Text>
-                    {shortfall && (
-                      <Text style={styles.shortfallText}>Only {shortfall.available} in stock — reduce quantity to continue</Text>
+                    {shortfall && isFirstOfProduct && (
+                      <Text style={styles.shortfallText}>{describeShortfall(shortfall, shortfall.product)}</Text>
                     )}
                   </View>
                   <Pressable onPress={() => onDeleteLine(lineKey(line))} style={styles.removeBtn}>

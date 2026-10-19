@@ -9,7 +9,7 @@ import { Button } from '../../components/Button';
 import { ScrollableTabs, TabItem } from '../../components/ScrollableTabs';
 import { useFieldStore } from '../../store/useFieldStore';
 import { generateInvoiceRef, generateOrderRef } from '../../services/mockService';
-import { getItems, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePayload } from '../../services/api';
+import { getItems, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePayload, SavedOrderLine } from '../../services/api';
 import { blockIfDayLocked } from '../../utils/dayLock';
 import { RouteName, CartLine, Draft, OutletSale, OutletOrder } from '../../types';
 import { getStockShortfalls, lineFactor, lineStockQty } from '../../utils/cart';
@@ -208,6 +208,9 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     }));
 
     let ref: string;
+    // The lines as the server saved them (free goods included) — undefined from
+    // a backend that doesn't return them, where the cart is all there is.
+    let savedLines: SavedOrderLine[] | undefined;
     try {
       if (mode === 'sale') {
         // Geo-tag the sale the same way outlet visits/surveys/EOD already do —
@@ -224,9 +227,11 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         }
         const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, coordinates);
         ref = result.ref || generateInvoiceRef();
+        savedLines = result.items;
       } else {
         const result = await submitSalesOrder(outlet.id, activeCampaign?.id || '', lines);
         ref = result.ref || generateOrderRef();
+        savedLines = result.items;
       }
     } catch (e: any) {
       setSubmitting(false);
@@ -273,7 +278,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
           invoiceRef: ref,
         };
         dispatch({ type: 'ADD_SALE', sale });
-        dispatch({ type: 'DECREMENT_STOCK', productId: line.productId, qty: lineStockQty(line), outletId: outlet.id });
+        if (!savedLines) dispatch({ type: 'DECREMENT_STOCK', productId: line.productId, qty: lineStockQty(line), outletId: outlet.id });
       } else {
         const order: OutletOrder = {
           id: `order-${Date.now()}-${idx}`,
@@ -297,6 +302,14 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         dispatch({ type: 'ADD_ORDER', order });
       }
     });
+
+    // Local stock comes down by every line the server saved, paid and free, in
+    // stock units — free goods leave the agent's stock too.
+    if (mode === 'sale' && savedLines) {
+      savedLines.forEach((line) => {
+        dispatch({ type: 'DECREMENT_STOCK', productId: line.itemCode, qty: line.stockQty, outletId: outlet.id });
+      });
+    }
 
     dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
     if (routeData?.resumeDraftId) dispatch({ type: 'DELETE_DRAFT', draftId: routeData.resumeDraftId });

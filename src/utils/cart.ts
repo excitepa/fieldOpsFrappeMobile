@@ -78,21 +78,49 @@ export function getStockQtyByProduct(cart: CartLine[]): Map<string, number> {
   return totals;
 }
 
+/** Stock a cart needs beyond its own lines — the free goods it earns (see previewFreeGoods). */
+export interface ExtraStockNeed {
+  productId: string;
+  productName: string;
+  stockQty: number;
+}
+
 export interface StockShortfall {
   productId: string;
   productName: string;
+  /** Stock units the cart needs of this product, its free goods included. */
   requested: number;
+  /** Of `requested`, the stock units that are free goods. */
+  freeQty: number;
+  /** The product's stock, in stock units. */
   available: number;
+  product?: Product;
 }
 
-/** Sale-mode-only check: a cart line may not exceed the product's live stock. */
-export function getStockShortfalls(cart: CartLine[], products: Product[]): StockShortfall[] {
+/**
+ * Sale-mode-only check, per product: the stock units of all its lines (cartons,
+ * packs and loose units alike) plus the free goods of it the cart earns may not
+ * exceed its live stock.
+ */
+export function getStockShortfalls(cart: CartLine[], products: Product[], extra: ExtraStockNeed[] = []): StockShortfall[] {
+  const needs = new Map<string, { productName: string; paid: number; free: number }>();
+  cart.forEach((l) => {
+    const need = needs.get(l.productId) || { productName: l.productName, paid: 0, free: 0 };
+    need.paid += lineStockQty(l);
+    needs.set(l.productId, need);
+  });
+  extra.forEach((e) => {
+    const need = needs.get(e.productId) || { productName: e.productName, paid: 0, free: 0 };
+    need.free += e.stockQty;
+    needs.set(e.productId, need);
+  });
   const shortfalls: StockShortfall[] = [];
-  cart.forEach((line) => {
-    const product = products.find((p) => p.id === line.productId);
+  needs.forEach((need, productId) => {
+    const product = products.find((p) => p.id === productId);
     const available = product?.stock ?? 0;
-    if (lineStockQty(line) > available) {
-      shortfalls.push({ productId: line.productId, productName: line.productName, requested: lineStockQty(line), available });
+    const requested = need.paid + need.free;
+    if (requested > available + 1e-9) {
+      shortfalls.push({ productId, productName: product?.name || need.productName, requested, freeQty: need.free, available, product });
     }
   });
   return shortfalls;

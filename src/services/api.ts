@@ -1080,6 +1080,57 @@ export interface OrderLinePayload {
   rate: number;
 }
 
+/** A line as the server saved it — priced by the server, free goods included. */
+export interface SavedOrderLine {
+  itemCode: string;
+  itemName: string;
+  uom?: string;
+  /** Quantity in `uom`. */
+  qty: number;
+  conversionFactor: number;
+  /** Quantity in stock units. */
+  stockQty: number;
+  /** Price for one `uom` (0 for a free line). */
+  rate: number;
+  amount: number;
+  isFree: boolean;
+  promotionName?: string;
+}
+
+/**
+ * One sale/order line from submit_field_sale, submit_sales_order, get_my_sales
+ * or get_my_orders. Older backends send no uom / conversion_factor / stock_qty:
+ * such a line is in stock units.
+ */
+const mapSavedLine = (raw: any): SavedOrderLine => {
+  const qty = Number(raw?.qty ?? raw?.quantity) || 0;
+  const conversionFactor = Number(raw?.conversion_factor) || 1;
+  const rate = Number(raw?.rate ?? raw?.unit_price) || 0;
+  const itemCode = String(raw?.item_code || raw?.item || raw?.product_id || '');
+  return {
+    itemCode,
+    itemName: raw?.item_name || raw?.product_name || itemCode || 'Item',
+    uom: raw?.uom || undefined,
+    qty,
+    conversionFactor,
+    stockQty: Number(raw?.stock_qty) || qty * conversionFactor,
+    rate,
+    amount: Number(raw?.amount) || rate * qty,
+    isFree: Boolean(raw?.is_free),
+    promotionName: raw?.promotion_name || undefined,
+  };
+};
+
+/** The saved lines and total a submit returns — undefined from a backend that doesn't send them. */
+const mapSubmitResult = (result: any): { items?: SavedOrderLine[]; totalAmount?: number } => {
+  const items = Array.isArray(result?.items) ? result.items.map(mapSavedLine).filter((l: SavedOrderLine) => l.itemCode) : undefined;
+  const total = Number(result?.total_amount);
+  return {
+    items: items && items.length > 0 ? items : undefined,
+    totalAmount: items && items.length > 0 && Number.isFinite(total) ? total : undefined,
+  };
+};
+
 /**
  * Submit an immediate, paid transaction via the RPC contract (`submit_field_sale`).
  * There's no payment-method picker on the Sale flow yet, so `payment_type` defaults
@@ -1097,7 +1148,7 @@ export const submitFieldSale = async (
   lines: OrderLinePayload[],
   amountPaid: number,
   coordinates?: { lat: number; lng: number }
-): Promise<{ ref: string }> => {
+): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
     outlet: outletId,
@@ -1132,7 +1183,7 @@ export const submitFieldSale = async (
   });
   const result = data?.message ?? data?.data ?? data;
   const ref = result?.sale_id || result?.invoice_id || result?.name || result?.id || '';
-  return { ref: String(ref) };
+  return { ref: String(ref), ...mapSubmitResult(result) };
 };
 
 /**
@@ -1150,7 +1201,7 @@ export const submitSalesOrder = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[]
-): Promise<{ ref: string }> => {
+): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body = {
     outletId,
@@ -1177,7 +1228,7 @@ export const submitSalesOrder = async (
   });
   const result = data?.message ?? data?.data ?? data;
   const ref = result?.order_id || result?.name || result?.id || '';
-  return { ref: String(ref) };
+  return { ref: String(ref), ...mapSubmitResult(result) };
 };
 
 /**
