@@ -1,4 +1,5 @@
 import { Alert } from 'react-native';
+import { debugError } from './logger';
 
 /**
  * React Native's own default error handler (installed automatically before any
@@ -27,7 +28,7 @@ export function installGlobalErrorHandlers(): void {
   g.ErrorUtils.setGlobalHandler((error: any, isFatal?: boolean) => {
     try {
       const message = error?.message || String(error) || 'Unknown error';
-      console.error('[Unhandled Error]', isFatal ? 'FATAL' : 'non-fatal', message, error?.stack);
+      debugError('[Unhandled Error]', isFatal ? 'FATAL' : 'non-fatal', message, error?.stack);
       Alert.alert(
         isFatal ? 'Something went wrong' : 'Action failed',
         message,

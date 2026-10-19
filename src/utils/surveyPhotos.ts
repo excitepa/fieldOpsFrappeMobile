@@ -2,6 +2,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { uploadSurveyPhoto } from '../services/api';
 import { PendingSurveyPhoto } from '../types';
+import { debugLog } from './logger';
 
 const MAX_WIDTH = 1280;
 const JPEG_QUALITY = 0.6;
@@ -21,7 +22,7 @@ export const keepSurveyPhoto = async (uri: string, width?: number): Promise<stri
     const image = await context.renderAsync();
     source = (await image.saveAsync({ compress: JPEG_QUALITY, format: SaveFormat.JPEG })).uri;
   } catch (e) {
-    console.log('[surveyPhotos] could not shrink photo, keeping the original', e);
+    debugLog('[surveyPhotos] could not shrink photo, keeping the original', e);
   }
   try {
     const dir = new Directory(Paths.document, 'survey-photos');
@@ -31,7 +32,7 @@ export const keepSurveyPhoto = async (uri: string, width?: number): Promise<stri
     new File(source).copySync(kept);
     return kept.uri;
   } catch (e) {
-    console.log('[surveyPhotos] could not keep photo in documents, using it in place', e);
+    debugLog('[surveyPhotos] could not keep photo in documents, using it in place', e);
     return source;
   }
 };
@@ -51,7 +52,7 @@ export const discardSurveyPhoto = (uri?: string | null) => {
   try {
     new File(uri as string).delete();
   } catch (e) {
-    console.log('[surveyPhotos] could not delete photo', uri, e);
+    debugLog('[surveyPhotos] could not delete photo', uri, e);
   }
 };
 
@@ -78,7 +79,7 @@ export const uploadSurveyPhotos = async (
         uploaded = true;
       } catch (e: any) {
         reason = e?.message || 'The photo upload failed for an unknown reason.';
-        console.log(`[surveyPhotos] response ${responseId} photo for ${questionId} failed (attempt ${attempt}/2) ->`, reason);
+        debugLog(`[surveyPhotos] response ${responseId} photo for ${questionId} failed (attempt ${attempt}/2) ->`, reason);
       }
     }
     if (uploaded) {

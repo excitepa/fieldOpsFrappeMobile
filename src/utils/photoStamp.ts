@@ -3,6 +3,7 @@ import { View } from 'react-native';
 import * as Location from 'expo-location';
 import { captureRef } from 'react-native-view-shot';
 import { Directory, File, Paths } from 'expo-file-system';
+import { debugLog } from './logger';
 
 type Coords = { lat: number; lng: number };
 
@@ -63,7 +64,7 @@ export const burnStampIntoPhoto = async (ref: RefObject<View | null>, photoUri: 
     try {
       return await captureRef(ref, { format: 'jpg', quality: 0.85 });
     } catch (e) {
-      console.log('[photoStamp] watermark capture failed, attempt', attempt + 1, e);
+      debugLog('[photoStamp] watermark capture failed, attempt', attempt + 1, e);
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
     }
   }
@@ -84,7 +85,7 @@ export const keepPhotoForDraft = (photoUri: string): string => {
     source.copySync(copy);
     return copy.uri;
   } catch (e) {
-    console.log('[photoStamp] could not keep draft photo, using the original', e);
+    debugLog('[photoStamp] could not keep draft photo, using the original', e);
     return photoUri;
   }
 };

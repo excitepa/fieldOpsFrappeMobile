@@ -5,6 +5,7 @@ import {
 } from '../services/api';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto } from '../types';
 import { uploadSurveyPhotos, discardSurveyPhoto, surveyPhotoExists } from './surveyPhotos';
+import { debugLog } from './logger';
 
 /**
  * Refreshes the core server-owned datasets the app caches locally (outlets,
@@ -44,7 +45,7 @@ export interface SyncResult {
 /** Records a failed push with the real reason, and logs it for a device log trail. */
 const noteFailure = (errors: string[], label: string, e: any) => {
   const reason = e?.message || String(e) || 'Unknown error';
-  console.log('[offlineSync] failed to push', label, '->', reason);
+  debugLog('[offlineSync] failed to push', label, '->', reason);
   errors.push(`${label}: ${reason}`);
 };
 

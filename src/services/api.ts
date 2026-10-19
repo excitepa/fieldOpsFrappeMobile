@@ -14,6 +14,7 @@ import {
 } from './apiConfig';
 import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
+import { debugLog } from '../utils/logger';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
 export class AuthError extends Error {}
@@ -78,7 +79,7 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
   const url = `${getBaseUrl(tenantId)}${path}`;
   const method = options.method || 'GET';
   const isUpload = options.body instanceof FormData;
-  console.log('[FieldOps API]', method, url, isUpload ? '(form-data)' : options.body ?? '');
+  debugLog('[FieldOps API]', method, url, isUpload ? '(form-data)' : options.body ?? '');
 
   let response: Response;
   const controller = new AbortController();
@@ -112,7 +113,7 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
       isTimeout ||
       String(err?.message ?? '').startsWith('fetch failed') ||
       (err instanceof TypeError && err.message === 'Network request failed');
-    console.log(
+    debugLog(
       '[FieldOps API]', method, url,
       isTimeout ? '-> TIMEOUT' : isConnectionFailure ? '-> NETWORK ERROR' : '-> REQUEST NOT SENT',
       err?.message || err,
@@ -142,7 +143,7 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
   }
 
   const rawText = await response.text();
-  console.log('[FieldOps API]', method, url, '->', response.status, rawText);
+  debugLog('[FieldOps API]', method, url, '->', response.status, rawText);
 
   let data: any;
   try {
@@ -246,11 +247,8 @@ export const login = async (email: string, password: string, tenantId: string): 
   const url = `${getBaseUrl(tenantId)}/auth/login`;
   const body = { email, password, tenantID: tenantId };
 
-  console.log('[FieldOps API] POST', url, {
-    ...body,
-    email: JSON.stringify(email),
-    password: `<${password.length} chars, starts "${password[0] ?? ''}", ends "${password[password.length - 1] ?? ''}">`,
-  });
+  // Never the credentials or the response body (it carries the access token).
+  debugLog('[FieldOps API] POST', url);
 
   const response = await fetch(url, {
     method: 'POST',
@@ -262,13 +260,13 @@ export const login = async (email: string, password: string, tenantId: string): 
   });
 
   const rawText = await response.text();
-  console.log('[FieldOps API] login response', response.status, rawText);
+  debugLog('[FieldOps API] login response', response.status);
 
   let data: any;
   try {
     data = JSON.parse(rawText);
   } catch (err) {
-    console.log('[FieldOps API] login response was not valid JSON', err);
+    debugLog('[FieldOps API] login response was not valid JSON', err);
     return { success: false, message: `Server returned an unexpected response (HTTP ${response.status}).` };
   }
 
@@ -868,7 +866,7 @@ export const createOutlet = async (
         photoError = undefined;
       } catch (e: any) {
         photoError = e?.message || 'The photo upload failed for an unknown reason.';
-        console.log(`[createOutlet] outlet ${outletId} saved but photo upload failed (attempt ${attempt}/2) ->`, photoError, e);
+        debugLog(`[createOutlet] outlet ${outletId} saved but photo upload failed (attempt ${attempt}/2) ->`, photoError, e);
       }
     }
   }
