@@ -3,7 +3,10 @@ import { OutletSale, OutletOrder } from '../types';
 export interface TransactionLine {
   productId: string;
   productName: string;
+  /** Quantity in `uom` (stock units when there's no uom). */
   quantity: number;
+  uom?: string;
+  stockQty?: number;
   unitPrice: number;
   discount: number;
   total: number;
@@ -24,11 +27,13 @@ export interface GroupedTransaction {
   promoLabel?: string;
 }
 
-function toLine(item: { productId: string; productName: string; quantity: number; unitPrice: number; discount: number; total: number }): TransactionLine {
+function toLine(item: OutletSale | OutletOrder): TransactionLine {
   return {
     productId: item.productId,
     productName: item.productName,
     quantity: item.quantity,
+    uom: item.uom,
+    stockQty: item.stockQty,
     unitPrice: item.unitPrice,
     discount: item.discount,
     total: item.total,

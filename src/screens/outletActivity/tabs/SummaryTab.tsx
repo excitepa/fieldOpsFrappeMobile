@@ -4,7 +4,8 @@ import { useTheme } from '../../../theme/ThemeContext';
 import { Icon } from '../../../components/Icon';
 import { Button } from '../../../components/Button';
 import { CartLine, Product } from '../../../types';
-import { StockShortfall } from '../../../utils/cart';
+import { StockShortfall, getStockQtyByProduct, lineKey } from '../../../utils/cart';
+import { formatQty, formatUnitQty } from '../../../utils/units';
 
 interface SummaryTabProps {
   mode: 'sale' | 'order';
@@ -14,7 +15,7 @@ interface SummaryTabProps {
   total: number;
   stockShortfalls: StockShortfall[];
   submitting: boolean;
-  onDeleteLine: (productId: string) => void;
+  onDeleteLine: (key: string) => void;
   onEdit: () => void;
   onSaveDraft: () => void;
   onSubmit: () => void;
@@ -33,11 +34,15 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
   const hasItems = cart.length > 0;
   const hasShortfall = stockShortfalls.length > 0;
 
-  const totalCases = cart.reduce((sum, line) => {
-    const product = products.find((p) => p.id === line.productId);
-    const perCase = product?.unitsPerCase || 0;
-    return sum + (perCase > 0 ? Math.floor(line.quantity / perCase) : 0);
-  }, 0);
+  // Lines can mix units (cartons and loose units of one product), so both
+  // counts work per product, from its stock units across all its lines.
+  const stockQtyByProduct = getStockQtyByProduct(cart);
+  const totalSkus = stockQtyByProduct.size;
+  let totalCases = 0;
+  stockQtyByProduct.forEach((stockQty, productId) => {
+    const perCase = products.find((p) => p.id === productId)?.unitsPerCase || 0;
+    if (perCase > 0) totalCases += stockQty / perCase;
+  });
 
   return (
     <View style={styles.container}>
@@ -53,11 +58,11 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
         </View>
         <View style={styles.summaryRow}>
           <Text style={styles.summaryRowLabel}>Total SKUs</Text>
-          <Text style={styles.summaryRowValue}>{cart.length}</Text>
+          <Text style={styles.summaryRowValue}>{totalSkus}</Text>
         </View>
         <View style={styles.summaryRow}>
           <Text style={styles.summaryRowLabel}>Total Cases</Text>
-          <Text style={styles.summaryRowValue}>{totalCases}</Text>
+          <Text style={styles.summaryRowValue}>{formatQty(Math.round(totalCases * 10) / 10)}</Text>
         </View>
       </View>
 
@@ -68,17 +73,17 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
             {cart.map((line) => {
               const shortfall = stockShortfalls.find((s) => s.productId === line.productId);
               return (
-                <View key={line.productId} style={[styles.lineRow, shortfall && styles.lineRowError]}>
+                <View key={lineKey(line)} style={[styles.lineRow, shortfall && styles.lineRowError]}>
                   <View style={styles.flex1}>
                     <Text style={styles.lineName}>{line.productName}</Text>
                     <Text style={styles.lineSub}>
-                      ₦{line.unitPrice.toLocaleString()} × {line.quantity} · ₦{(line.unitPrice * line.quantity).toLocaleString()}
+                      ₦{line.unitPrice.toLocaleString()} × {formatUnitQty(line.quantity, line.uom)} · ₦{(line.unitPrice * line.quantity).toLocaleString()}
                     </Text>
                     {shortfall && (
                       <Text style={styles.shortfallText}>Only {shortfall.available} in stock — reduce quantity to continue</Text>
                     )}
                   </View>
-                  <Pressable onPress={() => onDeleteLine(line.productId)} style={styles.removeBtn}>
+                  <Pressable onPress={() => onDeleteLine(lineKey(line))} style={styles.removeBtn}>
                     <Icon name="minus" size={16} color={theme.colors.red} />
                   </Pressable>
                 </View>

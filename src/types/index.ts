@@ -147,11 +147,23 @@ export interface Lead {
 }
 
 // ─── Product / Inventory ──────────────────────────────────────────────────────
+/** One unit a product sells in (its stock unit, a pack, a carton...), as get_items sends it. */
+export interface ProductUnit {
+  uom: string;
+  /** Stock units in one of this unit — 1 for the stock unit. */
+  conversionFactor: number;
+  /** Price for one of this unit. */
+  price: number;
+  mustBeWholeNumber: boolean;
+}
+
 export interface Product {
   id: string;
   name: string;
   sku: string;
+  /** Price for one stock unit. */
   price: number;
+  /** Always in stock units. */
   stock: number;
   category?: string;
   warehouse: string;
@@ -159,8 +171,16 @@ export interface Product {
   imageUrl?: string;
   description?: string;
   minStock?: number;
-  /** Display unit word for stock counts, e.g. "application" or "pack". */
+  /** The stock unit's name, e.g. "Unit", "application" or "pack". */
   unit?: string;
+  brand?: string;
+  size?: string;
+  /** Default sales unit — listed first on the Sale/Order steppers. */
+  salesUom?: string;
+  /** Every unit it sells in, stock unit first. Missing from an older backend
+   *  (and mock data): it then sells only in its stock unit at `price` — see
+   *  getProductUnits. */
+  units?: ProductUnit[];
   /** Campaign-highlighted product — shown with a "Focus product" badge on Stock Request. */
   focusProduct?: boolean;
 }
@@ -279,15 +299,20 @@ export interface Customer {
 }
 
 // ─── Outlet Activities ────────────────────────────────────────────────────────
-export type PromoDiscount = { label: string; pct: number };
-
 export interface OutletSale {
   id: string;
   outletId: string;
   campaignId: string;
   productId: string;
   productName: string;
+  /** Quantity in `uom` (stock units when there's no uom). */
   quantity: number;
+  /** The unit the line was sold in; missing on records from before units. */
+  uom?: string;
+  conversionFactor?: number;
+  /** The line's quantity in stock units. */
+  stockQty?: number;
+  /** Price for one `uom`. */
   unitPrice: number;
   discount: number;
   total: number;
@@ -304,7 +329,14 @@ export interface OutletOrder {
   campaignId: string;
   productId: string;
   productName: string;
+  /** Quantity in `uom` (stock units when there's no uom). */
   quantity: number;
+  /** The unit the line was ordered in; missing on records from before units. */
+  uom?: string;
+  conversionFactor?: number;
+  /** The line's quantity in stock units. */
+  stockQty?: number;
+  /** Price for one `uom`. */
   unitPrice: number;
   discount: number;
   total: number;
@@ -370,13 +402,19 @@ export interface AttendanceRecord {
 }
 
 // ─── Cart / Draft ─────────────────────────────────────────────────────────────
+/** One cart line per product and unit. */
 export interface CartLine {
   productId: string;
   productName: string;
+  /** The unit `quantity` counts in. Missing on lines saved before units
+   *  existed — those are in the product's stock unit. */
+  uom?: string;
+  /** Stock units in one `uom`; missing means 1 (a pre-units line). */
+  conversionFactor?: number;
+  /** Price for one `uom` — a preview: the server prices every line itself. */
   unitPrice: number;
+  /** Quantity in `uom`. */
   quantity: number;
-  discount: number;
-  promoLabel?: string;
 }
 
 export interface Draft {
@@ -390,7 +428,6 @@ export interface Draft {
    *  it's still queued when the agent's active campaign has since changed. */
   campaignId?: string;
   cart: CartLine[];
-  promoLabel?: string;
   updatedAt: string;
   pendingSync: true;
 }

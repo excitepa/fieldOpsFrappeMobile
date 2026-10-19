@@ -1,54 +1,81 @@
-import { CartLine, Product, PromoDiscount } from '../types';
+import { CartLine, Product, ProductUnit } from '../types';
 
-export function addLine(cart: CartLine[], product: Product, qty: number, promo: PromoDiscount): CartLine[] {
-  const existing = cart.find((l) => l.productId === product.id);
-  const discount = (unitPrice: number, quantity: number) => Math.round(unitPrice * quantity * (promo.pct / 100));
+const sameUom = (a?: string, b?: string) => (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
 
-  if (existing) {
-    const nextQty = existing.quantity + qty;
-    return cart.map((l) =>
-      l.productId === product.id
-        ? { ...l, quantity: nextQty, discount: discount(l.unitPrice, nextQty), promoLabel: promo.pct > 0 ? promo.label : undefined }
-        : l
-    );
-  }
-
-  return [
-    ...cart,
-    {
-      productId: product.id,
-      productName: product.name,
-      unitPrice: product.price,
-      quantity: qty,
-      discount: discount(product.price, qty),
-      promoLabel: promo.pct > 0 ? promo.label : undefined,
-    },
-  ];
+/**
+ * Every unit a product sells in, stock unit first. An older backend sends no
+ * `units`, so the product then sells only in its stock unit at its price, as
+ * before packs and cartons existed.
+ */
+export function getProductUnits(product: Product): ProductUnit[] {
+  if (product.units && product.units.length > 0) return product.units;
+  return [{ uom: product.unit || 'Unit', conversionFactor: 1, price: product.price, mustBeWholeNumber: true }];
 }
 
-export function removeLine(cart: CartLine[], productId: string): CartLine[] {
-  return cart.filter((l) => l.productId !== productId);
+/** The product's stock unit — the one a line without a uom is counted in. */
+export function getStockUnit(product: Product): ProductUnit {
+  const units = getProductUnits(product);
+  return units.find((u) => sameUom(u.uom, product.unit)) || units.find((u) => u.conversionFactor === 1) || units[0];
 }
 
-export function updateLineQty(cart: CartLine[], productId: string, qty: number): CartLine[] {
-  if (qty <= 0) return removeLine(cart, productId);
-  return cart.map((l) => (l.productId === productId ? { ...l, quantity: qty } : l));
+/** The units in the order the Sale/Order steppers show them: default sales unit first. */
+export function getSellingUnits(product: Product): ProductUnit[] {
+  const units = getProductUnits(product);
+  const idx = product.salesUom ? units.findIndex((u) => sameUom(u.uom, product.salesUom)) : -1;
+  return idx > 0 ? [units[idx], ...units.slice(0, idx), ...units.slice(idx + 1)] : units;
 }
 
-export function getCartSubtotal(cart: CartLine[]): number {
-  return cart.reduce((acc, l) => acc + l.unitPrice * l.quantity, 0);
+/** Stock units in one of a line's unit — a line saved before units has no factor: it's in stock units. */
+export const lineFactor = (line: CartLine): number => line.conversionFactor || 1;
+
+export const lineStockQty = (line: CartLine): number => line.quantity * lineFactor(line);
+
+/** Identifies a line: one per product and unit (a pre-units line has no uom). */
+export const lineKey = (line: Pick<CartLine, 'productId' | 'uom'>): string =>
+  `${line.productId}::${(line.uom || '').trim().toLowerCase()}`;
+
+/** Whether `line` is the product's line in `unit` — a line without a uom (from a draft saved before units) is its stock unit line. */
+export function isLineInUnit(line: CartLine, product: Product, unit: ProductUnit): boolean {
+  if (line.productId !== product.id) return false;
+  return line.uom ? sameUom(line.uom, unit.uom) : sameUom(unit.uom, getStockUnit(product).uom);
 }
 
-export function getCartDiscount(cart: CartLine[]): number {
-  return cart.reduce((acc, l) => acc + l.discount, 0);
+export function findLine(cart: CartLine[], product: Product, unit: ProductUnit): CartLine | undefined {
+  return cart.find((l) => isLineInUnit(l, product, unit));
+}
+
+/**
+ * Sets the product's quantity in one unit outright, adding the line if it
+ * isn't there and removing it at 0. A line the agent changes takes its unit's
+ * current price, factor and name, which also upgrades a pre-units draft line.
+ */
+export function setLineQty(cart: CartLine[], product: Product, unit: ProductUnit, qty: number): CartLine[] {
+  const existing = findLine(cart, product, unit);
+  if (qty <= 0) return existing ? cart.filter((l) => l !== existing) : cart;
+  const line: CartLine = {
+    productId: product.id,
+    productName: product.name,
+    uom: unit.uom,
+    conversionFactor: unit.conversionFactor,
+    unitPrice: unit.price,
+    quantity: qty,
+  };
+  return existing ? cart.map((l) => (l === existing ? line : l)) : [...cart, line];
+}
+
+export function removeLine(cart: CartLine[], key: string): CartLine[] {
+  return cart.filter((l) => lineKey(l) !== key);
 }
 
 export function getCartTotal(cart: CartLine[]): number {
-  return getCartSubtotal(cart) - getCartDiscount(cart);
+  return cart.reduce((acc, l) => acc + l.unitPrice * l.quantity, 0);
 }
 
-export function getCartItemCount(cart: CartLine[]): number {
-  return cart.reduce((acc, l) => acc + l.quantity, 0);
+/** Stock units of each product across all its lines. */
+export function getStockQtyByProduct(cart: CartLine[]): Map<string, number> {
+  const totals = new Map<string, number>();
+  cart.forEach((l) => totals.set(l.productId, (totals.get(l.productId) || 0) + lineStockQty(l)));
+  return totals;
 }
 
 export interface StockShortfall {
@@ -64,8 +91,8 @@ export function getStockShortfalls(cart: CartLine[], products: Product[]): Stock
   cart.forEach((line) => {
     const product = products.find((p) => p.id === line.productId);
     const available = product?.stock ?? 0;
-    if (line.quantity > available) {
-      shortfalls.push({ productId: line.productId, productName: line.productName, requested: line.quantity, available });
+    if (lineStockQty(line) > available) {
+      shortfalls.push({ productId: line.productId, productName: line.productName, requested: lineStockQty(line), available });
     }
   });
   return shortfalls;

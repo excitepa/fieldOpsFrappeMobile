@@ -8,6 +8,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { groupSalesByInvoice } from '../utils/transactions';
+import { formatUnitQty } from '../utils/units';
 import { RouteName } from '../types';
 
 interface SaleReceiptScreenProps {
@@ -57,9 +58,9 @@ export const SaleReceiptScreen: React.FC<SaleReceiptScreenProps> = ({ routeData,
             <Text style={styles.val}>{transaction?.customerName}</Text>
           </View>
 
-          {transaction?.lines.map((line) => (
-            <View key={line.productId} style={styles.sectionRow}>
-              <Text style={styles.label}>{line.productName} × {line.quantity}</Text>
+          {transaction?.lines.map((line, idx) => (
+            <View key={`${line.productId}-${idx}`} style={styles.sectionRow}>
+              <Text style={styles.label}>{line.productName} × {formatUnitQty(line.quantity, line.uom)}</Text>
               <Text style={styles.val}>₦{line.total.toLocaleString()}</Text>
             </View>
           ))}

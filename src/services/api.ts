@@ -12,7 +12,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, ProductUnit, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
@@ -995,6 +995,25 @@ const resolveImageUrl = (raw: string | undefined, baseUrl: string): string | und
   return `${baseUrl}${raw.startsWith('/') ? '' : '/'}${raw}`;
 };
 
+/**
+ * The units a product sells in, stock unit first, each priced for one of that
+ * unit (`units` from get_items and the inventory endpoints). An older backend
+ * sends none — the product then sells only in its stock unit (see
+ * getProductUnits), so this returns undefined rather than inventing one.
+ */
+const mapUnits = (raw: any): ProductUnit[] | undefined => {
+  if (!Array.isArray(raw?.units)) return undefined;
+  const units = raw.units
+    .filter((u: any) => u?.uom && Number(u?.conversion_factor) > 0)
+    .map((u: any): ProductUnit => ({
+      uom: String(u.uom),
+      conversionFactor: Number(u.conversion_factor),
+      price: Number(u.price) || 0,
+      mustBeWholeNumber: u.must_be_whole_number !== false,
+    }));
+  return units.length > 0 ? units : undefined;
+};
+
 const mapItem = (raw: any, baseUrl: string): Product => {
   const price = Number(raw?.rate ?? raw?.standard_rate ?? raw?.selling_price ?? raw?.price) || 0;
   // current_stock/on_hand/qty are the field names the backend documented for get_items/
@@ -1013,6 +1032,10 @@ const mapItem = (raw: any, baseUrl: string): Product => {
     imageUrl: resolveImageUrl(raw?.image || raw?.image_url || undefined, baseUrl),
     description: raw?.description || undefined,
     unit: raw?.stock_uom || raw?.unit || undefined,
+    brand: raw?.brand || undefined,
+    size: raw?.size || undefined,
+    salesUom: raw?.sales_uom || undefined,
+    units: mapUnits(raw),
   };
 };
 
@@ -1048,7 +1071,12 @@ export const getItems = async (): Promise<Product[]> => {
 export interface OrderLinePayload {
   itemCode: string;
   itemName?: string;
+  /** Quantity in `uom`. */
   qty: number;
+  /** The unit `qty` counts in — none means the stock unit, as older app versions send. */
+  uom?: string;
+  /** Price for one `uom`: the server prices every line itself and ignores this,
+   *  but an older backend still saves it. */
   rate: number;
 }
 
@@ -1084,6 +1112,7 @@ export const submitFieldSale = async (
       item_name: l.itemName,
       quantity: l.qty,
       qty: l.qty,
+      ...(l.uom ? { uom: l.uom } : {}),
       rate: l.rate,
       unit_price: l.rate,
       amount: l.qty * l.rate,
@@ -1134,6 +1163,7 @@ export const submitSalesOrder = async (
       product_id: l.itemCode,
       product_name: l.itemName,
       qty: l.qty,
+      ...(l.uom ? { uom: l.uom } : {}),
       unitPrice: l.rate,
       unit_price: l.rate,
       amount: l.qty * l.rate,

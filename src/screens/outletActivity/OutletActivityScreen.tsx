@@ -12,7 +12,7 @@ import { generateInvoiceRef, generateOrderRef } from '../../services/mockService
 import { getItems, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePayload } from '../../services/api';
 import { blockIfDayLocked } from '../../utils/dayLock';
 import { RouteName, CartLine, Draft, OutletSale, OutletOrder } from '../../types';
-import { getStockShortfalls } from '../../utils/cart';
+import { getStockShortfalls, lineFactor, lineStockQty } from '../../utils/cart';
 import { useCart } from './useCart';
 import { OrderWorkspace } from './OrderWorkspace';
 import { SurveyTab } from './tabs/SurveyTab';
@@ -197,10 +197,13 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
       month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
     });
 
+    // Each line goes in its own unit; a line from a draft saved before units has
+    // no uom, which the server reads as the stock unit.
     const lines: OrderLinePayload[] = activeCart.cart.map((line) => ({
       itemCode: line.productId,
       itemName: line.productName,
       qty: line.quantity,
+      uom: line.uom,
       rate: line.unitPrice,
     }));
 
@@ -249,37 +252,42 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
       return;
     }
 
-    activeCart.cart.forEach((line) => {
+    activeCart.cart.forEach((line, idx) => {
       if (mode === 'sale') {
         const sale: OutletSale = {
-          id: `sale-${Date.now()}-${line.productId}`,
+          id: `sale-${Date.now()}-${idx}`,
           outletId: outlet.id,
           campaignId: activeCampaign?.id || 'c2',
           productId: line.productId,
           productName: line.productName,
           quantity: line.quantity,
+          uom: line.uom,
+          conversionFactor: lineFactor(line),
+          stockQty: lineStockQty(line),
           unitPrice: line.unitPrice,
-          discount: line.discount,
-          total: line.unitPrice * line.quantity - line.discount,
+          discount: 0,
+          total: line.unitPrice * line.quantity,
           customerId: outlet.id,
           customerName: outlet.name,
-          promoLabel: line.promoLabel,
           timestamp: nowStr,
           invoiceRef: ref,
         };
         dispatch({ type: 'ADD_SALE', sale });
-        dispatch({ type: 'DECREMENT_STOCK', productId: line.productId, qty: line.quantity, outletId: outlet.id });
+        dispatch({ type: 'DECREMENT_STOCK', productId: line.productId, qty: lineStockQty(line), outletId: outlet.id });
       } else {
         const order: OutletOrder = {
-          id: `order-${Date.now()}-${line.productId}`,
+          id: `order-${Date.now()}-${idx}`,
           outletId: outlet.id,
           campaignId: activeCampaign?.id || 'c2',
           productId: line.productId,
           productName: line.productName,
           quantity: line.quantity,
+          uom: line.uom,
+          conversionFactor: lineFactor(line),
+          stockQty: lineStockQty(line),
           unitPrice: line.unitPrice,
-          discount: line.discount,
-          total: line.unitPrice * line.quantity - line.discount,
+          discount: 0,
+          total: line.unitPrice * line.quantity,
           customerId: outlet.id,
           customerName: outlet.name,
           status: 'Pending',

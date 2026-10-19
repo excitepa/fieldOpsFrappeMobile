@@ -2,13 +2,15 @@ import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { useTheme } from '../../theme/ThemeContext';
 import { Icon } from '../../components/Icon';
-import { CartLine, Product } from '../../types';
+import { CartLine, Product, ProductUnit } from '../../types';
+import { findLine, getSellingUnits, getStockUnit, lineStockQty } from '../../utils/cart';
+import { formatUnitQty, unitWord, formatQty } from '../../utils/units';
 
 interface OrderWorkspaceProps {
   mode: 'sale' | 'order';
   products: Product[];
   cart: CartLine[];
-  onSetQty: (product: Product, qty: number) => void;
+  onSetQty: (product: Product, unit: ProductUnit, qty: number) => void;
 }
 
 export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, cart, onSetQty }) => {
@@ -34,12 +36,13 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
 
       <View style={styles.list}>
         {products.map((p) => {
-          const line = cart.find((l) => l.productId === p.id);
-          const qty = line?.quantity || 0;
-          const unitsPerCase = p.unitsPerCase || 1;
-          const cases = Math.floor(qty / unitsPerCase);
-          const units = qty % unitsPerCase;
+          const units = getSellingUnits(p);
+          const stockUnit = getStockUnit(p);
+          const lines = cart.filter((l) => l.productId === p.id);
+          const stockQty = lines.reduce((sum, l) => sum + lineStockQty(l), 0);
+          const amount = lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
           const outOfStock = p.stock <= 0;
+          const meta = [p.brand, p.size, `₦${stockUnit.price.toLocaleString()} / ${unitWord(stockUnit.uom, 1)}`].filter(Boolean).join(' · ');
 
           return (
             <View key={p.id} style={[styles.productCard, outOfStock && styles.productCardDisabled]}>
@@ -49,9 +52,7 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.productName}>{p.name}</Text>
-                  <Text style={styles.productMeta}>
-                    ₦{p.price.toLocaleString()} / {p.unit || 'unit'} · {unitsPerCase} per case
-                  </Text>
+                  <Text style={styles.productMeta}>{meta}</Text>
                 </View>
                 {outOfStock && (
                   <View style={styles.oosBadge}>
@@ -62,34 +63,38 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
 
               {!outOfStock && (
                 <>
-                  <View style={styles.stepperRow}>
-                    {unitsPerCase > 1 ? (
-                      <>
-                        <Stepper
-                          label="CASES"
-                          value={cases}
-                          onChange={(v) => onSetQty(p, Math.max(0, v) * unitsPerCase + units)}
-                        />
-                        <Stepper
-                          label="UNITS"
-                          value={units}
-                          onChange={(v) => onSetQty(p, cases * unitsPerCase + Math.max(0, v))}
-                        />
-                      </>
-                    ) : (
-                      // A product with no real case packaging (unitsPerCase <= 1, the
-                      // default when the backend doesn't send units_per_case/
-                      // conversion_factor) has no room for a leftover unit — qty % 1 is
-                      // always 0, so the UNITS stepper could never show anything but 0
-                      // no matter how many times it was pressed, while CASES silently
-                      // absorbed every tap instead. One QUANTITY stepper avoids that
-                      // dead control entirely for these products.
-                      <Stepper label="QUANTITY" value={qty} onChange={(v) => onSetQty(p, Math.max(0, v))} />
-                    )}
-                  </View>
-                  {qty > 0 && (
+                  {units.length > 1 ? (
+                    // One stepper per unit the product sells in, default sales
+                    // unit first — each counts whole numbers of its own unit.
+                    <View style={styles.unitList}>
+                      {units.map((u) => {
+                        const value = findLine(cart, p, u)?.quantity || 0;
+                        const size = u.conversionFactor !== 1 ? ` · ${formatQty(u.conversionFactor)} ${unitWord(stockUnit.uom, u.conversionFactor)}` : '';
+                        return (
+                          <View key={u.uom} style={styles.unitRow}>
+                            <Text style={[styles.stepperLabel, styles.unitRowLabel]} numberOfLines={1}>
+                              {u.uom.toUpperCase()} · ₦{u.price.toLocaleString()}{size}
+                            </Text>
+                            <StepperControl value={value} onChange={(v) => onSetQty(p, u, Math.max(0, v))} />
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    // A product that only sells in its stock unit (always the case
+                    // against a backend that doesn't send units) keeps the single
+                    // QUANTITY stepper.
+                    <View style={styles.stepperRow}>
+                      <Stepper
+                        label="QUANTITY"
+                        value={findLine(cart, p, units[0])?.quantity || 0}
+                        onChange={(v) => onSetQty(p, units[0], Math.max(0, v))}
+                      />
+                    </View>
+                  )}
+                  {stockQty > 0 && (
                     <Text style={styles.qtyHint}>
-                      {qty} unit{qty === 1 ? '' : 's'} · ₦{(qty * p.price).toLocaleString()}
+                      {formatUnitQty(stockQty, stockUnit.uom)} · ₦{amount.toLocaleString()}
                     </Text>
                   )}
                 </>
@@ -102,21 +107,29 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
   );
 };
 
+const StepperControl: React.FC<{ value: number; onChange: (v: number) => void }> = ({ value, onChange }) => {
+  const theme = useTheme();
+  const styles = createStyles(theme);
+  return (
+    <View style={styles.stepperControl}>
+      <Pressable onPress={() => onChange(value - 1)} disabled={value <= 0} style={[styles.stepperBtn, value <= 0 && styles.stepperBtnDisabled]}>
+        <Icon name="minus" size={14} color={theme.colors.textDark} />
+      </Pressable>
+      <Text style={styles.stepperValue}>{value}</Text>
+      <Pressable onPress={() => onChange(value + 1)} style={styles.stepperBtn}>
+        <Icon name="plus" size={14} color={theme.colors.textDark} />
+      </Pressable>
+    </View>
+  );
+};
+
 const Stepper: React.FC<{ label: string; value: number; onChange: (v: number) => void }> = ({ label, value, onChange }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   return (
     <View style={styles.stepperCard}>
       <Text style={styles.stepperLabel}>{label}</Text>
-      <View style={styles.stepperControl}>
-        <Pressable onPress={() => onChange(value - 1)} disabled={value <= 0} style={[styles.stepperBtn, value <= 0 && styles.stepperBtnDisabled]}>
-          <Icon name="minus" size={14} color={theme.colors.textDark} />
-        </Pressable>
-        <Text style={styles.stepperValue}>{value}</Text>
-        <Pressable onPress={() => onChange(value + 1)} style={styles.stepperBtn}>
-          <Icon name="plus" size={14} color={theme.colors.textDark} />
-        </Pressable>
-      </View>
+      <StepperControl value={value} onChange={onChange} />
     </View>
   );
 };
@@ -153,10 +166,18 @@ const createStyles = (theme: any) => StyleSheet.create({
     borderRadius: theme.radius.md, paddingVertical: 8, paddingHorizontal: 10,
   },
   stepperLabel: { fontFamily: theme.fonts.bold, fontSize: 9, color: theme.colors.textMuted, letterSpacing: 0.5, textAlign: 'center' },
-  stepperControl: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  stepperControl: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: theme.spacing.sm },
   stepperBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder, alignItems: 'center', justifyContent: 'center' },
   stepperBtnDisabled: { opacity: 0.35 },
   stepperValue: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark, minWidth: 20, textAlign: 'center' },
+
+  unitList: { gap: 6 },
+  unitRow: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.fieldFill, borderWidth: 1, borderColor: theme.colors.fieldBorder,
+    borderRadius: theme.radius.md, paddingVertical: 8, paddingHorizontal: 10,
+  },
+  unitRowLabel: { flex: 1, fontSize: 10, textAlign: 'left' },
 
   qtyHint: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.textMuted },
 });

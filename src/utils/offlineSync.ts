@@ -111,14 +111,17 @@ export async function pushCartDrafts(
   for (const draft of drafts) {
     try {
       const campaignId = draft.campaignId || fallbackCampaignId;
+      // A line saved before units has no uom: the server reads it as the
+      // product's stock unit, which is what its quantity was counted in.
       const lines: OrderLinePayload[] = draft.cart.map((l) => ({
         itemCode: l.productId,
         itemName: l.productName,
         qty: l.quantity,
+        uom: l.uom,
         rate: l.unitPrice,
       }));
       if (draft.mode === 'sale') {
-        const total = draft.cart.reduce((sum, l) => sum + l.unitPrice * l.quantity - l.discount, 0);
+        const total = draft.cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
         await submitFieldSale(draft.outletId, campaignId, lines, total);
       } else {
         await submitSalesOrder(draft.outletId, campaignId, lines);
