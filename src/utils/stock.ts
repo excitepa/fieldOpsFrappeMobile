@@ -60,3 +60,17 @@ export function describeShortfall(shortfall: StockShortfall, product?: Product):
   }
   return `${head} — reduce the quantity to continue.`;
 }
+
+/**
+ * A sale's shortfalls, a sentence each, worded as the server words its
+ * INSUFFICIENT_STOCK refusal: "Not enough stock for ZZ Juice: 30 units
+ * available, 42 needed."
+ */
+export function describeShortfalls(shortfalls: StockShortfall[]): string {
+  return shortfalls
+    .map((s) => {
+      const uom = s.product ? getStockUnit(s.product).uom : 'unit';
+      return `Not enough stock for ${s.productName}: ${formatUnitQty(Math.max(0, s.available), uom)} available, ${formatQty(s.requested)} needed.`;
+    })
+    .join('\n');
+}

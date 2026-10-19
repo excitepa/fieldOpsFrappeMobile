@@ -1,7 +1,7 @@
 import {
   createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse, uploadSurveyPhoto,
   getOutlets, getItems, getMyOrders, getMySales,
-  OrderLinePayload,
+  OrderLinePayload, AuthError, NetworkError,
 } from '../services/api';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto } from '../types';
 import { uploadSurveyPhotos, discardSurveyPhoto, surveyPhotoExists } from './surveyPhotos';
@@ -129,9 +129,15 @@ export async function pushCartDrafts(
       }
       dispatch({ type: 'DELETE_DRAFT', draftId: draft.id });
       synced++;
-    } catch (e) {
+    } catch (e: any) {
       noteFailure(errors, `${draft.mode === 'sale' ? 'Sale' : 'Order'} at ${draft.outletName}`, e);
       failed++;
+      // A refusal (such as INSUFFICIENT_STOCK for a sale the agent can't
+      // cover) keeps the draft, with the server's reason on it for the
+      // Drafts and Sync pages. A lost connection isn't a refusal.
+      if (!(e instanceof NetworkError) && !(e instanceof AuthError)) {
+        dispatch({ type: 'SAVE_DRAFT', draft: { ...draft, syncError: e?.message || 'The server refused it.' } });
+      }
     }
   }
   return { synced, failed, errors };

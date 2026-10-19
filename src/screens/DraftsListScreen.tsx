@@ -126,6 +126,7 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                     <Text style={styles.draftSub}>
                       {draft.cart.length} item{draft.cart.length === 1 ? '' : 's'} · ₦{getCartTotal(draft.cart).toLocaleString()} · {draft.updatedAt}
                     </Text>
+                    {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
                   </View>
                   <View style={styles.pendingBadge}>
                     <Text style={styles.pendingBadgeText}>Pending Sync</Text>
@@ -214,6 +215,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   modeIcon: { width: 40, height: 40, borderRadius: theme.radius.md, alignItems: 'center', justifyContent: 'center' },
   draftTitle: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.darkText },
   draftSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.darkMuted, marginTop: 2 },
+  draftError: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.red, marginTop: 4 },
   pendingBadge: { backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 4 },
   pendingBadgeText: { fontFamily: theme.fonts.bold, fontSize: 9, color: theme.colors.amber },
 });

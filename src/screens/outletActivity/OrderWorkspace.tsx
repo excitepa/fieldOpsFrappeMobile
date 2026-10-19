@@ -43,11 +43,15 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
           const stockQty = lines.reduce((sum, l) => sum + lineStockQty(l), 0);
           const amount = lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
           const outOfStock = p.stock <= 0;
+          // A pre-order doesn't come out of the agent's stock, so out-of-stock
+          // products keep their quantity controls in Order mode; the badge
+          // just says so.
+          const canPick = mode === 'order' || !outOfStock;
           const meta = [p.brand, p.size, `₦${stockUnit.price.toLocaleString()} / ${unitWord(stockUnit.uom, 1)}`].filter(Boolean).join(' · ');
           const promotions = currentPromotions(p);
 
           return (
-            <View key={p.id} style={[styles.productCard, outOfStock && styles.productCardDisabled]}>
+            <View key={p.id} style={[styles.productCard, !canPick && styles.productCardDisabled]}>
               <View style={styles.productRow}>
                 <View style={styles.productIcon}>
                   <Icon name="package" size={18} color="#FFFFFF" />
@@ -75,7 +79,7 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
                 </View>
               ))}
 
-              {!outOfStock && (
+              {canPick && (
                 <>
                   {units.length > 1 ? (
                     // One stepper per unit the product sells in, default sales

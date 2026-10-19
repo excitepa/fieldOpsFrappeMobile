@@ -515,6 +515,8 @@ export interface Draft {
   promoCode?: string;
   updatedAt: string;
   pendingSync: true;
+  /** Why the server refused it at the last sync (e.g. not enough stock for a sale), shown on the Drafts and Sync pages. */
+  syncError?: string;
 }
 
 // ─── Lead Draft (offline queue) ──────────────────────────────────────────────

@@ -43,6 +43,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const [retryingLeadId, setRetryingLeadId] = useState<string | null>(null);
 
   const cartDraftsPending = state.drafts.length;
+  const refusedCartDrafts = state.drafts.filter((d) => d.syncError);
   const leadDraftsPending = state.leadDrafts.length;
   const surveyDraftsList = state.surveys.filter((s) => s.isDraft);
   const surveyDraftsPending = surveyDraftsList.length;
@@ -271,6 +272,11 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
                   <View style={styles.flex1}>
                     <Text style={styles.dsLabel}>{ds.label}</Text>
                     <Text style={styles.dsMeta}>{ds.pending} pending</Text>
+                    {ds.id === 'cartDrafts' && refusedCartDrafts.map((d) => (
+                      <Text key={d.id} style={styles.dsError}>
+                        {d.mode === 'sale' ? 'Sale' : 'Order'} at {d.outletName}: {d.syncError}
+                      </Text>
+                    ))}
                   </View>
                   <Pressable
                     onPress={() => runDraftSync(ds.id)}
@@ -359,6 +365,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   dsIconBox: { width: 34, height: 34, borderRadius: theme.radius.sm, backgroundColor: theme.colors.tintTeal, alignItems: 'center', justifyContent: 'center' },
   dsLabel: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.textDark },
   dsMeta: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted, marginTop: 1 },
+  dsError: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.red, marginTop: 3 },
   dsRefreshBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: theme.colors.fieldFill, alignItems: 'center', justifyContent: 'center' },
   dsBar: { height: 5, borderRadius: 3, overflow: 'hidden', marginTop: theme.spacing.sm },
   dsBarPending: { backgroundColor: theme.colors.amberLight },

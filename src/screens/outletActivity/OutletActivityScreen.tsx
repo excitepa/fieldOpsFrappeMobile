@@ -12,7 +12,8 @@ import { generateInvoiceRef, generateOrderRef } from '../../services/mockService
 import { getItems, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePayload, SavedOrderLine } from '../../services/api';
 import { blockIfDayLocked } from '../../utils/dayLock';
 import { RouteName, CartLine, Draft, OutletSale, OutletOrder } from '../../types';
-import { getStockShortfalls, lineFactor, lineStockQty } from '../../utils/cart';
+import { getStockShortfalls, lineFactor, lineStockQty, StockShortfall } from '../../utils/cart';
+import { describeShortfalls } from '../../utils/stock';
 import { previewFreeGoods } from '../../utils/promotions';
 import { mslFirst, missingMslProducts } from '../../utils/msl';
 import { useCart } from './useCart';
@@ -117,6 +118,17 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // "Create order instead" opens this screen again with the sale's cart as an
+  // order. The screen stays mounted when it navigates to itself, so useCart's
+  // starting cart is long gone: the new cart and tab are picked up here.
+  useEffect(() => {
+    if (initialTab === 'order' && routeData?.orderCart?.length) {
+      orderCart.setCart(routeData.orderCart);
+      setActiveTabId('order');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeData?.orderCart]);
+
   // Refresh the product catalog (price/stock) from the backend each time a sale/order
   // is started, same fetch-on-mount pattern used by Outlets/Leads.
   useEffect(() => {
@@ -159,6 +171,54 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     pendingSync: true,
   });
 
+  // Fresh stock from the server, kept for the whole app. An empty list is
+  // taken as a failed load (get_items answers [] when it fails), not as
+  // every product gone.
+  const refreshProducts = async () => {
+    const fetched = await getItems();
+    if (fetched.length === 0) throw new Error('No products came back.');
+    dispatch({ type: 'SET_PRODUCTS', products: fetched });
+    return fetched;
+  };
+
+  // A sale is checked against stock refreshed from the server; when that
+  // can't be loaded, against the stock on this device, and the server
+  // decides on submit.
+  const checkSaleStock = async (): Promise<StockShortfall[]> => {
+    let products = state.products;
+    try {
+      products = await refreshProducts();
+    } catch {
+      // Offline or failing: the stock on this device.
+    }
+    return getStockShortfalls(saleCart.cart, products, previewFreeGoods(saleCart.cart, products));
+  };
+
+  // The sale's cart as an order: a pre-order doesn't need the agent's stock.
+  // A resumed sale draft goes with it, so it becomes the order's draft.
+  const createOrderInstead = () => {
+    const cart = saleCart.cart;
+    saleCart.clear();
+    onNavigate('outletActivity', { outletId: outlet.id, initialTab: 'order', orderCart: cart, resumeDraftId: routeData?.resumeDraftId });
+  };
+
+  const offerOrderInstead = (message: string) => {
+    Alert.alert('Not Enough Stock', message, [
+      { text: 'Edit sale', style: 'cancel' },
+      { text: 'Create order instead', onPress: createOrderInstead },
+    ]);
+  };
+
+  // A sale saved for later is checked against the stock on this device:
+  // short now means it may be refused when it syncs.
+  const draftStockWarning = (mode: 'sale' | 'order', cart: CartLine[]): string => {
+    if (mode !== 'sale') return '';
+    const short = getStockShortfalls(cart, state.products, previewFreeGoods(cart, state.products));
+    return short.length > 0
+      ? `The stock on this device doesn't cover this sale:\n${describeShortfalls(short)}\n\nIt may be refused when it syncs. An order doesn't need stock.`
+      : '';
+  };
+
   const handleBack = () => {
     const dirtyModes: ('sale' | 'order')[] = [];
     if (saleCart.cart.length > 0) dirtyModes.push('sale');
@@ -181,6 +241,8 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
               const cart = mode === 'sale' ? saleCart.cart : orderCart.cart;
               dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, cart) });
             });
+            const warning = dirtyModes.includes('sale') ? draftStockWarning('sale', saleCart.cart) : '';
+            if (warning) Alert.alert('Draft Saved', warning);
             onNavigate('outletDetail', { outletId: outlet.id });
           },
         },
@@ -192,16 +254,27 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   const handleSaveDraft = () => {
     const mode = category as 'sale' | 'order';
     dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart) });
+    const warning = draftStockWarning(mode, activeCart.cart);
+    if (warning) Alert.alert('Draft Saved', warning);
     onNavigate('draftsList');
   };
 
-  // Before submitting, a reminder of the MSL products the cart lacks — from the
-  // list the agent picks from, so for a sale only ones in stock. It never
-  // blocks the submission.
-  const handleSubmit = () => {
+  // Before submitting: a sale's stock, checked again against the server's
+  // figures; then a reminder of the MSL products the cart lacks — from the
+  // list the agent picks from, so for a sale only ones in stock. The MSL
+  // reminder never blocks the submission. An order isn't stock-checked.
+  const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (activeCart.cart.length === 0) return;
-    if (category === 'sale' && stockShortfalls.length > 0) return;
+    if (category === 'sale') {
+      setSubmitting(true);
+      const short = await checkSaleStock();
+      setSubmitting(false);
+      if (short.length > 0) {
+        offerOrderInstead(`${describeShortfalls(short)}\n\nCreate an order instead, or reduce the quantities.`);
+        return;
+      }
+    }
     const missing = missingMslProducts(activeCart.cart, campaignProducts);
     if (missing.length === 0) {
       handleCheckout();
@@ -221,8 +294,6 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     const mode = category as 'sale' | 'order';
     if (activeCart.cart.length === 0) return;
-
-    if (mode === 'sale' && stockShortfalls.length > 0) return;
 
     setSubmitting(true);
     const nowStr = new Date().toLocaleString('en-US', {
@@ -273,11 +344,18 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         // of just losing it, so it can be pushed for real from the Sync page
         // once back online.
         dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart) });
+        const warning = draftStockWarning(mode, activeCart.cart);
         Alert.alert(
           'Saved Locally',
-          `No connection — this ${mode} has been saved on this device and will upload automatically from the Sync page once you're back online.`,
+          `No connection — this ${mode} has been saved on this device and will upload automatically from the Sync page once you're back online.${warning ? `\n\n${warning}` : ''}`,
         );
         onNavigate('outletDetail', { outletId: outlet.id });
+      } else if (mode === 'sale' && e?.code === 'INSUFFICIENT_STOCK') {
+        // The server's stock doesn't cover it (free goods included). Its
+        // message names the products and what's available; the cart stays,
+        // and the stock shown is brought up to date.
+        refreshProducts().catch(() => {});
+        offerOrderInstead(e.message || 'There isn\'t enough stock for this sale.');
       } else {
         // The request reached the server and was rejected — this will never
         // succeed on retry, so don't disguise it as an offline save.
