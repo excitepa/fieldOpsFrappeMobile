@@ -260,12 +260,12 @@ export const mockLeads: Lead[] = [
 export const mockProducts: Product[] = [
   {
     id: 'p1', name: 'Renmoney Loan ₦100k', sku: 'RML-100', price: 100000, stock: 40, category: 'Loans',
-    warehouse: 'Campaign Allocation', unitsPerCase: 10, minStock: 10, unit: 'application', focusProduct: true,
+    warehouse: 'Campaign Allocation', unitsPerCase: 10, minStock: 10, unit: 'application', isMsl: true,
     description: 'Personal loan starter tier.',
   },
   {
     id: 'p2', name: 'Renmoney Loan ₦250k', sku: 'RML-250', price: 250000, stock: 22, category: 'Loans',
-    warehouse: 'Campaign Allocation', unitsPerCase: 10, minStock: 8, unit: 'application', focusProduct: true,
+    warehouse: 'Campaign Allocation', unitsPerCase: 10, minStock: 8, unit: 'application', isMsl: true,
     description: 'Mid-tier personal loan.',
   },
   {
@@ -280,7 +280,7 @@ export const mockProducts: Product[] = [
   },
   {
     id: 'p5', name: 'Branded Pens', sku: 'MRK-PN', price: 0, stock: 200, category: 'Merchandising',
-    warehouse: 'Campaign Allocation', unitsPerCase: 24, minStock: 50, unit: 'pack', focusProduct: true,
+    warehouse: 'Campaign Allocation', unitsPerCase: 24, minStock: 50, unit: 'pack', isMsl: true,
     description: 'Give-away pens for outlets.',
   },
 ];

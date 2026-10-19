@@ -1056,6 +1056,7 @@ const mapItem = (raw: any, baseUrl: string): Product => {
     brand: raw?.brand || undefined,
     size: raw?.size || undefined,
     salesUom: raw?.sales_uom || undefined,
+    isMsl: Boolean(raw?.is_msl),
     units: mapUnits(raw),
     promotions: mapPromotions(raw),
   };

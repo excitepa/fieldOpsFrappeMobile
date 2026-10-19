@@ -14,6 +14,7 @@ import { blockIfDayLocked } from '../../utils/dayLock';
 import { RouteName, CartLine, Draft, OutletSale, OutletOrder } from '../../types';
 import { getStockShortfalls, lineFactor, lineStockQty } from '../../utils/cart';
 import { previewFreeGoods } from '../../utils/promotions';
+import { mslFirst, missingMslProducts } from '../../utils/msl';
 import { useCart } from './useCart';
 import { OrderWorkspace } from './OrderWorkspace';
 import { SurveyTab } from './tabs/SurveyTab';
@@ -91,9 +92,10 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // clutters the list ("products not related to the agent"). An Order is a
   // pre-order for future delivery, so it isn't gated on current stock the
   // same way — that list stays the full scoped catalog.
-  const campaignProducts = category === 'sale'
+  // MSL (must-stock-list) products are listed first.
+  const campaignProducts = mslFirst(category === 'sale'
     ? scopedProducts.filter((p) => p.stock > 0)
-    : scopedProducts;
+    : scopedProducts);
 
   // The free goods the cart earns, previewed on the phone (the server adds the
   // real ones on submit). Looked up in the full catalog: a reward item doesn't
@@ -191,6 +193,28 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     const mode = category as 'sale' | 'order';
     dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart) });
     onNavigate('draftsList');
+  };
+
+  // Before submitting, a reminder of the MSL products the cart lacks — from the
+  // list the agent picks from, so for a sale only ones in stock. It never
+  // blocks the submission.
+  const handleSubmit = () => {
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
+    if (activeCart.cart.length === 0) return;
+    if (category === 'sale' && stockShortfalls.length > 0) return;
+    const missing = missingMslProducts(activeCart.cart, campaignProducts);
+    if (missing.length === 0) {
+      handleCheckout();
+      return;
+    }
+    Alert.alert(
+      'MSL Products Missing',
+      `This ${category} doesn't include ${missing.length === 1 ? 'this must-stock product' : 'these must-stock products'}:\n\n${missing.map((p) => `• ${p.name}`).join('\n')}`,
+      [
+        { text: 'Add items', style: 'cancel', onPress: () => setActiveTabId(category) },
+        { text: 'Submit anyway', onPress: () => { handleCheckout(); } },
+      ]
+    );
   };
 
   const handleCheckout = async () => {
@@ -379,7 +403,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
             onDeleteLine={activeCart.remove}
             onEdit={() => setActiveTabId(category)}
             onSaveDraft={handleSaveDraft}
-            onSubmit={handleCheckout}
+            onSubmit={handleSubmit}
           />
         )}
       </ScrollView>

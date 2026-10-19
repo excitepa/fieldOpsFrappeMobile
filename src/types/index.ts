@@ -201,8 +201,9 @@ export interface Product {
   units?: ProductUnit[];
   /** Promotions earned by buying this product. */
   promotions?: ProductPromotion[];
-  /** Campaign-highlighted product — shown with a "Focus product" badge on Stock Request. */
-  focusProduct?: boolean;
+  /** On the must-stock list (is_msl): badged "MSL", listed first, and in the
+   *  reminder before a sale/order is submitted without it. */
+  isMsl?: boolean;
 }
 
 // ─── Stock Movements ──────────────────────────────────────────────────────────

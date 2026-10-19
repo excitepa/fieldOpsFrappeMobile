@@ -53,6 +53,11 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
                   <Icon name="package" size={18} color="#FFFFFF" />
                 </View>
                 <View style={styles.flex1}>
+                  {p.isMsl && (
+                    <View style={styles.mslBadge}>
+                      <Text style={styles.mslBadgeText}>MSL</Text>
+                    </View>
+                  )}
                   <Text style={styles.productName}>{p.name}</Text>
                   <Text style={styles.productMeta}>{meta}</Text>
                 </View>
@@ -165,6 +170,8 @@ const createStyles = (theme: any) => StyleSheet.create({
   productRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   productIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: theme.colors.teal, alignItems: 'center', justifyContent: 'center' },
   productName: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.textDark },
+  mslBadge: { alignSelf: 'flex-start', backgroundColor: theme.colors.tintGold, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 2, marginBottom: 3 },
+  mslBadgeText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.tintGoldIcon },
   productMeta: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
   oosBadge: { backgroundColor: theme.colors.redLight, paddingHorizontal: 9, paddingVertical: 4, borderRadius: theme.radius.full },
   oosBadgeText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.red },

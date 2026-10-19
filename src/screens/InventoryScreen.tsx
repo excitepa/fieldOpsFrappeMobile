@@ -8,6 +8,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { getItems, getMyInventory, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
+import { mslFirst } from '../utils/msl';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { RouteName, Product } from '../types';
 
@@ -110,11 +111,12 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
 
   const categories = ['All', ...Array.from(new Set(products.map((p) => p.category).filter(Boolean) as string[]))];
 
-  const filteredProducts = products.filter((p) => {
+  // MSL (must-stock-list) products first.
+  const filteredProducts = mslFirst(products.filter((p) => {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = category === 'All' || p.category === category;
     return matchesSearch && matchesCategory;
-  });
+  }));
 
   const setQty = (productId: string, next: Partial<BasketQty>) => {
     setQuantities((prev) => {
@@ -279,9 +281,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                       )}
                     </View>
                     <View style={styles.flex1}>
-                      {p.focusProduct && (
+                      {p.isMsl && (
                         <View style={styles.focusBadge}>
-                          <Text style={styles.focusBadgeText}>Focus product</Text>
+                          <Text style={styles.focusBadgeText}>MSL</Text>
                         </View>
                       )}
                       <Text style={styles.productName}>{p.name}</Text>
