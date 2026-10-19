@@ -87,7 +87,9 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
         />
 
         <Button
-          title={isFinalStage ? 'Already at Final Stage' : `Save Stage Progression → ${nextStage}`}
+          // The next stage is on the card above; spelling it out here made the
+          // label too long for the button.
+          title={isFinalStage ? 'Already at Final Stage' : 'Save progress'}
           onPress={handleSave}
           disabled={isFinalStage || submitting}
           loading={submitting}
