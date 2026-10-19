@@ -12,9 +12,10 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, MasterOption, Outlet, OutletStatus, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
+import { firstStage, normalizeStage, stageScore } from '../utils/leadStages';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
 export class AuthError extends Error {}
@@ -561,22 +562,16 @@ export const getAttendanceStats = async (): Promise<AttendanceStats | null> => {
 
 // ─── Leads API ─────────────────────────────────────────────────────────────────
 
-const STAGE_SCORE: Record<string, number> = {
-  New: 20,
-  Contacted: 40,
-  Qualified: 60,
-  'Proposal Sent': 70,
-  Negotiation: 80,
-  Converted: 100,
-  Lost: 0,
-};
-
-const VALID_STAGES: LeadStage[] = [
-  'New', 'Contacted', 'Qualified', 'Proposal Sent', 'Negotiation', 'Converted', 'Lost',
-];
+/** `pending_stage_request` ({id, to_stage, requested_on} or null) from get_my_leads. */
+const mapPendingStageRequest = (raw: any): PendingStageRequest | undefined =>
+  raw?.id && raw?.to_stage
+    ? { id: String(raw.id), toStage: normalizeStage(raw.to_stage), requestedOn: raw?.requested_on ? String(raw.requested_on) : undefined }
+    : undefined;
 
 const mapLead = (raw: any): Lead => {
-  const stage: LeadStage = VALID_STAGES.includes(raw?.funnel_stage) ? raw.funnel_stage : 'New';
+  // The server's stage, with the app's old names converted — an unknown
+  // stage is kept as it is rather than shown as the first one.
+  const stage = normalizeStage(raw?.funnel_stage);
   return {
     id: raw?.name || String(raw?.id || ''),
     name: raw?.lead_name || raw?.name || 'Unknown',
@@ -586,7 +581,7 @@ const mapLead = (raw: any): Lead => {
     position: raw?.position || undefined,
     address: raw?.address || undefined,
     stage,
-    score: STAGE_SCORE[stage] ?? 20,
+    score: stageScore(stage),
     next: raw?.next_contact || '',
     nextActionDate: raw?.next_action_date || undefined,
     createdAt: raw?.creation ? raw.creation.slice(0, 10) : undefined,
@@ -600,7 +595,27 @@ const mapLead = (raw: any): Lead => {
     source: raw?.source || undefined,
     notes: raw?.notes || undefined,
     gps: raw?.latitude && raw?.longitude ? `${raw.latitude}, ${raw.longitude}` : undefined,
+    pendingStageRequest: mapPendingStageRequest(raw?.pending_stage_request),
   };
+};
+
+/**
+ * The backend's stage list via `get_lead_stages` ({data: [{name, order,
+ * is_final, agent_can_set}]}). Throws when it can't be loaded (a backend
+ * without it), so the caller keeps the list it has.
+ */
+export const getLeadStages = async (): Promise<LeadStageInfo[]> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_lead_stages');
+  const body = data?.message ?? data;
+  const rows = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
+  return rows
+    .filter((r: any) => typeof r?.name === 'string' && r.name.trim())
+    .map((r: any, index: number) => ({
+      name: r.name.trim(),
+      order: Number.isFinite(Number(r?.order)) ? Number(r.order) : index + 1,
+      isFinal: !!Number(r?.is_final),
+      agentCanSet: r?.agent_can_set === undefined ? true : !!Number(r.agent_can_set),
+    }));
 };
 
 /**
@@ -642,6 +657,19 @@ export interface CreateLeadPayload {
   value?: number;         // stored server-side as Lead.annual_revenue
 }
 
+/** A lead's fields as submit_lead (and update_lead) take them. */
+const leadFields = (payload: CreateLeadPayload): Record<string, any> => ({
+  lead_name: payload.name,
+  contact_person: payload.name,
+  phone_number: payload.phone,
+  email_address: payload.email,
+  outlet: payload.company,
+  address: payload.address,
+  source: payload.source,
+  notes: payload.notes,
+  value: payload.value,
+});
+
 /**
  * Submit a new lead via the RPC contract (`submit_lead`). The v3 contract added outlet/
  * address/source/notes fields, so the values collected on the lead form are sent again.
@@ -649,18 +677,7 @@ export interface CreateLeadPayload {
  * app has no outlet-picker or GPS capture on this form yet, so there's no real value to send.
  */
 export const createLead = async (campaignId: string, payload: CreateLeadPayload): Promise<Lead> => {
-  const body: Record<string, any> = {
-    lead_name: payload.name,
-    contact_person: payload.name,
-    phone_number: payload.phone,
-    email_address: payload.email,
-    campaign: campaignId,
-    outlet: payload.company,
-    address: payload.address,
-    source: payload.source,
-    notes: payload.notes,
-    value: payload.value,
-  };
+  const body: Record<string, any> = { ...leadFields(payload), campaign: campaignId };
 
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_lead', {
     method: 'POST',
@@ -678,7 +695,7 @@ export const createLead = async (campaignId: string, payload: CreateLeadPayload)
     company_name: payload.company,
     phone: payload.phone,
     email: payload.email,
-    funnel_stage: 'New',
+    funnel_stage: firstStage(),
     source: payload.source,
     address: payload.address,
     notes: payload.notes,
@@ -688,14 +705,45 @@ export const createLead = async (campaignId: string, payload: CreateLeadPayload)
 };
 
 /**
- * Update the funnel stage of a lead via the RPC contract (`update_lead_stage`). The old
- * campaign-nested REST route (`/agent/campaigns/{id}/leads/{id}/stage`) no longer exists.
+ * Moves a lead to another stage via `update_lead_stage`, with the agent's
+ * reason and optional notes. A move the backend won't make throws a
+ * SoftError: code STAGE_REGRESSION_NEEDS_APPROVAL for a move back (or out of
+ * Won or Lost), STAGE_CHANGE_NOT_ALLOWED otherwise.
  */
-export const updateLeadStage = async (leadId: string, stage: LeadStage, remarks?: string): Promise<void> => {
+export const updateLeadStage = async (leadId: string, stage: LeadStage, reason: string, notes?: string): Promise<void> => {
   await authFetch('/api/method/fieldops.api.mobile_api.update_lead_stage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead_id: leadId, stage, remarks }),
+    body: JSON.stringify({ lead_id: leadId, funnel_stage: stage, reason, notes }),
+  });
+};
+
+/**
+ * Asks a supervisor to move a lead back to an earlier stage, via
+ * `request_lead_regression`. Returns the request (the lead's existing
+ * pending one, if it already had one).
+ */
+export const requestLeadRegression = async (leadId: string, toStage: LeadStage, reason: string): Promise<PendingStageRequest> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.request_lead_regression', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead_id: leadId, to_stage: toStage, reason }),
+  });
+  const result = data?.message ?? data;
+  const request = result?.request ?? result;
+  return {
+    id: String(request?.id || request?.request_id || request?.name || ''),
+    toStage: normalizeStage(request?.to_stage || toStage),
+    requestedOn: request?.requested_on ? String(request.requested_on) : localDateStr(),
+  };
+};
+
+/** Saves an edited lead via `update_lead`, which takes submit_lead's fields. */
+export const updateLead = async (leadId: string, payload: CreateLeadPayload): Promise<void> => {
+  await authFetch('/api/method/fieldops.api.mobile_api.update_lead', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead_id: leadId, ...leadFields(payload) }),
   });
 };
 

@@ -5,6 +5,7 @@ import { Card } from '../../components/Card';
 import { useFieldStore } from '../../store/useFieldStore';
 import { Lead } from '../../types';
 import { DashboardContext, getWidgetData, getStageBreakdown } from '../../utils/dashboardMetrics';
+import { useLeadStages } from '../../hooks/useLeadStages';
 
 interface SummaryDashboardViewProps {
   leadsList: Lead[];
@@ -14,6 +15,7 @@ export const SummaryDashboardView: React.FC<SummaryDashboardViewProps> = ({ lead
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state } = useFieldStore();
+  const leadStages = useLeadStages();
 
   const campaign = state.activeCampaign;
   const ctx: DashboardContext = {
@@ -43,7 +45,7 @@ export const SummaryDashboardView: React.FC<SummaryDashboardViewProps> = ({ lead
     <View style={styles.container}>
       {widgetIds.map((id) => {
         if (id === 'leads-by-stage') {
-          const stages = getStageBreakdown(leadsList);
+          const stages = getStageBreakdown(leadsList, leadStages);
           const maxCount = Math.max(1, ...stages.map((s) => s.count));
           return (
             <Card key={id} style={styles.widgetCard}>

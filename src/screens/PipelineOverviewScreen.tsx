@@ -11,8 +11,9 @@ import { RouteName, Lead } from '../types';
 import { formatShortDate } from '../utils/leadDisplay';
 import {
   getWeightedPipelineValue, getOverdueLeads, getStageBreakdown, getConversionRate,
-  getAvgAgeDays, formatCompactNaira, FUNNEL_STAGES,
+  getAvgAgeDays, formatCompactNaira,
 } from '../utils/pipelineMetrics';
+import { useLeadStages } from '../hooks/useLeadStages';
 
 interface PipelineOverviewScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -57,9 +58,10 @@ export const PipelineOverviewScreen: React.FC<PipelineOverviewScreenProps> = ({ 
     });
   }, [leadsList]);
 
+  const leadStages = useLeadStages();
   const weightedValue = getWeightedPipelineValue(liveLeads);
   const overdue = getOverdueLeads(liveLeads);
-  const stages = getStageBreakdown(liveLeads);
+  const stages = getStageBreakdown(liveLeads, leadStages);
   const conversionRate = getConversionRate(liveLeads);
   const avgAge = getAvgAgeDays(liveLeads);
 
@@ -127,7 +129,7 @@ export const PipelineOverviewScreen: React.FC<PipelineOverviewScreenProps> = ({ 
 
         {/* Pipeline Stages */}
         {stages.map((s) => {
-          const isFunnelStage = FUNNEL_STAGES.includes(s.stage);
+          const isFunnelStage = s.inFunnel;
           return (
             <Card key={s.stage} style={styles.stageCard}>
               <View style={styles.stageTopRow}>

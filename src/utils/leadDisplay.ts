@@ -9,13 +9,14 @@ export function getInitials(name: string): string {
 
 export function getStageColor(stage: LeadStage, theme: Theme): string {
   switch (stage) {
-    case 'New': return theme.colors.primary;
-    case 'Contacted': return theme.colors.amber;
+    case 'Prospect': return theme.colors.primary;
     case 'Qualified': return theme.colors.tintPurpleIcon;
-    case 'Proposal Sent': return theme.colors.teal;
-    case 'Negotiation': return theme.colors.tintGoldIcon;
-    case 'Converted': return theme.colors.emerald;
+    case 'Opportunity': return theme.colors.amber;
+    case 'Proposal': return theme.colors.teal;
+    case 'Won':
+    case 'Customer': return theme.colors.emerald;
     case 'Lost': return theme.colors.red;
+    case 'Archived': return theme.colors.textMuted;
     default: return theme.colors.primary;
   }
 }

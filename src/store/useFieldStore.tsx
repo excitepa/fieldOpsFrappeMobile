@@ -2,9 +2,10 @@ import React, { createContext, useContext, useReducer, useEffect, ReactNode } fr
 import {
   Outlet, OutletSale, OutletOrder, OutletSurvey, SkipRecord, Product, Campaign,
   StockMovement, StockMovementType, Draft, LeadDraft, OutletDraft, OutletPhotoCapture, LeadSurveyResponse,
-  UserProfile, PendingSurveyPhoto, OutletFormOptions,
+  UserProfile, PendingSurveyPhoto, OutletFormOptions, LeadStageInfo,
 } from '../types';
 import { mockCampaigns, mockUser } from '../services/mockService';
+import { setLeadStageList } from '../utils/leadStages';
 import { getUserInfo } from '../services/apiConfig';
 import { mapUserInfoToProfile, fetchUserProfile, AttendanceStats } from '../services/api';
 
@@ -68,6 +69,8 @@ interface FieldState {
   cachedAttendanceStats: AttendanceStats | null;
   /** The Add/Edit Outlet pickers' lists as last loaded, so those forms work offline. */
   outletFormOptions: OutletFormOptions;
+  /** The backend's lead stages (get_lead_stages) as last loaded; null until then, which means the built-in list. */
+  leadStages: LeadStageInfo[] | null;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -105,6 +108,7 @@ type Action =
   | { type: 'SET_SESSION_AGENT_EMAIL'; email: string | null }
   | { type: 'SET_CACHED_ATTENDANCE_STATS'; stats: AttendanceStats | null }
   | { type: 'SET_OUTLET_FORM_OPTIONS'; options: Partial<OutletFormOptions> }
+  | { type: 'SET_LEAD_STAGES'; stages: LeadStageInfo[] }
   | { type: 'RESET_AGENT_SESSION' }
   | { type: 'HYDRATE'; state: Partial<FieldState> };
 
@@ -137,6 +141,9 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_OUTLET_FORM_OPTIONS':
       return { ...state, outletFormOptions: { ...state.outletFormOptions, ...action.options } };
+
+    case 'SET_LEAD_STAGES':
+      return { ...state, leadStages: action.stages.length > 0 ? action.stages : null };
 
     // A different agent just logged in than whoever this device's clocked-in/
     // campaign state belongs to (App.tsx compares emails before resuming) —
@@ -438,6 +445,7 @@ const initialState: FieldState = {
   sessionAgentEmail: null,
   cachedAttendanceStats: null,
   outletFormOptions: {},
+  leadStages: null,
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -516,6 +524,12 @@ export const FieldProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       dispatch({ type: 'HYDRATE', state: toRestore });
     })();
   }, []);
+
+  // Lead stages are read by plain functions too (mapLead, the pipeline
+  // metrics), so the list they use follows the store's.
+  useEffect(() => {
+    setLeadStageList(state.leadStages);
+  }, [state.leadStages]);
 
   // Persist on state change — gated on `hydrated` so this doesn't fire on the
   // very first render (still holding default initialState) and clobber the

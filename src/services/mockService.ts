@@ -225,7 +225,7 @@ export const mockLeads: Lead[] = [
     company: 'Cedar Stores',
     phone: '+234 806 222 7431',
     email: 'chinedu@cedarstores.com',
-    stage: 'Contacted',
+    stage: 'Prospect',
     score: 64,
     next: 'Call today at 2:00 PM',
     nextActionDate: isoDate(0), // today
@@ -241,7 +241,7 @@ export const mockLeads: Lead[] = [
     name: 'Ayo Martins',
     company: 'Daily Basket',
     phone: '+234 809 111 5512',
-    stage: 'New',
+    stage: 'Prospect',
     score: 45,
     next: 'Visit scheduled for Thursday',
     nextActionDate: isoDate(3), // future

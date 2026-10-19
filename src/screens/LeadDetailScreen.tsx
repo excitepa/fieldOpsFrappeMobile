@@ -10,8 +10,9 @@ import { LeadQuickActionsSheet } from '../components/LeadQuickActionsSheet';
 import { useFieldStore } from '../store/useFieldStore';
 import { mockLeads } from '../services/mockService';
 import { getInitials, formatShortDate } from '../utils/leadDisplay';
-import { FUNNEL_STAGES, STAGE_PROBABILITY } from '../utils/pipelineMetrics';
-import { localDateStr } from '../utils/timestamp';
+import { funnelStages, stageProbability } from '../utils/leadStages';
+import { formatServerDateTime, localDateStr } from '../utils/timestamp';
+import { useLeadStages } from '../hooks/useLeadStages';
 import { RouteName, Lead, LeadStage } from '../types';
 
 interface LeadDetailScreenProps {
@@ -30,10 +31,15 @@ export const LeadDetailScreen: React.FC<LeadDetailScreenProps> = ({ onNavigate, 
   const [tab, setTab] = useState<DetailTab>('details');
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   const stageScrollRef = useRef<ScrollView>(null);
+  const leadStages = useLeadStages();
+  // The funnel stages an agent works with, plus the lead's own stage when
+  // it's off that path (Lost, a web-only stage, or one not in the list).
+  const agentFunnel = funnelStages(leadStages.filter((s) => s.agentCanSet));
+  const stagePills = agentFunnel.includes(l.stage) ? agentFunnel : [...agentFunnel, l.stage];
 
   const todayIso = localDateStr();
   const isOverdue = !!l.nextActionDate && l.nextActionDate < todayIso;
-  const stageProbabilityPct = Math.round((STAGE_PROBABILITY[l.stage] || 0) * 100);
+  const stageProbabilityPct = Math.round(stageProbability(l.stage, leadStages) * 100);
 
   const handleCall = () => {
     Linking.openURL(`tel:${l.phone}`).catch(() => Alert.alert('Call Failed', `Could not start a call to ${l.phone}.`));
@@ -88,6 +94,12 @@ export const LeadDetailScreen: React.FC<LeadDetailScreenProps> = ({ onNavigate, 
                 <Text style={styles.cardLabel}>CURRENT STAGE</Text>
                 <Text style={styles.stageName}>{l.stage}</Text>
                 {l.pipeline ? <Text style={styles.stageSub}>{l.pipeline}</Text> : null}
+                {l.pendingStageRequest ? (
+                  <Text style={styles.pendingText}>
+                    Waiting for approval: back to {l.pendingStageRequest.toStage}
+                    {l.pendingStageRequest.requestedOn ? ` · asked ${formatServerDateTime(l.pendingStageRequest.requestedOn)}` : ''}
+                  </Text>
+                ) : null}
               </View>
               <View style={styles.scoreCol}>
                 <Text style={styles.stagePctText}>{stageProbabilityPct}%</Text>
@@ -109,7 +121,7 @@ export const LeadDetailScreen: React.FC<LeadDetailScreenProps> = ({ onNavigate, 
                 <Icon name="chevron-left" size={16} color={theme.colors.textDark} />
               </Pressable>
               <ScrollView ref={stageScrollRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.stagePills}>
-                {FUNNEL_STAGES.map((stage: LeadStage) => {
+                {stagePills.map((stage: LeadStage) => {
                   const active = stage === l.stage;
                   return (
                     <View key={stage} style={[styles.stagePill, active && styles.stagePillActive]}>
@@ -248,6 +260,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   cardLabel: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.textMuted, letterSpacing: 0.8 },
   stageName: { fontFamily: theme.fonts.display, fontSize: 20, color: theme.colors.textDark, marginTop: 2 },
   stageSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
+  pendingText: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.amber, marginTop: 4 },
   scoreCol: { alignItems: 'flex-end' },
   scoreText: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
   stagePctText: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.navy },

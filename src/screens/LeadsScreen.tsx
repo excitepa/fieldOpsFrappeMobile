@@ -13,6 +13,8 @@ import { getLeads, getAgentBeats } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
 import { getInitials, getStageColor, formatShortDate } from '../utils/leadDisplay';
 import { formatCompactNaira, parseLeadValue } from '../utils/pipelineMetrics';
+import { isConvertedStage } from '../utils/leadStages';
+import { useLeadStages } from '../hooks/useLeadStages';
 import { localDateStr } from '../utils/timestamp';
 import { RouteName, Lead, RouteAssignment } from '../types';
 
@@ -24,12 +26,12 @@ interface LeadsScreenProps {
 
 const todayIso = () => localDateStr();
 
-type FilterId = 'all' | 'hot' | 'warm' | 'converted';
+type FilterId = 'all' | 'hot' | 'warm' | 'won';
 const FILTERS: { id: FilterId; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'hot', label: 'Hot' },
   { id: 'warm', label: 'Warm' },
-  { id: 'converted', label: 'Converted' },
+  { id: 'won', label: 'Won' },
 ];
 
 export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList = [] }) => {
@@ -37,6 +39,8 @@ export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList 
   const styles = createStyles(theme);
   const { state } = useFieldStore();
   const activeCampaign = state.activeCampaign;
+  // Loads the backend's stage list for the lead screens.
+  useLeadStages();
 
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [search, setSearch] = useState('');
@@ -106,7 +110,7 @@ export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList 
   const visibleLeads = searched.filter((l) => {
     if (filter === 'hot') return l.score >= 70;
     if (filter === 'warm') return l.score >= 40 && l.score < 70;
-    if (filter === 'converted') return l.stage === 'Converted';
+    if (filter === 'won') return isConvertedStage(l.stage);
     return true;
   });
 
@@ -187,7 +191,9 @@ export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList 
                 <View style={styles.info}>
                   <Text style={styles.leadName}>{lead.name}</Text>
                   <Text style={styles.leadCompany}>{lead.company}</Text>
-                  <Text style={[styles.leadStage, { color: stageColor }]}>{lead.stage}</Text>
+                  <Text style={[styles.leadStage, { color: stageColor }]}>
+                    {lead.stage}{lead.pendingStageRequest ? ' · Waiting for approval' : ''}
+                  </Text>
                 </View>
                 <View style={styles.rightCol}>
                   {lead.value ? (

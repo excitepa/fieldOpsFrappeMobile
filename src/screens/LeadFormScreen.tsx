@@ -11,6 +11,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { localDateStr } from '../utils/timestamp';
 import { normalizePhone, phoneError } from '../utils/phone';
+import { firstStage, stageScore } from '../utils/leadStages';
 import { RouteName, Lead, LeadDraft } from '../types';
 
 interface LeadFormScreenProps {
@@ -90,8 +91,8 @@ const theme = useTheme();  const styles = createStyles(theme);
         parentCompany: parentCompany || undefined,
         company: outlet,
         address: address || undefined,
-        stage: 'New',
-        score: 20,
+        stage: firstStage(),
+        score: stageScore(firstStage()),
         next: 'Follow up within 48 hours',
         value: numericValue > 0 ? `₦${numericValue.toLocaleString()}` : '',
         source,
@@ -134,7 +135,7 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="Capture Lead" subtitle={`${pipeline} · starts at New`} onNavigate={onNavigate} />
+      <Header title="Capture Lead" subtitle={`${pipeline} · starts at ${firstStage()}`} onNavigate={onNavigate} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Card style={styles.formCard}>
           <Text style={styles.sectionTitle}>LEAD INFORMATION</Text>

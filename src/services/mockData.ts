@@ -8,8 +8,8 @@ export const mock = {
   ],
   leads: [
     { id:'l1', name:'Mariam Bello', company:'Mariam’s Pantry', phone:'+234 803 555 0192', stage:'Qualified', score:82, next:'Follow up tomorrow', value:'₦180,000' },
-    { id:'l2', name:'Chinedu Okeke', company:'Cedar Stores', phone:'+234 806 222 7431', stage:'Contacted', score:64, next:'Call at 2:00 PM', value:'₦95,000' },
-    { id:'l3', name:'Ayo Martins', company:'Daily Basket', phone:'+234 809 111 5512', stage:'New', score:45, next:'Visit this week', value:'₦65,000' },
+    { id:'l2', name:'Chinedu Okeke', company:'Cedar Stores', phone:'+234 806 222 7431', stage:'Prospect', score:64, next:'Call at 2:00 PM', value:'₦95,000' },
+    { id:'l3', name:'Ayo Martins', company:'Daily Basket', phone:'+234 809 111 5512', stage:'Prospect', score:45, next:'Visit this week', value:'₦65,000' },
   ],
   products: [
     { id:'p1', name:'FieldFresh 1L', sku:'FF-1L', price:1450, stock:28 },

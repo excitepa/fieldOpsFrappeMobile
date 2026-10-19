@@ -122,7 +122,30 @@ export interface CampaignSurveyConfig {
 }
 
 // ─── Lead ─────────────────────────────────────────────────────────────────────
-export type LeadStage = 'New' | 'Contacted' | 'Qualified' | 'Proposal Sent' | 'Negotiation' | 'Converted' | 'Lost';
+/**
+ * A funnel stage, named as the backend names it: Prospect, Qualified,
+ * Opportunity, Proposal, Won, Lost, plus Customer and Archived (set on the
+ * web only). The list comes from get_lead_stages — see src/utils/leadStages.ts.
+ */
+export type LeadStage = string;
+
+/** One stage of the backend's list (get_lead_stages). */
+export interface LeadStageInfo {
+  name: LeadStage;
+  order: number;
+  /** Won and Lost: a move out of one needs a supervisor's approval. */
+  isFinal: boolean;
+  /** False for the web-only stages (Customer, Archived). */
+  agentCanSet: boolean;
+}
+
+/** A request to move a lead back a stage, waiting for a supervisor. */
+export interface PendingStageRequest {
+  id: string;
+  toStage: LeadStage;
+  /** As the backend sends it (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS). */
+  requestedOn?: string;
+}
 
 export interface Lead {
   id: string;
@@ -144,6 +167,8 @@ export interface Lead {
   pipeline?: string;
   notes?: string;
   gps?: string;
+  /** A move back a stage the agent asked for, still waiting for approval. */
+  pendingStageRequest?: PendingStageRequest;
 }
 
 // ─── Product / Inventory ──────────────────────────────────────────────────────

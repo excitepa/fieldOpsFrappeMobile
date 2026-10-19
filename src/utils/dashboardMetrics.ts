@@ -3,6 +3,7 @@ import {
   AttendanceRecord, DashboardWidgetId, OutletPhotoCapture, Draft,
 } from '../types';
 import { getConversionRate, getWeightedPipelineValue, getTotalPipelineValue, getStageBreakdown } from './pipelineMetrics';
+import { firstStage, isConvertedStage } from './leadStages';
 import { groupSalesByInvoice, groupOrdersByRef } from './transactions';
 import { parseAppTimestamp, localDateStr } from './timestamp';
 import { getOutletIdsVisitedToday } from './outletVisits';
@@ -250,12 +251,12 @@ export function getWidgetData(id: DashboardWidgetId, ctx: DashboardContext): Wid
       return { id, title: 'Total Leads', value: `${leads.length}`, supportingText: 'All leads captured under this campaign' };
 
     case 'new-leads':
-      return { id, title: 'New Leads', value: `${leads.filter((l) => l.stage === 'New').length}`, supportingText: 'Awaiting first contact' };
+      return { id, title: 'New Leads', value: `${leads.filter((l) => l.stage === firstStage()).length}`, supportingText: `Still at ${firstStage()}` };
 
     case 'conversion-rate': {
       const rate = getConversionRate(leads);
-      const converted = leads.filter((l) => l.stage === 'Converted').length;
-      return { id, title: 'Conversion Rate', value: `${Math.round(rate * 100)}%`, supportingText: `${converted} converted of ${leads.length}`, progress: rate };
+      const converted = leads.filter((l) => isConvertedStage(l.stage)).length;
+      return { id, title: 'Conversion Rate', value: `${Math.round(rate * 100)}%`, supportingText: `${converted} won of ${leads.length}`, progress: rate };
     }
 
     case 'pipeline-value':
