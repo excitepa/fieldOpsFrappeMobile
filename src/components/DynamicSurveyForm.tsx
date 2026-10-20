@@ -5,6 +5,7 @@ import { Card } from './Card';
 import { Button } from './Button';
 import { Icon } from './Icon';
 import { OptionPickerSheet } from './OptionPickerSheet';
+import { cannotBeAnswered, NO_OPTIONS_MESSAGE } from '../utils/surveyAnswers';
 import { LeadSurveySection, DynamicSurveyQuestion } from '../types';
 
 interface DynamicSurveyFormProps {
@@ -28,6 +29,7 @@ interface DynamicSurveyFormProps {
  * an intro "SURVEY" card with progress bar, then "SECTION N" groups of
  * numbered question cards (yes/no, single/multi choice, rating, select sheet,
  * number+unit, text area, photo capture), and a full-width "Review answers" CTA.
+ * Every question must be answered, which the intro card says once.
  *
  * Intended to be rendered inside the caller's own <ScrollView> (this component
  * renders no SafeAreaView/Header/ScrollView of its own).
@@ -57,6 +59,7 @@ export const DynamicSurveyForm: React.FC<DynamicSurveyFormProps> = ({
       <Card style={styles.introCard}>
         <Text style={styles.introKicker}>SURVEY</Text>
         <Text style={styles.introDesc}>{description}</Text>
+        <Text style={styles.introRule}>Every question must be answered before you can submit.</Text>
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
         </View>
@@ -81,10 +84,10 @@ export const DynamicSurveyForm: React.FC<DynamicSurveyFormProps> = ({
                   <View style={styles.qNumBadge}>
                     <Text style={styles.qNumText}>{num}</Text>
                   </View>
-                  <Text style={styles.qText}>
-                    {q.question} {q.required ? <Text style={styles.reqMark}>*</Text> : null}
-                  </Text>
+                  <Text style={styles.qText}>{q.question}</Text>
                 </View>
+
+                {cannotBeAnswered(q) && <Text style={styles.noOptionsText}>{NO_OPTIONS_MESSAGE}</Text>}
 
                 {q.type === 'choice' && q.options && isYesNo && (
                   <View style={styles.yesNoRow}>
@@ -184,7 +187,7 @@ export const DynamicSurveyForm: React.FC<DynamicSurveyFormProps> = ({
                     style={styles.textInput}
                     value={answers[q.id] || ''}
                     onChangeText={(t) => onAnswerChange(q.id, t)}
-                    placeholder={q.placeholder || 'Optional note...'}
+                    placeholder={q.placeholder || 'Type your answer...'}
                     placeholderTextColor={theme.colors.textLight}
                     multiline
                   />
@@ -207,7 +210,7 @@ export const DynamicSurveyForm: React.FC<DynamicSurveyFormProps> = ({
                   )
                 )}
 
-                {hasError && <Text style={styles.errorText}>This question is required</Text>}
+                {hasError && <Text style={styles.errorText}>Answer this question</Text>}
               </Card>
             );
           })}
@@ -233,6 +236,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   introCard: { gap: 6 },
   introKicker: { fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.primary, letterSpacing: 0.8 },
   introDesc: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.textDark, lineHeight: 20 },
+  introRule: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted },
   progressTrack: { height: 4, borderRadius: 2, backgroundColor: theme.colors.fieldFill, marginTop: 8, overflow: 'hidden' },
   progressFill: { height: '100%', borderRadius: 2, backgroundColor: theme.colors.navy },
   section: { gap: theme.spacing.sm, marginTop: theme.spacing.md },
@@ -245,7 +249,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   qNumBadge: { width: 26, height: 26, borderRadius: 13, backgroundColor: theme.colors.tintBlue, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
   qNumText: { fontFamily: theme.fonts.bold, fontSize: 12, color: theme.colors.navy },
   qText: { flex: 1, fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark, lineHeight: 21 },
-  reqMark: { color: theme.colors.amber },
+  noOptionsText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.red, lineHeight: 18 },
   yesNoRow: { flexDirection: 'row', gap: theme.spacing.sm },
   yesNoBtn: { flex: 1, height: 48, borderRadius: theme.radius.md, backgroundColor: theme.colors.fieldFill, alignItems: 'center', justifyContent: 'center' },
   yesNoBtnActive: { backgroundColor: theme.colors.navy },

@@ -8,7 +8,7 @@ import { Icon } from '../components/Icon';
 import { Button } from '../components/Button';
 import { DynamicSurveyForm } from '../components/DynamicSurveyForm';
 import { keepSurveyPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
-import { confirmUnanswered } from '../utils/surveyAnswers';
+import { isAnswered, requireAllAnswered } from '../utils/surveyAnswers';
 import { RouteName, Lead, CampaignSurveyConfig } from '../types';
 
 interface LeadSurveyFormScreenProps {
@@ -29,10 +29,7 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
   const [photoUris, setPhotoUris] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, boolean>>({});
 
-  const answeredCount = allQuestions.filter((q) => {
-    const v = answers[q.id];
-    return v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
-  }).length;
+  const answeredCount = allQuestions.filter((q) => isAnswered(answers[q.id], q.type)).length;
 
   const setAnswer = (qId: string, val: any) => {
     setAnswers((prev) => ({ ...prev, [qId]: val }));
@@ -60,26 +57,13 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
     }
   };
 
+  // Every question must be answered, whatever the survey marks as required:
+  // the unanswered ones are marked and the agent stays on the form.
   const handleReview = () => {
-    const nextErrors: Record<string, boolean> = {};
-    let valid = true;
-    allQuestions.forEach((q) => {
-      if (q.required) {
-        const v = answers[q.id];
-        const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
-        if (empty) {
-          nextErrors[q.id] = true;
-          valid = false;
-        }
-      }
-    });
-    setErrors(nextErrors);
-    if (!valid) {
-      Alert.alert('Incomplete Survey', 'Please answer all required questions highlighted in red before continuing.');
-      return;
-    }
-    confirmUnanswered(allQuestions, answers, () =>
-      onNavigate('leadSurveyReview', { lead, survey, answers, photoUris }));
+    const left = requireAllAnswered(allQuestions, answers);
+    setErrors(Object.fromEntries(left.map((q) => [q.id, true])));
+    if (left.length > 0) return;
+    onNavigate('leadSurveyReview', { lead, survey, answers, photoUris });
   };
 
   if (!lead || !survey) {

@@ -11,7 +11,7 @@ import { useFieldStore } from '../../../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../../../services/api';
 import { blockIfDayLocked } from '../../../utils/dayLock';
 import { keepSurveyPhoto, discardSurveyPhoto, uploadSurveyPhotos, photosNotUploadedMessage } from '../../../utils/surveyPhotos';
-import { confirmUnanswered, missingQuestionIds, surveyRejectionMessage } from '../../../utils/surveyAnswers';
+import { cannotBeAnswered, missingQuestionIds, NO_OPTIONS_MESSAGE, requireAllAnswered, surveyRejectionMessage } from '../../../utils/surveyAnswers';
 import { CampaignSurveyConfig, DynamicSurveyQuestion, SurveyAnswer, OutletSurvey } from '../../../types';
 
 interface SurveyTabProps {
@@ -70,7 +70,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
         // Shrunk and kept in the app's documents folder until it's uploaded
         // after submit — see keepSurveyPhoto. A retake replaces the old copy.
         const uri = await keepSurveyPhoto(result.assets[0].uri, result.assets[0].width);
-        releasePhoto(photoUris[qId]);
+        discardSurveyPhoto(photoUris[qId]);
         setPhotoUris((prev) => ({ ...prev, [qId]: uri }));
         handleAnswerChange(qId, uri);
       }
@@ -79,16 +79,8 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     }
   };
 
-  // A "Save Local Draft" survey keeps pointing at the photo it was saved with,
-  // so a later retake/remove here must not delete that file out from under it.
-  const releasePhoto = (uri?: string) => {
-    if (uri && !state.surveys.some((s) => s.isDraft && s.answers.some((a) => a.answer === uri))) {
-      discardSurveyPhoto(uri);
-    }
-  };
-
   const handleRemovePhoto = (qId: string) => {
-    releasePhoto(photoUris[qId]);
+    discardSurveyPhoto(photoUris[qId]);
     setPhotoUris((prev) => {
       const next = { ...prev };
       delete next[qId];
@@ -97,34 +89,19 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     handleAnswerChange(qId, null);
   };
 
+  // Every question must be answered, whatever the survey marks as required:
+  // the unanswered ones are marked, and nothing is sent.
   const validate = (): boolean => {
-    const errors: Record<string, boolean> = {};
-    let valid = true;
-    questions.forEach((q) => {
-      if (q.required) {
-        const val = answers[q.id];
-        const empty = val === undefined || val === null || val === '' || (Array.isArray(val) && val.length === 0);
-        if (empty) {
-          errors[q.id] = true;
-          valid = false;
-        }
-      }
-    });
-    setValidationErrors(errors);
-    return valid;
+    const left = requireAllAnswered(questions, answers);
+    setValidationErrors(Object.fromEntries(left.map((q) => [q.id, true])));
+    return left.length === 0;
   };
 
-  const handleSubmit = async (isDraft = false, confirmed = false) => {
-    if (!isDraft && !validate()) {
-      Alert.alert('Incomplete Survey', 'Please answer all required questions highlighted in red before submitting.');
-      return;
-    }
-    if (!isDraft && blockIfDayLocked(state.dayLockedUntil)) return;
-    // Optional questions left blank: ask before submitting (drafts are saved as they are).
-    if (!isDraft && !confirmed) {
-      confirmUnanswered(questions, answers, () => handleSubmit(false, true));
-      return;
-    }
+  // There's no saving a partial survey for later: the Sync page used to
+  // submit such a draft as if it were complete.
+  const handleSubmit = async () => {
+    if (!validate()) return;
+    if (blockIfDayLocked(state.dayLockedUntil)) return;
 
     setSubmitting(true);
 
@@ -148,18 +125,9 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
       surveyConfigId: surveyConfig.id,
       surveyName: surveyConfig.name,
       answers: surveyAnswers,
-      isDraft,
+      isDraft: false,
       timestamp: nowStr,
     };
-
-    if (isDraft) {
-      // Drafts are local-only by design (nothing to submit yet) — same as
-      // OutletSurveyReviewScreen's draft handling elsewhere in the app.
-      dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
-      setSubmitting(false);
-      Alert.alert('Draft Saved', 'Your survey draft has been saved locally.');
-      return;
-    }
 
     // A real submit must actually reach the server — this previously only
     // dispatched local state and showed a fake "Submitted" alert without
@@ -217,6 +185,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     return (
       <View style={styles.container}>
         <Text style={styles.surveyName}>{surveyConfig.name}</Text>
+        <Text style={styles.ruleText}>Every question must be answered before you can submit.</Text>
 
         <Card style={styles.complianceCard}>
           <Text style={styles.complianceLabel}>COMPLIANCE SCORE</Text>
@@ -233,9 +202,12 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
                 <Pressable
                   key={q.id}
                   onPress={() => handleChecklistToggle(q)}
-                  style={[styles.checklistRow, passed && styles.checklistRowPassed]}
+                  style={[styles.checklistRow, passed && styles.checklistRowPassed, validationErrors[q.id] && styles.rowError]}
                 >
-                  <Text style={styles.checklistText}>{q.question}</Text>
+                  <View style={styles.checklistTextCol}>
+                    <Text style={styles.checklistText}>{q.question}</Text>
+                    {cannotBeAnswered(q) && <Text style={styles.errorText}>{NO_OPTIONS_MESSAGE}</Text>}
+                  </View>
                   <Icon name={passed ? 'check-circle' : 'circle'} size={22} color={passed ? theme.colors.teal : theme.colors.textMuted} />
                 </Pressable>
               );
@@ -244,7 +216,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
         )}
 
         {photoQuestions.map((q) => (
-          <Pressable key={q.id} onPress={() => handleCapturePhoto(q.id)} style={styles.shelfPhotoBox}>
+          <Pressable key={q.id} onPress={() => handleCapturePhoto(q.id)} style={[styles.shelfPhotoBox, validationErrors[q.id] && styles.rowError]}>
             <Icon name="camera" size={16} color={theme.colors.textDark} />
             <Text style={styles.shelfPhotoText}>
               {photoUris[q.id] ? '1 shelf photo(s) captured' : 'Capture shelf photo'}
@@ -256,7 +228,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
           <View key={q.id} style={styles.notesBlock}>
             <Text style={styles.notesLabel}>NOTES</Text>
             <TextInput
-              style={styles.notesInput}
+              style={[styles.notesInput, validationErrors[q.id] && styles.rowError]}
               placeholder={q.question}
               placeholderTextColor={theme.colors.textMuted}
               value={answers[q.id] || ''}
@@ -269,7 +241,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
 
         <Button
           title={submitting ? 'Submitting...' : 'Submit Activity'}
-          onPress={() => handleSubmit(false)}
+          onPress={handleSubmit}
           variant="navy"
           loading={submitting}
           style={{ marginTop: 4 }}
@@ -281,6 +253,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
   return (
     <View style={styles.container}>
       <Text style={styles.surveyName}>{surveyConfig.name}</Text>
+      <Text style={styles.ruleText}>Every question must be answered before you can submit.</Text>
 
       {questions.map((q, idx) => {
         const hasError = validationErrors[q.id];
@@ -288,10 +261,10 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
           <Card key={q.id} style={[styles.questionCard, hasError && styles.questionCardError]}>
             <View style={styles.qHeader}>
               <Text style={styles.qNum}>Q{idx + 1}</Text>
-              <Text style={styles.qText}>
-                {q.question} {q.required ? <Text style={styles.reqAsterisk}>*</Text> : null}
-              </Text>
+              <Text style={styles.qText}>{q.question}</Text>
             </View>
+
+            {cannotBeAnswered(q) && <Text style={styles.errorText}>{NO_OPTIONS_MESSAGE}</Text>}
 
             {q.type === 'choice' && q.options && (
               <View style={styles.optionsList}>
@@ -393,21 +366,18 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
               </View>
             )}
 
-            {hasError && <Text style={styles.errorText}>* This question is required</Text>}
+            {hasError && <Text style={styles.errorText}>Answer this question</Text>}
           </Card>
         );
       })}
 
-      <View style={styles.actionButtonsRow}>
-        <Button title="Save Local Draft" onPress={() => handleSubmit(true)} variant="outline" style={styles.draftBtn} />
-        <Button
-          title={submitting ? 'Submitting...' : 'Submit Survey'}
-          onPress={() => handleSubmit(false)}
-          variant="primary"
-          loading={submitting}
-          style={styles.submitBtn}
-        />
-      </View>
+      <Button
+        title={submitting ? 'Submitting...' : 'Submit Survey'}
+        onPress={handleSubmit}
+        variant="primary"
+        loading={submitting}
+        style={styles.submitBtn}
+      />
 
       <OptionPickerSheet
         visible={!!pickerQuestion}
@@ -426,6 +396,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
 const createStyles = (theme: any) => StyleSheet.create({
   container: { gap: theme.spacing.md },
   surveyName: { fontFamily: theme.fonts.display, fontSize: 18, color: theme.colors.darkText },
+  ruleText: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: -6 },
   complianceCard: { backgroundColor: theme.colors.teal, borderColor: theme.colors.teal, gap: 4 },
   complianceLabel: { fontFamily: theme.fonts.bold, fontSize: 11, color: 'rgba(255,255,255,0.85)', letterSpacing: 0.8 },
   complianceScore: { fontFamily: theme.fonts.display, fontSize: 32, color: '#FFFFFF' },
@@ -437,7 +408,9 @@ const createStyles = (theme: any) => StyleSheet.create({
     borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.md, paddingVertical: 14,
   },
   checklistRowPassed: { borderColor: theme.colors.teal, backgroundColor: theme.colors.tealLight },
-  checklistText: { flex: 1, fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.textDark },
+  checklistTextCol: { flex: 1, gap: 4 },
+  checklistText: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.textDark },
+  rowError: { borderWidth: 1, borderColor: theme.colors.red },
   shelfPhotoBox: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 52,
     borderRadius: theme.radius.md, backgroundColor: theme.colors.fieldFill,
@@ -454,7 +427,6 @@ const createStyles = (theme: any) => StyleSheet.create({
   qHeader: { flexDirection: 'row', gap: theme.spacing.xs },
   qNum: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.amber },
   qText: { flex: 1, fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.darkText, lineHeight: 20 },
-  reqAsterisk: { color: theme.colors.red },
   optionsList: { gap: theme.spacing.xs, marginTop: 4 },
   optionItem: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
@@ -493,7 +465,5 @@ const createStyles = (theme: any) => StyleSheet.create({
   removePill: { backgroundColor: theme.colors.red },
   retakeText: { fontFamily: theme.fonts.bold, fontSize: 11, color: '#FFF' },
   errorText: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.red, marginTop: 2 },
-  actionButtonsRow: { flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.sm },
-  draftBtn: { flex: 1 },
-  submitBtn: { flex: 1.5 },
+  submitBtn: { marginTop: theme.spacing.sm },
 });
