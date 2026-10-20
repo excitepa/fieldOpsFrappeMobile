@@ -1,6 +1,6 @@
 import {
   createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse, uploadSurveyPhoto,
-  getOutlets, getItems, getMyOrders, getMySales,
+  getOutlets, getItems, getMyOrders, getMySales, getMyGeofence,
   OrderLinePayload, AuthError, NetworkError,
 } from '../services/api';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto } from '../types';
@@ -23,16 +23,18 @@ export async function pullServerData(
   campaignId: string | undefined,
   dispatch: (action: any) => void
 ): Promise<void> {
-  const [outletsRes, productsRes, ordersRes, salesRes] = await Promise.allSettled([
+  const [outletsRes, productsRes, ordersRes, salesRes, geofenceRes] = await Promise.allSettled([
     campaignId ? getOutlets(campaignId) : Promise.resolve([]),
     getItems(),
     getMyOrders(),
     getMySales(),
+    getMyGeofence(),
   ]);
   if (outletsRes.status === 'fulfilled') dispatch({ type: 'SET_OUTLETS', outlets: outletsRes.value });
   if (productsRes.status === 'fulfilled') dispatch({ type: 'SET_PRODUCTS', products: productsRes.value });
   if (ordersRes.status === 'fulfilled') dispatch({ type: 'SET_ORDERS', orders: ordersRes.value });
   if (salesRes.status === 'fulfilled') dispatch({ type: 'SET_SALES', sales: salesRes.value });
+  if (geofenceRes.status === 'fulfilled') dispatch({ type: 'SET_GEOFENCE', geofence: geofenceRes.value });
 }
 
 export interface SyncResult {
@@ -124,7 +126,10 @@ export async function pushCartDrafts(
       }));
       if (draft.mode === 'sale') {
         const total = draft.cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
-        await submitFieldSale(draft.outletId, campaignId, lines, total, undefined, draft.promoCode);
+        // Where it was recorded (and the agent's reason when that was away
+        // from the outlet), for the server's check; it's synced later, so
+        // captured offline.
+        await submitFieldSale(draft.outletId, campaignId, lines, total, { ...draft.saleLocation, capturedOffline: true }, draft.promoCode);
       } else {
         await submitSalesOrder(draft.outletId, campaignId, lines, draft.promoCode);
       }

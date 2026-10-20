@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as Location from 'expo-location';
 import { useTheme } from '../../theme/ThemeContext';
 import { Header } from '../../components/Header';
 import { Icon } from '../../components/Icon';
@@ -9,9 +8,12 @@ import { Button } from '../../components/Button';
 import { ScrollableTabs, TabItem } from '../../components/ScrollableTabs';
 import { useFieldStore } from '../../store/useFieldStore';
 import { generateInvoiceRef, generateOrderRef } from '../../services/mockService';
-import { getItems, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePayload, SavedOrderLine } from '../../services/api';
+import { getItems, getMyGeofence, submitFieldSale, submitSalesOrder, NetworkError, OrderLinePayload, SavedOrderLine } from '../../services/api';
 import { blockIfDayLocked } from '../../utils/dayLock';
-import { RouteName, CartLine, Draft, OutletSale, OutletOrder } from '../../types';
+import { parseGps } from '../../utils/geo';
+import { checkSaleLocation } from '../../utils/geofence';
+import { freshFix } from '../../utils/locationFix';
+import { RouteName, CartLine, Draft, OutletSale, OutletOrder, SaleLocation } from '../../types';
 import { getStockShortfalls, lineFactor, lineStockQty, StockShortfall } from '../../utils/cart';
 import { describeShortfalls } from '../../utils/stock';
 import { previewFreeGoods } from '../../utils/promotions';
@@ -21,6 +23,7 @@ import { OrderWorkspace } from './OrderWorkspace';
 import { SurveyTab } from './tabs/SurveyTab';
 import { SummaryTab } from './tabs/SummaryTab';
 import { DockedCartBar } from './components/DockedCartBar';
+import { OutsideLocationSheet } from './components/OutsideLocationSheet';
 
 interface OutletActivityScreenProps {
   routeData?: {
@@ -74,6 +77,10 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   const orderCart = useCart(routeData?.orderCart || []);
   const activeCart = category === 'order' ? orderCart : saleCart;
   const [submitting, setSubmitting] = useState(false);
+  // A sale away from the outlet or outside the territory: what's wrong (the
+  // sheet asking for a reason is open while set), and where it was recorded.
+  const [outsideProblems, setOutsideProblems] = useState<string[] | null>(null);
+  const pendingLocation = useRef<SaleLocation | undefined>(undefined);
   // Optional, sent with the order; a resumed draft brings back the one it was saved with.
   const [promoCode, setPromoCode] = useState(resumeDraft?.promoCode || '');
 
@@ -141,6 +148,11 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         dispatch({ type: 'SET_PRODUCTS', products: fetched });
       })
       .catch(() => {});
+    // The agent's territory and the GPS tolerance, for the sale's location
+    // check; the copy kept on the device is used when this fails.
+    getMyGeofence()
+      .then((geofence) => dispatch({ type: 'SET_GEOFENCE', geofence }))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -157,7 +169,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     );
   }
 
-  const buildDraft = (mode: 'sale' | 'order', cart: CartLine[]): Draft => ({
+  const buildDraft = (mode: 'sale' | 'order', cart: CartLine[], saleLocation?: SaleLocation): Draft => ({
     id: routeData?.resumeDraftId && category === mode ? routeData.resumeDraftId : `draft-${mode}-${outlet.id}-${Date.now()}`,
     mode,
     outletId: outlet.id,
@@ -169,6 +181,8 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     promoCode: mode === category ? promoCode.trim() || undefined : undefined,
     updatedAt: new Date().toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }),
     pendingSync: true,
+    // Where a sale was submitted from, when it was (the check ran then).
+    saleLocation: mode === 'sale' ? saleLocation : undefined,
   });
 
   // Fresh stock from the server, kept for the whole app. An empty list is
@@ -260,24 +274,48 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   };
 
   // Before submitting: a sale's stock, checked again against the server's
-  // figures; then a reminder of the MSL products the cart lacks — from the
-  // list the agent picks from, so for a sale only ones in stock. The MSL
-  // reminder never blocks the submission. An order isn't stock-checked.
+  // figures, and where it's being recorded; then a reminder of the MSL
+  // products the cart lacks — from the list the agent picks from, so for a
+  // sale only ones in stock. Neither the location nor the MSL reminder blocks
+  // the submission. An order isn't stock- or location-checked.
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (activeCart.cart.length === 0) return;
+    let location: SaleLocation | undefined;
     if (category === 'sale') {
       setSubmitting(true);
       const short = await checkSaleStock();
-      setSubmitting(false);
       if (short.length > 0) {
+        setSubmitting(false);
         offerOrderInstead(`${describeShortfalls(short)}\n\nCreate an order instead, or reduce the quantities.`);
         return;
       }
+      // A fresh fix, checked against the outlet's saved location and the
+      // agent's territory (offline too: both are kept on the device). Away,
+      // outside or without a fix, the agent says why before it's recorded.
+      const fix = await freshFix();
+      setSubmitting(false);
+      location = fix ? { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, capturedAt: fix.capturedAt } : {};
+      const check = checkSaleLocation(fix, { name: outlet.name, coords: parseGps(outlet.gps) }, state.geofence);
+      if (check.problems.length > 0) {
+        pendingLocation.current = location;
+        setOutsideProblems(check.problems);
+        return;
+      }
     }
+    confirmMslThenCheckout(location);
+  };
+
+  const handleOutsideConfirm = (reason: string) => {
+    const location: SaleLocation = { ...pendingLocation.current, outsideReason: reason };
+    setOutsideProblems(null);
+    confirmMslThenCheckout(location);
+  };
+
+  const confirmMslThenCheckout = (location?: SaleLocation) => {
     const missing = missingMslProducts(activeCart.cart, campaignProducts);
     if (missing.length === 0) {
-      handleCheckout();
+      handleCheckout(location);
       return;
     }
     Alert.alert(
@@ -285,12 +323,12 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
       `This ${category} doesn't include ${missing.length === 1 ? 'this must-stock product' : 'these must-stock products'}:\n\n${missing.map((p) => `• ${p.name}`).join('\n')}`,
       [
         { text: 'Add items', style: 'cancel', onPress: () => setActiveTabId(category) },
-        { text: 'Submit anyway', onPress: () => { handleCheckout(); } },
+        { text: 'Submit anyway', onPress: () => { handleCheckout(location); } },
       ]
     );
   };
 
-  const handleCheckout = async () => {
+  const handleCheckout = async (location?: SaleLocation) => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     const mode = category as 'sale' | 'order';
     if (activeCart.cart.length === 0) return;
@@ -316,19 +354,9 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     let savedLines: SavedOrderLine[] | undefined;
     try {
       if (mode === 'sale') {
-        // Geo-tag the sale the same way outlet visits/surveys/EOD already do —
-        // best-effort: a denied/failed location read shouldn't block the sale itself.
-        let coordinates: { lat: number; lng: number } | undefined;
-        try {
-          const { status } = await Location.requestForegroundPermissionsAsync();
-          if (status === 'granted') {
-            const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-            coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
-          }
-        } catch (locErr) {
-          // Non-fatal — sale still submits without coordinates.
-        }
-        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, coordinates, promoCode);
+        // With where it was recorded (taken before submitting, see
+        // handleSubmit): the server checks it again and flags it.
+        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, location, promoCode);
         ref = result.ref || generateInvoiceRef();
         savedLines = result.items;
       } else {
@@ -343,7 +371,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         // a real draft (same record a manual "Save Draft" would create) instead
         // of just losing it, so it can be pushed for real from the Sync page
         // once back online.
-        dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart) });
+        dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart, location) });
         const warning = draftStockWarning(mode, activeCart.cart);
         Alert.alert(
           'Saved Locally',
@@ -494,6 +522,13 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
           onPress={() => setActiveTabId('summary')}
         />
       )}
+
+      <OutsideLocationSheet
+        visible={!!outsideProblems}
+        problems={outsideProblems || []}
+        onConfirm={handleOutsideConfirm}
+        onCancel={() => setOutsideProblems(null)}
+      />
     </SafeAreaView>
   );
 };

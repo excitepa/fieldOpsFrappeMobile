@@ -369,6 +369,29 @@ export interface OutletFormOptions {
   defaultDistributorId?: string;
 }
 
+// ─── Geofence ─────────────────────────────────────────────────────────────────
+/** The agent's geofence (get_my_geofence), kept on the device so a sale can be checked offline. */
+export interface GeofenceConfig {
+  /** How far from an outlet's saved location a sale still counts as at the outlet, in meters. */
+  toleranceM: number;
+  /** The agent's active territories (GeoJSON); with none, they're never outside one. */
+  territories: { name: string; geojson: any }[];
+  /** The agent may work outside their territory. */
+  allowedOutside: boolean;
+}
+
+/** Where a sale was recorded, sent with it (and kept on its offline draft) for the server's check. */
+export interface SaleLocation {
+  lat?: number;
+  lng?: number;
+  /** The fix's accuracy, in meters. */
+  accuracy?: number;
+  /** When the fix was taken: local time, "YYYY-MM-DD HH:MM:SS". */
+  capturedAt?: string;
+  /** Why the agent recorded the sale away from the outlet or outside their territory. */
+  outsideReason?: string;
+}
+
 // ─── Customer ─────────────────────────────────────────────────────────────────
 export interface Customer {
   id: string;
@@ -519,6 +542,8 @@ export interface Draft {
   pendingSync: true;
   /** Why the server refused it at the last sync (e.g. not enough stock for a sale), shown on the Drafts and Sync pages. */
   syncError?: string;
+  /** A sale's location when it was submitted (and the agent's reason when it was outside), sent when the draft syncs. */
+  saleLocation?: SaleLocation;
 }
 
 // ─── Lead Draft (offline queue) ──────────────────────────────────────────────

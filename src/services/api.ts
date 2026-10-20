@@ -12,7 +12,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
 import { firstStage, normalizeStage, stageScore } from '../utils/leadStages';
@@ -1290,6 +1290,45 @@ const mapSubmitResult = (result: any): { items?: SavedOrderLine[]; totalAmount?:
 };
 
 /**
+ * The agent's geofence via `get_my_geofence`: the GPS tolerance and their
+ * active territories, for checking a sale's location on the phone (offline
+ * too). Throws when it can't be loaded; a backend without it means no
+ * territory check.
+ */
+export const getMyGeofence = async (): Promise<GeofenceConfig> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_geofence');
+  const body = data?.message ?? data;
+  const tolerance = Number(body?.tolerance_m);
+  return {
+    toleranceM: Number.isFinite(tolerance) && tolerance > 0 ? tolerance : 100,
+    territories: (Array.isArray(body?.territories) ? body.territories : [])
+      .filter((t: any) => t?.geojson)
+      .map((t: any) => ({ name: String(t?.name || 'Territory'), geojson: t.geojson })),
+    allowedOutside: !!Number(body?.allowed_outside),
+  };
+};
+
+/** How the server judged a sale's location (its re-check is the one recorded). */
+export interface SaleLocationResult {
+  atOutlet: boolean | null;
+  distanceM: number | null;
+  insideTerritory: boolean | null;
+  territory?: string;
+}
+
+const yesNoOrNull = (value: any): boolean | null => (value === null || value === undefined ? null : value === true || Number(value) === 1);
+
+const mapSaleLocationResult = (raw: any): SaleLocationResult | undefined =>
+  raw && typeof raw === 'object'
+    ? {
+        atOutlet: yesNoOrNull(raw.at_outlet),
+        distanceM: raw.distance_m === null || raw.distance_m === undefined ? null : Number(raw.distance_m),
+        insideTerritory: yesNoOrNull(raw.inside_territory),
+        territory: raw.territory || undefined,
+      }
+    : undefined;
+
+/**
  * Submit an immediate, paid transaction via the RPC contract (`submit_field_sale`).
  * There's no payment-method picker on the Sale flow yet, so `payment_type` defaults
  * to "Cash" and `amount_paid` is assumed to equal the cart total (a fully-paid sale).
@@ -1299,15 +1338,20 @@ const mapSubmitResult = (result: any): { items?: SavedOrderLine[]; totalAmount?:
  * `product_name`/`qty`/`unit_price`/`amount`, plus `total_amount`. The older
  * `outlet`/`campaign`/`item`/`item_code`/`quantity`/`rate` aliases are also accepted
  * per that same spec, so they're kept alongside rather than swapped out.
+ *
+ * `location` is where the sale was recorded: the fix, its accuracy and time,
+ * the agent's reason when it was away from the outlet or outside their
+ * territory, and capturedOffline for a draft synced later. The server checks
+ * it again, records it on the sale, and returns its verdict as `location`.
  */
 export const submitFieldSale = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[],
   amountPaid: number,
-  coordinates?: { lat: number; lng: number },
+  location?: SaleLocation & { capturedOffline?: boolean },
   promoCode?: string
-): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
+): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number; location?: SaleLocationResult }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
     outlet: outletId,
@@ -1331,9 +1375,15 @@ export const submitFieldSale = async (
     payment_type: 'Cash',
     amount_paid: amountPaid,
   };
-  if (coordinates) {
-    body.latitude = coordinates.lat;
-    body.longitude = coordinates.lng;
+  if (location) {
+    if (location.lat !== undefined && location.lng !== undefined) {
+      body.latitude = location.lat;
+      body.longitude = location.lng;
+    }
+    if (location.accuracy !== undefined) body.gps_accuracy = location.accuracy;
+    if (location.capturedAt) body.location_captured_at = location.capturedAt;
+    if (location.outsideReason?.trim()) body.outside_reason = location.outsideReason.trim();
+    if (location.capturedOffline) body.captured_offline = 1;
   }
   if (promoCode?.trim()) body.promo_code = promoCode.trim();
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_field_sale', {
@@ -1343,7 +1393,7 @@ export const submitFieldSale = async (
   });
   const result = data?.message ?? data?.data ?? data;
   const ref = result?.sale_id || result?.invoice_id || result?.name || result?.id || '';
-  return { ref: String(ref), ...mapSubmitResult(result) };
+  return { ref: String(ref), ...mapSubmitResult(result), location: mapSaleLocationResult(result?.location) };
 };
 
 /**

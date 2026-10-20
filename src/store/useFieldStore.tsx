@@ -2,12 +2,12 @@ import React, { createContext, useContext, useReducer, useEffect, ReactNode } fr
 import {
   Outlet, OutletSale, OutletOrder, OutletSurvey, SkipRecord, Product, Campaign,
   StockMovement, StockMovementType, Draft, LeadDraft, OutletDraft, OutletPhotoCapture, LeadSurveyResponse,
-  UserProfile, PendingSurveyPhoto, OutletFormOptions, LeadStageInfo,
+  UserProfile, PendingSurveyPhoto, OutletFormOptions, LeadStageInfo, GeofenceConfig,
 } from '../types';
 import { mockCampaigns, mockUser } from '../services/mockService';
 import { setLeadStageList } from '../utils/leadStages';
 import { getUserInfo } from '../services/apiConfig';
-import { mapUserInfoToProfile, fetchUserProfile, AttendanceStats } from '../services/api';
+import { mapUserInfoToProfile, fetchUserProfile, getMyGeofence, AttendanceStats } from '../services/api';
 
 let AsyncStorage: any = null;
 try {
@@ -71,6 +71,8 @@ interface FieldState {
   outletFormOptions: OutletFormOptions;
   /** The backend's lead stages (get_lead_stages) as last loaded; null until then, which means the built-in list. */
   leadStages: LeadStageInfo[] | null;
+  /** The agent's geofence (get_my_geofence) as last loaded, so a sale's location is checked offline too; null means no territory check. */
+  geofence: GeofenceConfig | null;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -111,6 +113,7 @@ type Action =
   | { type: 'SET_CACHED_ATTENDANCE_STATS'; stats: AttendanceStats | null }
   | { type: 'SET_OUTLET_FORM_OPTIONS'; options: Partial<OutletFormOptions> }
   | { type: 'SET_LEAD_STAGES'; stages: LeadStageInfo[] }
+  | { type: 'SET_GEOFENCE'; geofence: GeofenceConfig }
   | { type: 'RESET_AGENT_SESSION' }
   | { type: 'HYDRATE'; state: Partial<FieldState> };
 
@@ -146,6 +149,9 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_LEAD_STAGES':
       return { ...state, leadStages: action.stages.length > 0 ? action.stages : null };
+
+    case 'SET_GEOFENCE':
+      return { ...state, geofence: action.geofence };
 
     // A different agent just logged in than whoever this device's clocked-in/
     // campaign state belongs to (App.tsx compares emails before resuming) —
@@ -194,6 +200,8 @@ function reducer(state: FieldState, action: Action): FieldState {
         // Distributors depend on the agent's warehouse; the outlet types and
         // channels are the same for everyone.
         outletFormOptions: { ...state.outletFormOptions, distributors: undefined, defaultDistributorId: undefined },
+        // Territories are the agent's own.
+        geofence: null,
       };
 
     case 'SET_OUTLETS': {
@@ -459,6 +467,7 @@ const initialState: FieldState = {
   cachedAttendanceStats: null,
   outletFormOptions: {},
   leadStages: null,
+  geofence: null,
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -537,6 +546,14 @@ export const FieldProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       dispatch({ type: 'HYDRATE', state: toRestore });
     })();
   }, []);
+
+  // The agent's geofence, refreshed once the saved state is back (so the
+  // restore can't overwrite it); the sale screen and the Sync page refresh it
+  // too. Kept from last time when this fails, offline included.
+  useEffect(() => {
+    if (!state.hydrated) return;
+    getMyGeofence().then((geofence) => dispatch({ type: 'SET_GEOFENCE', geofence })).catch(() => {});
+  }, [state.hydrated]);
 
   // Lead stages are read by plain functions too (mapLead, the pipeline
   // metrics), so the list they use follows the store's.

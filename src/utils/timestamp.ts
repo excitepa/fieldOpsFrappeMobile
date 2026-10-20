@@ -60,6 +60,12 @@ export function localDateStr(date: Date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
+/** "YYYY-MM-DD HH:MM:SS" in the device's local time — how the server reads a time it's sent. */
+export function localDateTimeStr(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${localDateStr(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 /**
  * A Frappe date or datetime as the server sends it ("2026-10-20" or
  * "2026-10-20 15:04:05.123456"), for display: "Oct 20, 2026, 3:04 PM". Parsed
