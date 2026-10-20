@@ -450,6 +450,8 @@ export interface OutletSurvey {
   answers: SurveyAnswer[];
   isDraft: boolean;
   timestamp: string;
+  /** Why a draft wasn't sent at the last sync (not complete, a photo gone, or the server's refusal), shown on the Drafts and Sync pages. */
+  syncError?: string;
 }
 
 /** A survey photo whose response already reached the server but whose upload

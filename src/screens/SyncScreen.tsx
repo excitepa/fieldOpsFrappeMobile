@@ -44,6 +44,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
 
   const cartDraftsPending = state.drafts.length;
   const refusedCartDrafts = state.drafts.filter((d) => d.syncError);
+  const unsentSurveyDrafts = state.surveys.filter((s) => s.isDraft && s.syncError);
   const leadDraftsPending = state.leadDrafts.length;
   const surveyDraftsList = state.surveys.filter((s) => s.isDraft);
   const surveyDraftsPending = surveyDraftsList.length;
@@ -275,6 +276,11 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
                     {ds.id === 'cartDrafts' && refusedCartDrafts.map((d) => (
                       <Text key={d.id} style={styles.dsError}>
                         {d.mode === 'sale' ? 'Sale' : 'Order'} at {d.outletName}: {d.syncError}
+                      </Text>
+                    ))}
+                    {ds.id === 'surveyDrafts' && unsentSurveyDrafts.map((s) => (
+                      <Text key={s.id} style={styles.dsError}>
+                        {s.surveyName || 'Survey'}: {s.syncError}
                       </Text>
                     ))}
                   </View>

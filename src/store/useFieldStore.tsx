@@ -92,6 +92,8 @@ type Action =
   | { type: 'ADD_ORDER'; order: OutletOrder }
   | { type: 'ADD_SURVEY'; survey: OutletSurvey }
   | { type: 'MARK_SURVEY_SYNCED'; surveyId: string }
+  | { type: 'SET_SURVEY_SYNC_ERROR'; surveyId: string; error: string }
+  | { type: 'DELETE_SURVEY'; surveyId: string }
   | { type: 'DECREMENT_STOCK'; productId: string; qty: number; outletId?: string }
   | { type: 'ADJUST_STOCK'; productId: string; qtyChange: number; reason: string; movementType: Extract<StockMovementType, 'adjustment' | 'reconciliation'> }
   | { type: 'SAVE_DRAFT'; draft: Draft }
@@ -274,8 +276,19 @@ function reducer(state: FieldState, action: Action): FieldState {
     case 'MARK_SURVEY_SYNCED':
       return {
         ...state,
-        surveys: state.surveys.map((s) => (s.id === action.surveyId ? { ...s, isDraft: false } : s)),
+        surveys: state.surveys.map((s) => (s.id === action.surveyId ? { ...s, isDraft: false, syncError: undefined } : s)),
       };
+
+    // A draft the last sync didn't send stays, with the reason.
+    case 'SET_SURVEY_SYNC_ERROR':
+      return {
+        ...state,
+        surveys: state.surveys.map((s) => (s.id === action.surveyId ? { ...s, syncError: action.error } : s)),
+      };
+
+    // Only for a draft the agent deletes from the Drafts page; its photos are deleted by the caller.
+    case 'DELETE_SURVEY':
+      return { ...state, surveys: state.surveys.filter((s) => s.id !== action.surveyId) };
 
     case 'DECREMENT_STOCK': {
       const product = state.products.find((p: Product) => p.id === action.productId);

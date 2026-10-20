@@ -5,6 +5,7 @@ import {
 } from '../services/api';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto } from '../types';
 import { discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
+import { isAnswered, surveyRejectionMessage } from './surveyAnswers';
 import { debugLog } from './logger';
 
 /**
@@ -152,10 +153,24 @@ const isPhotoAnswer = (a: SurveyAnswer) =>
   a.questionType === 'photo' || (!a.questionType && typeof a.answer === 'string' && a.answer.startsWith('file://'));
 
 /**
+ * Why a survey draft can't be sent as it is, or '' when it can: every
+ * question must be answered, and every photo must still be on the phone.
+ */
+const surveyDraftProblem = (draft: OutletSurvey): string => {
+  const blank = draft.answers.filter((a) => !isAnswered(a.answer, isPhotoAnswer(a) ? 'photo' : a.questionType));
+  if (blank.length > 0) return `Not complete: ${blank.map((a) => `"${a.question}"`).join(', ')} unanswered.`;
+  const lost = draft.answers.filter((a) => isPhotoAnswer(a) && !surveyPhotoExists(a.answer as string));
+  if (lost.length > 0) return `The photo for ${lost.map((a) => `"${a.question}"`).join(', ')} is no longer on this device.`;
+  return '';
+};
+
+/**
  * Pushes every locally-queued draft survey (isDraft: true) to the server, its
  * photos in the same request: a photo answer holds the kept photo's path, and
  * the server only accepts a survey that carries all of them. Once accepted,
- * the phone's copies are deleted.
+ * the phone's copies are deleted. A draft that isn't complete, or has lost a
+ * photo, isn't sent, and one the server refuses stays too: both keep the
+ * reason for the Drafts and Sync pages, where the draft can be deleted.
  */
 export async function pushSurveyDrafts(
   drafts: OutletSurvey[],
@@ -167,6 +182,13 @@ export async function pushSurveyDrafts(
   for (const draft of drafts) {
     if (!draft.surveyConfigId) {
       noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, new Error('saved without a survey id, cannot be resubmitted'));
+      failed++;
+      continue;
+    }
+    const problem = surveyDraftProblem(draft);
+    if (problem) {
+      noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, new Error(problem));
+      dispatch({ type: 'SET_SURVEY_SYNC_ERROR', surveyId: draft.id, error: problem });
       failed++;
       continue;
     }
@@ -186,9 +208,14 @@ export async function pushSurveyDrafts(
       dispatch({ type: 'MARK_SURVEY_SYNCED', surveyId: draft.id });
       discardSurveyPhotos(photos);
       synced++;
-    } catch (e) {
+    } catch (e: any) {
       noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, e);
       failed++;
+      // A refusal (REQUIRED_ANSWERS_MISSING included) keeps the draft with the
+      // server's reason; a lost connection isn't a refusal.
+      if (!(e instanceof NetworkError) && !(e instanceof AuthError)) {
+        dispatch({ type: 'SET_SURVEY_SYNC_ERROR', surveyId: draft.id, error: surveyRejectionMessage(e) });
+      }
     }
   }
   return { synced, failed, errors };

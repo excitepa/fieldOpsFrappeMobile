@@ -10,7 +10,8 @@ import { useFieldStore } from '../store/useFieldStore';
 import { createLead, getOutlets } from '../services/api';
 import { pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, summariseSyncErrors } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
-import { RouteName, LeadDraft } from '../types';
+import { discardSurveyPhoto } from '../utils/surveyPhotos';
+import { RouteName, LeadDraft, OutletSurvey } from '../types';
 
 interface DraftsListScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -68,6 +69,25 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
     } finally {
       setSyncing(false);
     }
+  };
+
+  // A survey draft that can't be sent (not complete, a photo gone, or refused)
+  // can only be dropped: it can't be reopened to finish.
+  const deleteSurveyDraft = (sur: OutletSurvey) => {
+    Alert.alert('Delete Survey Draft?', `${sur.surveyName || 'This survey'} and its photos will be removed from this device. This can't be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          // A photo answer holds the kept photo's path (drafts from older builds have no questionType).
+          sur.answers.forEach((a) => {
+            if (typeof a.answer === 'string' && (a.questionType === 'photo' || a.answer.startsWith('file://'))) discardSurveyPhoto(a.answer);
+          });
+          dispatch({ type: 'DELETE_SURVEY', surveyId: sur.id });
+        },
+      },
+    ]);
   };
 
   const retryLeadDraft = async (draft: LeadDraft) => {
@@ -171,10 +191,17 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                   <View style={{ flex: 1 }}>
                     <Text style={styles.draftTitle}>{sur.surveyName || 'Field Survey'} draft</Text>
                     <Text style={styles.draftSub}>{sur.answers.length} responses saved · {sur.timestamp}</Text>
+                    {sur.syncError ? <Text style={styles.draftError}>Not sent: {sur.syncError}</Text> : null}
                   </View>
-                  <View style={styles.pendingBadge}>
-                    <Text style={styles.pendingBadgeText}>Pending Sync</Text>
-                  </View>
+                  {sur.syncError ? (
+                    <Pressable onPress={() => deleteSurveyDraft(sur)} hitSlop={8} style={styles.deleteBtn}>
+                      <Text style={styles.deleteBtnText}>Delete</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={styles.pendingBadge}>
+                      <Text style={styles.pendingBadgeText}>Pending Sync</Text>
+                    </View>
+                  )}
                 </Card>
               </Pressable>
             ))}
@@ -218,4 +245,6 @@ const createStyles = (theme: any) => StyleSheet.create({
   draftError: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.red, marginTop: 4 },
   pendingBadge: { backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 4 },
   pendingBadgeText: { fontFamily: theme.fonts.bold, fontSize: 9, color: theme.colors.amber },
+  deleteBtn: { backgroundColor: theme.colors.redLight, borderRadius: theme.radius.full, paddingHorizontal: 10, paddingVertical: 5 },
+  deleteBtnText: { fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.red },
 });
