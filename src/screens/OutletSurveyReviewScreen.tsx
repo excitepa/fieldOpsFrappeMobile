@@ -119,6 +119,11 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
 
       dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
       dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
+      // The survey the outlet was waiting for since its last edit: filled, so
+      // it can be edited again (the server clears it too).
+      if (outlet.surveyDue?.surveyId === survey.id) {
+        dispatch({ type: 'UPDATE_OUTLET', outlet: { ...outlet, surveyDue: undefined } });
+      }
       // Accepted with its photos, so the phone's copies can go.
       discardSurveyPhotos(photos);
 

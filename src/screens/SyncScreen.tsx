@@ -8,7 +8,7 @@ import { Card } from '../components/Card';
 import { useFieldStore } from '../store/useFieldStore';
 import { createLead, getOutlets, getItems, getMyOrders, getMySales } from '../services/api';
 import {
-  pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos,
+  pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos, pushAllDrafts,
   pullServerData as pullServerDataShared, summariseSyncErrors,
 } from '../utils/offlineSync';
 import { RouteName, LeadDraft } from '../types';
@@ -77,13 +77,13 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     setSyncingAll(true);
     try {
       const fallbackCampaignId = state.activeCampaign?.id || '';
-      const [leads, carts, surveysRes, outletsRes2, photosRes] = await Promise.all([
-        pushLeadDrafts(state.leadDrafts, dispatch),
-        pushCartDrafts(state.drafts, dispatch, fallbackCampaignId),
-        pushSurveyDrafts(surveyDraftsList, dispatch),
-        pushOutletDrafts(state.outletDrafts, dispatch),
-        pushSurveyPhotos(state.pendingSurveyPhotos, dispatch),
-      ]);
+      const { leads, carts, surveys: surveysRes, outlets: outletsRes2, photos: photosRes } = await pushAllDrafts({
+        leadDrafts: state.leadDrafts,
+        cartDrafts: state.drafts,
+        surveyDrafts: surveyDraftsList,
+        outletDrafts: state.outletDrafts,
+        surveyPhotos: state.pendingSurveyPhotos,
+      }, dispatch, fallbackCampaignId);
       await pullServerData();
       const synced = leads.synced + carts.synced + surveysRes.synced + outletsRes2.synced + photosRes.synced;
       const failed = leads.failed + carts.failed + surveysRes.failed + outletsRes2.failed + photosRes.failed;
@@ -139,6 +139,9 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     setSyncingId(id);
     try {
       const fallbackCampaignId = state.activeCampaign?.id || '';
+      // A survey can follow an outlet edit that hasn't synced: the edit goes
+      // first, so the survey it made due isn't left due.
+      if (id === 'surveyDrafts' && state.outletDrafts.length > 0) await pushOutletDrafts(state.outletDrafts, dispatch);
       const result = id === 'leadDrafts' ? await pushLeadDrafts(state.leadDrafts, dispatch)
         : id === 'cartDrafts' ? await pushCartDrafts(state.drafts, dispatch, fallbackCampaignId)
         : id === 'surveyDrafts' ? await pushSurveyDrafts(surveyDraftsList, dispatch)

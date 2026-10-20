@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -6,7 +6,8 @@ import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getSurveysForCampaign, getSurveyDetail, getMySurveys, MySurveyResponseSummary } from '../services/api';
+import { getMySurveys, MySurveyResponseSummary } from '../services/api';
+import { loadCampaignSurveys } from '../utils/afterEditSurvey';
 import { RouteName, CampaignSurveyConfig } from '../types';
 
 interface OutletSurveysScreenProps {
@@ -17,7 +18,11 @@ interface OutletSurveysScreenProps {
 export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavigate, routeData }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { state, getSurveysForOutlet } = useFieldStore();
+  const { state, dispatch, getSurveysForOutlet } = useFieldStore();
+  // The surveys kept on the device, for when they can't be loaded (offline);
+  // read through a ref so keeping them doesn't reload the list.
+  const keptSurveys = useRef(state.campaignSurveys);
+  keptSurveys.current = state.campaignSurveys;
   const outletId = routeData?.outletId || state.outlets[0]?.id;
   const outlet = state.outlets.find((o) => o.id === outletId);
   const activeCampaign = state.activeCampaign;
@@ -38,15 +43,18 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
     setLoading(true);
     setError('');
     try {
-      const [list, mySurveys] = await Promise.all([
-        getSurveysForCampaign(activeCampaign.id),
+      const [surveys, mySurveys] = await Promise.all([
+        loadCampaignSurveys(activeCampaign.id, dispatch),
         getMySurveys(activeCampaign.id),
       ]);
-      const details = await Promise.all(list.map((s) => getSurveyDetail(s.id)));
-      setSurveyConfigs(details.filter((d): d is CampaignSurveyConfig => !!d));
+      setSurveyConfigs(surveys);
       setSubmittedResponses(mySurveys.filter((r) => r.status === 'Submitted'));
     } catch (e: any) {
-      setError(e?.message || 'Could not load surveys.');
+      // Offline: the surveys kept on the device still open (what was
+      // submitted on other devices isn't known until it's back online).
+      const kept = keptSurveys.current[activeCampaign.id];
+      if (kept) setSurveyConfigs(kept);
+      else setError(e?.message || 'Could not load surveys.');
     } finally {
       setLoading(false);
     }

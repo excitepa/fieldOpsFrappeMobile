@@ -2,10 +2,11 @@ import React, { createContext, useContext, useReducer, useEffect, ReactNode } fr
 import {
   Outlet, OutletSale, OutletOrder, OutletSurvey, SkipRecord, Product, Campaign,
   StockMovement, StockMovementType, Draft, LeadDraft, OutletDraft, OutletPhotoCapture, LeadSurveyResponse,
-  UserProfile, PendingSurveyPhoto, OutletFormOptions, LeadStageInfo, GeofenceConfig,
+  UserProfile, PendingSurveyPhoto, OutletFormOptions, LeadStageInfo, GeofenceConfig, CampaignSurveyConfig,
 } from '../types';
 import { mockCampaigns, mockUser } from '../services/mockService';
 import { setLeadStageList } from '../utils/leadStages';
+import { keepUnsyncedEdit } from '../utils/afterEditSurvey';
 import { getUserInfo } from '../services/apiConfig';
 import { mapUserInfoToProfile, fetchUserProfile, getMyGeofence, AttendanceStats } from '../services/api';
 
@@ -73,6 +74,8 @@ interface FieldState {
   leadStages: LeadStageInfo[] | null;
   /** The agent's geofence (get_my_geofence) as last loaded, so a sale's location is checked offline too; null means no territory check. */
   geofence: GeofenceConfig | null;
+  /** Each campaign's surveys with their questions, as last loaded, so a survey opens offline (campaign id -> surveys). */
+  campaignSurveys: Record<string, CampaignSurveyConfig[]>;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -114,6 +117,7 @@ type Action =
   | { type: 'SET_OUTLET_FORM_OPTIONS'; options: Partial<OutletFormOptions> }
   | { type: 'SET_LEAD_STAGES'; stages: LeadStageInfo[] }
   | { type: 'SET_GEOFENCE'; geofence: GeofenceConfig }
+  | { type: 'SET_CAMPAIGN_SURVEYS'; campaignId: string; surveys: CampaignSurveyConfig[] }
   | { type: 'RESET_AGENT_SESSION' }
   | { type: 'HYDRATE'; state: Partial<FieldState> };
 
@@ -152,6 +156,9 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_GEOFENCE':
       return { ...state, geofence: action.geofence };
+
+    case 'SET_CAMPAIGN_SURVEYS':
+      return { ...state, campaignSurveys: { ...state.campaignSurveys, [action.campaignId]: action.surveys } };
 
     // A different agent just logged in than whoever this device's clocked-in/
     // campaign state belongs to (App.tsx compares emails before resuming) —
@@ -215,9 +222,16 @@ function reducer(state: FieldState, action: Action): FieldState {
       // any locally-tracked non-pending status across a refetch fixes that; it gets
       // cleared for real on the next clock-in via RESET_OUTLET_VISIT_STATUS.
       const localStatusById = new Map(state.outlets.map((o) => [o.id, o.status]));
+      // An edit saved offline hasn't reached the server yet, so the server
+      // knows nothing of the survey it made due or the location it sent for
+      // approval: the device's record stands until the edit syncs.
+      const localById = new Map(state.outlets.map((o) => [o.id, o]));
+      const unsyncedEdits = new Set(state.outletDrafts.filter((d) => d.mode === 'edit' && d.outletId).map((d) => d.outletId));
       const merged = action.outlets.map((o) => {
         const localStatus = localStatusById.get(o.id);
-        return localStatus && localStatus !== 'pending' ? { ...o, status: localStatus } : o;
+        const next = localStatus && localStatus !== 'pending' ? { ...o, status: localStatus } : o;
+        const local = localById.get(o.id);
+        return local && unsyncedEdits.has(o.id) ? keepUnsyncedEdit(next, local) : next;
       });
       return { ...state, outlets: merged };
     }
@@ -468,6 +482,7 @@ const initialState: FieldState = {
   outletFormOptions: {},
   leadStages: null,
   geofence: null,
+  campaignSurveys: {},
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────

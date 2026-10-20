@@ -12,7 +12,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, SurveyDue, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
 import { firstStage, normalizeStage, stageScore } from '../utils/leadStages';
@@ -805,8 +805,15 @@ const mapOutlet = (raw: any, campaignId: string, baseUrl: string): Outlet => {
           requestedOn: text(raw.pending_location_request.requested_on),
         }
       : undefined,
+    surveyDue: mapSurveyDue(raw?.survey_due),
   };
 };
+
+/** `survey_due` ({survey_id, survey_name, since} or null): the after-edit survey an outlet is waiting for. */
+const mapSurveyDue = (raw: any): SurveyDue | undefined =>
+  raw?.survey_id
+    ? { surveyId: String(raw.survey_id), surveyName: String(raw.survey_name || raw.survey_id), since: raw.since ? String(raw.since) : undefined }
+    : undefined;
 
 /** Fetch outlets via the RPC contract (`get_outlets`). Falls back to an empty array on error. */
 export const getOutlets = async (campaignId: string): Promise<Outlet[]> => {
@@ -1055,12 +1062,16 @@ export interface UpdateOutletPayload extends OutletClassificationPayload {
   longitude?: number;
   /** That fix's accuracy, in meters. */
   gpsAccuracy?: number;
+  /** The agent's active campaign: its after-edit survey becomes due for the outlet. */
+  campaign?: string;
 }
 
 /** What update_outlet says beyond saving the edit. */
 export interface UpdateOutletResult {
   /** A moved location wasn't applied: it waits for a supervisor's approval. */
   locationRequest?: { id: string; status: string };
+  /** The campaign's after-edit survey, now due for the outlet. */
+  surveyDue?: SurveyDue;
 }
 
 const mapUpdateOutletResult = (data: any): UpdateOutletResult => {
@@ -1068,13 +1079,17 @@ const mapUpdateOutletResult = (data: any): UpdateOutletResult => {
   const request = result?.location_request;
   return {
     locationRequest: request?.id ? { id: String(request.id), status: String(request.status || 'Pending') } : undefined,
+    surveyDue: mapSurveyDue(result?.survey_due),
   };
 };
 
 /**
  * Update an existing outlet via the RPC contract (`update_outlet`). A
  * location more than 10 m from the saved one isn't applied by the backend:
- * it becomes a request a supervisor approves (`locationRequest`).
+ * it becomes a request a supervisor approves (`locationRequest`). With the
+ * campaign sent, its after-edit survey becomes due for the outlet
+ * (`surveyDue`); while one is due, an edit is refused with
+ * SURVEY_REQUIRED_AFTER_EDIT (a SoftError carrying survey_id, survey_name).
  */
 export const updateOutlet = async (outletId: string, payload: UpdateOutletPayload): Promise<UpdateOutletResult> => {
   const fields: Record<string, any> = {
@@ -1097,6 +1112,7 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
   if (payload.gpsAccuracy !== undefined) fields.gps_accuracy = payload.gpsAccuracy;
+  if (payload.campaign) fields.campaign = payload.campaign;
 
   if (payload.photoUri) {
     const form = new FormData();
@@ -1713,6 +1729,8 @@ export interface SurveyListItem {
   status: string;
   startDate?: string;
   endDate?: string;
+  /** The campaign's survey to fill after an outlet is edited. */
+  afterOutletEdit: boolean;
 }
 
 const mapSurveyListItem = (raw: any): SurveyListItem => ({
@@ -1721,6 +1739,7 @@ const mapSurveyListItem = (raw: any): SurveyListItem => ({
   status: raw?.status || '',
   startDate: raw?.start_date || undefined,
   endDate: raw?.end_date || undefined,
+  afterOutletEdit: Number(raw?.after_outlet_edit) === 1 || raw?.after_outlet_edit === true,
 });
 
 /**
@@ -1793,6 +1812,7 @@ const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
     sections: [{ id: 'section-1', name: 'Questions', questions }],
     description: raw?.description || undefined,
     durationLabel: questions.length > 0 ? `~${Math.max(1, Math.round(questions.length / 3))} min` : undefined,
+    afterOutletEdit: Number(raw?.after_outlet_edit) === 1 || raw?.after_outlet_edit === true,
   };
 };
 

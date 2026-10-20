@@ -119,6 +119,8 @@ export interface CampaignSurveyConfig {
   sections?: LeadSurveySection[];
   description?: string;
   durationLabel?: string; // e.g. "~2 min"
+  /** The campaign's survey to fill after an outlet is edited (at most one per campaign). */
+  afterOutletEdit?: boolean;
 }
 
 // ─── Lead ─────────────────────────────────────────────────────────────────────
@@ -346,6 +348,15 @@ export interface Outlet {
   distributorName?: string;
   /** A new location the agent sent, waiting for a supervisor's approval; the outlet keeps its saved one until then. */
   pendingLocationRequest?: { id: string; latitude: number; longitude: number; requestedOn?: string };
+  /** The campaign's after-edit survey, due since the outlet was last edited; it can't be edited again until it's filled. */
+  surveyDue?: SurveyDue;
+}
+
+/** A survey an outlet is waiting for after it was edited. */
+export interface SurveyDue {
+  surveyId: string;
+  surveyName: string;
+  since?: string;
 }
 
 /** A choice from the backend's master data, kept by id: an outlet type, channel, sub-channel or distributor. */

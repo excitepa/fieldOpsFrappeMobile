@@ -8,7 +8,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { createLead, getOutlets } from '../services/api';
-import { pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, summariseSyncErrors } from '../utils/offlineSync';
+import { pushAllDrafts, summariseSyncErrors } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
 import { discardSurveyPhoto } from '../utils/surveyPhotos';
 import { RouteName, LeadDraft, OutletSurvey } from '../types';
@@ -34,12 +34,11 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
     setSyncing(true);
     try {
       const fallbackCampaignId = state.activeCampaign?.id || '';
-      const [leads, carts, surveysRes, outlets] = await Promise.all([
-        pushLeadDrafts(leadDrafts, dispatch),
-        pushCartDrafts(cartDrafts, dispatch, fallbackCampaignId),
-        pushSurveyDrafts(surveyDrafts, dispatch),
-        pushOutletDrafts(outletDrafts, dispatch),
-      ]);
+      const { leads, carts, surveys: surveysRes, outlets } = await pushAllDrafts(
+        { leadDrafts, cartDrafts, surveyDrafts, outletDrafts },
+        dispatch,
+        fallbackCampaignId,
+      );
       if (outlets.synced > 0) {
         // Reconciles optimistic local outlet(s) with their real synced
         // versions rather than leaving temp-id duplicates in the list.

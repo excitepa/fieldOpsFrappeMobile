@@ -23,13 +23,14 @@ import { SelectField } from '../components/SelectField';
 import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
 import { useOutletFormOptions } from '../hooks/useOutletFormOptions';
-import { updateOutlet, NetworkError } from '../services/api';
+import { updateOutlet, NetworkError, SoftError } from '../services/api';
+import { afterEditSurvey, dueSurveyConfig, loadCampaignSurveys } from '../utils/afterEditSurvey';
 import { parseGps } from '../utils/geo';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
 import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, getStampLocation, keepPhotoForDraft } from '../utils/photoStamp';
-import { RouteName, Outlet, OutletDraft } from '../types';
+import { RouteName, Outlet, OutletDraft, SurveyDue } from '../types';
 
 interface EditOutletScreenProps {
   routeData?: { outletId?: string };
@@ -41,6 +42,14 @@ const theme = useTheme();  const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
   const outletId = routeData?.outletId;
   const outlet = state.outlets.find((o) => o.id === outletId) || state.outlets[0];
+  const campaignId = state.activeCampaign?.id || '';
+
+  // The campaign's surveys, kept on the device, so its after-edit survey can
+  // open straight after a save, offline too.
+  useEffect(() => {
+    if (campaignId) loadCampaignSurveys(campaignId, dispatch).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId]);
 
   const [outletName, setOutletName] = useState(outlet?.name || '');
 
@@ -136,6 +145,19 @@ const theme = useTheme();  const styles = createStyles(theme);
     }
   };
 
+  // The campaign's after-edit survey for this outlet: until it's filled, the
+  // outlet can't be edited again. Without its questions on the device (and
+  // none to load) the outlet's details show it's due instead.
+  const openDueSurvey = async (due: SurveyDue, message?: string) => {
+    const survey = await dueSurveyConfig(due, state.campaignSurveys[campaignId]);
+    if (!survey) {
+      onNavigate('outletDetail', { outletId: outlet.id });
+      return;
+    }
+    if (message) Alert.alert('Survey Required', message);
+    onNavigate('outletSurveyForm', { outletId: outlet.id, survey });
+  };
+
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     const missing = missingPick(options, { outletTypeId, channelId, subChannelId, distributorId });
@@ -176,7 +198,7 @@ const theme = useTheme();  const styles = createStyles(theme);
     // A new location goes for approval: only one captured here is sent.
     const newLocation = justUpdated && coords ? coords : null;
     try {
-      const { locationRequest } = await updateOutlet(outlet.id, {
+      const { locationRequest, surveyDue } = await updateOutlet(outlet.id, {
         name: outletName.trim(),
         outletTypeId,
         channelId,
@@ -192,6 +214,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         latitude: newLocation?.lat,
         longitude: newLocation?.lng,
         gpsAccuracy: newLocation ? coordsAccuracy : undefined,
+        campaign: campaignId || undefined,
       });
 
       const updatedOutlet: Outlet = {
@@ -212,21 +235,37 @@ const theme = useTheme();  const styles = createStyles(theme);
         pendingLocationRequest: newLocation && locationRequest
           ? { id: locationRequest.id, latitude: newLocation.lat, longitude: newLocation.lng, requestedOn: new Date().toISOString() }
           : outlet.pendingLocationRequest,
+        surveyDue: surveyDue ?? outlet.surveyDue,
       };
       dispatch({ type: 'UPDATE_OUTLET', outlet: updatedOutlet });
       setSubmitting(false);
-      if (newLocation && locationRequest) {
-        Alert.alert(
-          'Location Sent for Approval',
-          'Location change sent for approval. The outlet keeps its saved location until a supervisor approves it.',
-          [{ text: 'OK', onPress: () => onNavigate('outletDetail', { outletId: outlet.id }) }],
-        );
+      const locationNote = newLocation && locationRequest
+        ? 'Location change sent for approval. The outlet keeps its saved location until a supervisor approves it.'
+        : '';
+      // The campaign's after-edit survey is filled straight after the edit.
+      if (surveyDue) {
+        await openDueSurvey(surveyDue, `Fill in ${surveyDue.surveyName} to finish editing ${outlet.name}.${locationNote ? `\n\n${locationNote}` : ''}`);
+        return;
+      }
+      if (locationNote) {
+        Alert.alert('Location Sent for Approval', locationNote, [
+          { text: 'OK', onPress: () => onNavigate('outletDetail', { outletId: outlet.id }) },
+        ]);
         return;
       }
       onNavigate('outletDetail', { outletId: outlet.id });
     } catch (e: any) {
       setSubmitting(false);
       if (e instanceof NetworkError) {
+        // The campaign's after-edit survey has to be filled straight after the
+        // edit, which offline needs its questions on the device. Without
+        // them it isn't known whether one is due, so the edit waits.
+        const keptSurveys = state.campaignSurveys[campaignId];
+        if (campaignId && !keptSurveys) {
+          Alert.alert('Connect to Edit', "Connect to the internet to edit this outlet. You'll need to fill in its survey right after.");
+          return;
+        }
+        const afterEdit = afterEditSurvey(keptSurveys);
         // Genuine connectivity failure, not a rejection — apply the edit
         // locally (so it shows right away, same as the optimistic update on
         // success) plus a queued draft to actually push once back online,
@@ -249,12 +288,15 @@ const theme = useTheme();  const styles = createStyles(theme);
           pendingLocationRequest: newLocation
             ? { id: '', latitude: newLocation.lat, longitude: newLocation.lng, requestedOn: new Date().toISOString() }
             : outlet.pendingLocationRequest,
+          // Due on the device until the edit syncs and the server makes it due.
+          surveyDue: afterEdit ? { surveyId: afterEdit.id, surveyName: afterEdit.name, since: new Date().toISOString() } : outlet.surveyDue,
         };
         const outletDraft: OutletDraft = {
           id: `od_${Date.now()}`,
           mode: 'edit',
           outletId: outlet.id,
-          campaignId: outlet.campaignId,
+          // update_outlet's campaign at sync: its after-edit survey becomes due.
+          campaignId: campaignId || outlet.campaignId,
           name: outletName.trim(),
           type: typeName || '',
           subChannel: subChannelName,
@@ -276,11 +318,22 @@ const theme = useTheme();  const styles = createStyles(theme);
         };
         dispatch({ type: 'UPDATE_OUTLET', outlet: updatedOutlet });
         dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft });
-        Alert.alert(
-          'Saved Locally',
-          `No connection — these changes have been saved on this device and will upload automatically from the Sync page once you're back online.${newLocation ? ' The new location will then be sent for a supervisor\'s approval.' : ''}`,
-        );
+        const savedNote = `No connection — these changes have been saved on this device and will upload automatically from the Sync page once you're back online.${newLocation ? ' The new location will then be sent for a supervisor\'s approval.' : ''}`;
+        if (afterEdit) {
+          Alert.alert('Saved Locally', `${savedNote}\n\nFill in ${afterEdit.name} to finish editing ${outlet.name}.`);
+          onNavigate('outletSurveyForm', { outletId: outlet.id, survey: afterEdit });
+          return;
+        }
+        Alert.alert('Saved Locally', savedNote);
         onNavigate('outletDetail', { outletId: outlet.id });
+      } else if (e instanceof SoftError && e.code === 'SURVEY_REQUIRED_AFTER_EDIT') {
+        // The survey from the last edit hasn't been filled yet.
+        const due: SurveyDue = { surveyId: String(e.data?.survey_id || ''), surveyName: String(e.data?.survey_name || 'the survey') };
+        dispatch({ type: 'UPDATE_OUTLET', outlet: { ...outlet, surveyDue: due } });
+        Alert.alert('Survey Required', e.message, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Fill in survey', onPress: () => { openDueSurvey(due); } },
+        ]);
       } else {
         // The request reached the server and was rejected — this will never
         // succeed on retry, so don't disguise it as an offline save.

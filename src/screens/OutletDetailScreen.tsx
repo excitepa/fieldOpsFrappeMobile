@@ -23,6 +23,7 @@ import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
 import { isOutletVisitedToday } from '../utils/outletVisits';
 import { getMySales, getMyOrders } from '../services/api';
+import { dueSurveyConfig, dueSurveyFor } from '../utils/afterEditSurvey';
 
 interface OutletDetailScreenProps {
   outletData?: { outletId: string };
@@ -85,6 +86,7 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
   const visitedToday = isOutletVisitedToday(outlet.id, salesList, ordersList);
 
   const outletCoords = parseGps(outlet.gps);
+  const dueSurvey = dueSurveyFor(outlet, state.surveys);
   const outletDistanceM = myLocation && outletCoords ? distanceMeters(myLocation, outletCoords) : null;
 
   const handlePhoneCall = () => {
@@ -112,9 +114,32 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
     dispatch({ type: 'SKIP_OUTLET', outletId: outlet.id, skipRecord: record });
   };
 
-  const handleSelectActivityAction = (action: 'editCustomer' | 'sale' | 'order' | 'survey' | 'merchandising') => {
+  // The after-edit survey this outlet is waiting for, opened from the device
+  // (offline too) or loaded.
+  const openDueSurvey = async () => {
+    if (!dueSurvey) return;
+    const survey = await dueSurveyConfig(dueSurvey, state.campaignSurveys[activeCampaign?.id || '']);
+    if (!survey) {
+      Alert.alert('Survey Not Available', "This survey isn't on this device yet. Connect to the internet to open it.");
+      return;
+    }
+    onNavigate('outletSurveyForm', { outletId: outlet.id, survey });
+  };
+
+  const handleSelectActivityAction = (action: 'editCustomer' | 'sale' | 'order' | 'survey' | 'merchandising' | 'dueSurvey') => {
     switch (action) {
+      case 'dueSurvey':
+        openDueSurvey();
+        break;
       case 'editCustomer':
+        // Until the survey from the last edit is filled, the outlet can't be edited again.
+        if (dueSurvey) {
+          Alert.alert('Survey Required', `Fill in ${dueSurvey.surveyName} before editing this outlet again.`, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Fill in survey', onPress: () => { openDueSurvey(); } },
+          ]);
+          break;
+        }
         onNavigate('editOutlet', { outletId: outlet.id });
         break;
       case 'sale':
@@ -211,6 +236,18 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
               <Icon name="x" size={16} color={theme.colors.textMuted} />
             </Pressable>
           </View>
+        )}
+
+        {/* The survey from the last edit, until it's filled: the outlet can't be edited again before then. */}
+        {dueSurvey && (
+          <Pressable onPress={openDueSurvey} style={styles.farAwayBanner}>
+            <Icon name="clipboard-list" size={18} color={theme.colors.amber} />
+            <View style={styles.flex1}>
+              <Text style={styles.farAwayTitle}>Survey required: {dueSurvey.surveyName}</Text>
+              <Text style={styles.farAwaySub}>Fill it in before editing this outlet again. Tap to fill it in.</Text>
+            </View>
+            <Icon name="chevron-right" size={16} color={theme.colors.textMuted} />
+          </Pressable>
         )}
 
         {/* A new location the agent sent, until a supervisor decides on it. */}
@@ -358,6 +395,7 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
         visible={showActivitySheet}
         outletName={outlet.name}
         enabledModules={campaignModules}
+        dueSurveyName={dueSurvey?.surveyName}
         onClose={() => setShowActivitySheet(false)}
         onSelectAction={handleSelectActivityAction}
         onSkipOutlet={() => setShowSkipModal(true)}

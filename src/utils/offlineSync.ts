@@ -262,6 +262,26 @@ export async function pushSurveyPhotos(
   return { synced, failed, errors };
 }
 
+/**
+ * Pushes every queue. Outlet edits go first: the server has to see an edit
+ * before the survey that follows it, or the survey that edit made due stays
+ * due. The rest go together.
+ */
+export async function pushAllDrafts(
+  queues: { leadDrafts: LeadDraft[]; cartDrafts: Draft[]; surveyDrafts: OutletSurvey[]; outletDrafts: OutletDraft[]; surveyPhotos?: PendingSurveyPhoto[] },
+  dispatch: (action: any) => void,
+  fallbackCampaignId: string
+): Promise<{ leads: SyncResult; carts: SyncResult; surveys: SyncResult; outlets: SyncResult; photos: SyncResult }> {
+  const outlets = await pushOutletDrafts(queues.outletDrafts, dispatch);
+  const [leads, carts, surveys, photos] = await Promise.all([
+    pushLeadDrafts(queues.leadDrafts, dispatch),
+    pushCartDrafts(queues.cartDrafts, dispatch, fallbackCampaignId),
+    pushSurveyDrafts(queues.surveyDrafts, dispatch),
+    pushSurveyPhotos(queues.surveyPhotos || [], dispatch),
+  ]);
+  return { leads, carts, surveys, outlets, photos };
+}
+
 /** Pushes every queued outlet create/edit draft to the server. */
 export async function pushOutletDrafts(
   drafts: OutletDraft[],
@@ -309,6 +329,8 @@ export async function pushOutletDrafts(
           latitude: draft.latitude,
           longitude: draft.longitude,
           gpsAccuracy: draft.gpsAccuracy,
+          // Its campaign's after-edit survey becomes due once it reaches the server.
+          campaign: draft.campaignId,
         });
       } else {
         noteFailure(errors, `Outlet "${draft.name}"`, new Error('edit draft is missing its outlet id'));
