@@ -14,7 +14,14 @@ import { RouteName, CampaignSurveyConfig } from '../types';
 
 interface OutletSurveyFormScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
-  routeData?: { outletId?: string; survey?: CampaignSurveyConfig };
+  routeData?: {
+    outletId?: string;
+    survey?: CampaignSurveyConfig;
+    /** Coming back from review: the answers and photos so far, and the questions to mark. */
+    answers?: Record<string, any>;
+    photoUris?: Record<string, string>;
+    missingIds?: string[];
+  };
 }
 
 export const OutletSurveyFormScreen: React.FC<OutletSurveyFormScreenProps> = ({ onNavigate, routeData }) => {
@@ -28,9 +35,13 @@ export const OutletSurveyFormScreen: React.FC<OutletSurveyFormScreenProps> = ({ 
   const sections = survey?.sections || [];
   const allQuestions = sections.flatMap((s) => s.questions);
 
-  const [answers, setAnswers] = useState<Record<string, any>>({});
-  const [photoUris, setPhotoUris] = useState<Record<string, string>>({});
-  const [errors, setErrors] = useState<Record<string, boolean>>({});
+  // Back from review (Edit Answers, or a refusal to fix) the form starts from
+  // the answers and photos it had, with any questions the server named marked.
+  const [answers, setAnswers] = useState<Record<string, any>>(routeData?.answers || {});
+  const [photoUris, setPhotoUris] = useState<Record<string, string>>(routeData?.photoUris || {});
+  const [errors, setErrors] = useState<Record<string, boolean>>(
+    () => Object.fromEntries((routeData?.missingIds || []).map((id) => [id, true]))
+  );
 
   const answeredCount = allQuestions.filter((q) => isAnswered(answers[q.id], q.type)).length;
 

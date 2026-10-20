@@ -11,7 +11,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
-import { surveyRejectionMessage } from '../utils/surveyAnswers';
+import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
 import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
 
 interface OutletSurveyReviewScreenProps {
@@ -43,9 +43,21 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
+  // Back to the form with the answers and photos as they are; missingIds are
+  // the questions to mark there.
+  const editAnswers = (missingIds?: string[]) =>
+    onNavigate('outletSurveyForm', { outletId: outlet?.id, survey, answers, photoUris, missingIds });
+
   const handleSubmit = async () => {
     if (!outlet || !survey) return;
     if (blockIfDayLocked(state.dayLockedUntil)) return;
+    // Only a complete survey reaches review; checked again, since nothing
+    // incomplete may be sent.
+    const left = requireAllAnswered(allQuestions, answers);
+    if (left.length > 0) {
+      editAnswers(left.map((q) => q.id));
+      return;
+    }
     setSubmitting(true);
 
     // Built up-front (not just on success) so a genuine offline failure below
@@ -133,7 +145,12 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
       } else {
         // The request reached the server and was rejected — this will never
         // succeed on retry, so don't disguise it as an offline save.
-        Alert.alert('Could Not Submit', surveyRejectionMessage(e));
+        const missing = missingQuestionIds(e);
+        Alert.alert(
+          'Could Not Submit',
+          surveyRejectionMessage(e),
+          missing.length > 0 ? [{ text: 'Fix answers', onPress: () => editAnswers(missing) }] : undefined,
+        );
       }
     }
   };
@@ -156,7 +173,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         title="Review Answers"
         subtitle={survey.name}
         onNavigate={onNavigate}
-        onBackPress={() => onNavigate('outletSurveyForm', { outletId: outlet.id, survey })}
+        onBackPress={() => editAnswers()}
       />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {allQuestions.map((q, idx) => (
@@ -171,7 +188,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         ))}
 
         <View style={styles.actionsRow}>
-          <Button title="Edit Answers" onPress={() => onNavigate('outletSurveyForm', { outletId: outlet.id, survey })} variant="outline" style={styles.editBtn} />
+          <Button title="Edit Answers" onPress={() => editAnswers()} variant="outline" style={styles.editBtn} />
           <Button
             title={submitting ? 'Submitting...' : 'Submit Survey'}
             onPress={handleSubmit}

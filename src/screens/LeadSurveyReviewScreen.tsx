@@ -11,7 +11,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
-import { surveyRejectionMessage } from '../utils/surveyAnswers';
+import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
 import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
 
 interface LeadSurveyReviewScreenProps {
@@ -42,9 +42,21 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
+  // Back to the form with the answers and photos as they are; missingIds are
+  // the questions to mark there.
+  const editAnswers = (missingIds?: string[]) =>
+    onNavigate('leadSurveyForm', { lead, survey, answers, photoUris, missingIds });
+
   const handleSubmit = async () => {
     if (!lead || !survey) return;
     if (blockIfDayLocked(state.dayLockedUntil)) return;
+    // Only a complete survey reaches review; checked again, since nothing
+    // incomplete may be sent.
+    const left = requireAllAnswered(allQuestions, answers);
+    if (left.length > 0) {
+      editAnswers(left.map((q) => q.id));
+      return;
+    }
     setSubmitting(true);
 
     try {
@@ -103,7 +115,12 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
       if (e instanceof NetworkError) {
         Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
       } else {
-        Alert.alert('Could Not Submit', surveyRejectionMessage(e));
+        const missing = missingQuestionIds(e);
+        Alert.alert(
+          'Could Not Submit',
+          surveyRejectionMessage(e),
+          missing.length > 0 ? [{ text: 'Fix answers', onPress: () => editAnswers(missing) }] : undefined,
+        );
       }
     }
   };
@@ -126,7 +143,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
         title="Review Answers"
         subtitle={survey.name}
         onNavigate={onNavigate}
-        onBackPress={() => onNavigate('leadSurveyForm', { lead, survey })}
+        onBackPress={() => editAnswers()}
       />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {allQuestions.map((q, idx) => (
@@ -141,7 +158,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
         ))}
 
         <View style={styles.actionsRow}>
-          <Button title="Edit Answers" onPress={() => onNavigate('leadSurveyForm', { lead, survey })} variant="outline" style={styles.editBtn} />
+          <Button title="Edit Answers" onPress={() => editAnswers()} variant="outline" style={styles.editBtn} />
           <Button
             title={submitting ? 'Submitting...' : 'Submit Survey'}
             onPress={handleSubmit}
