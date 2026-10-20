@@ -213,6 +213,17 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
           </View>
         )}
 
+        {/* A new location the agent sent, until a supervisor decides on it. */}
+        {outlet.pendingLocationRequest && (
+          <View style={styles.farAwayBanner}>
+            <Icon name="map-pin" size={18} color={theme.colors.amber} />
+            <View style={styles.flex1}>
+              <Text style={styles.farAwayTitle}>Location change waiting for approval</Text>
+              <Text style={styles.farAwaySub}>The outlet keeps its saved location until a supervisor approves the new one.</Text>
+            </View>
+          </View>
+        )}
+
         {/* DETAIL ROWS */}
         <Card style={styles.detailCard}>
           {detailRows.map((row, i) => (

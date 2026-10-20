@@ -308,6 +308,7 @@ export async function pushOutletDrafts(
           photoUri: draft.photoUri,
           latitude: draft.latitude,
           longitude: draft.longitude,
+          gpsAccuracy: draft.gpsAccuracy,
         });
       } else {
         noteFailure(errors, `Outlet "${draft.name}"`, new Error('edit draft is missing its outlet id'));

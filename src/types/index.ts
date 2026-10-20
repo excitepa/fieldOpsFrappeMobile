@@ -344,6 +344,8 @@ export interface Outlet {
   subChannelName?: string;
   distributorId?: string;
   distributorName?: string;
+  /** A new location the agent sent, waiting for a supervisor's approval; the outlet keeps its saved one until then. */
+  pendingLocationRequest?: { id: string; latitude: number; longitude: number; requestedOn?: string };
 }
 
 /** A choice from the backend's master data, kept by id: an outlet type, channel, sub-channel or distributor. */
@@ -586,8 +588,11 @@ export interface OutletDraft {
   ownerPhone?: string;
   notes?: string;
   photoUri?: string;
+  /** Only when the agent captured a new location (Update Location); it goes for approval. */
   latitude?: number;
   longitude?: number;
+  /** That location fix's accuracy, in meters. */
+  gpsAccuracy?: number;
   createdAt: string;
   pendingSync: true;
 }

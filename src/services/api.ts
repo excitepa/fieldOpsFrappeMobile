@@ -797,6 +797,14 @@ const mapOutlet = (raw: any, campaignId: string, baseUrl: string): Outlet => {
     subChannelName: text(raw?.outlet_sub_channel_name),
     distributorId: text(raw?.distributor_id),
     distributorName: text(raw?.distributor_name),
+    pendingLocationRequest: raw?.pending_location_request?.id
+      ? {
+          id: String(raw.pending_location_request.id),
+          latitude: Number(raw.pending_location_request.latitude),
+          longitude: Number(raw.pending_location_request.longitude),
+          requestedOn: text(raw.pending_location_request.requested_on),
+        }
+      : undefined,
   };
 };
 
@@ -1042,12 +1050,33 @@ export interface UpdateOutletPayload extends OutletClassificationPayload {
   ownerPhone?: string;
   notes?: string;
   photoUri?: string;
+  /** Only a newly captured location: the backend makes it a request for a supervisor to approve. */
   latitude?: number;
   longitude?: number;
+  /** That fix's accuracy, in meters. */
+  gpsAccuracy?: number;
 }
 
-/** Update an existing outlet via the RPC contract (`update_outlet`). */
-export const updateOutlet = async (outletId: string, payload: UpdateOutletPayload): Promise<void> => {
+/** What update_outlet says beyond saving the edit. */
+export interface UpdateOutletResult {
+  /** A moved location wasn't applied: it waits for a supervisor's approval. */
+  locationRequest?: { id: string; status: string };
+}
+
+const mapUpdateOutletResult = (data: any): UpdateOutletResult => {
+  const result = data?.message ?? data?.data ?? data;
+  const request = result?.location_request;
+  return {
+    locationRequest: request?.id ? { id: String(request.id), status: String(request.status || 'Pending') } : undefined,
+  };
+};
+
+/**
+ * Update an existing outlet via the RPC contract (`update_outlet`). A
+ * location more than 10 m from the saved one isn't applied by the backend:
+ * it becomes a request a supervisor approves (`locationRequest`).
+ */
+export const updateOutlet = async (outletId: string, payload: UpdateOutletPayload): Promise<UpdateOutletResult> => {
   const fields: Record<string, any> = {
     // Identity key naming isn't confirmed against a real device log yet — sending both
     // `outlet` and `outlet_id` since those are the two conventions used elsewhere in
@@ -1067,6 +1096,7 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
   // documented naming convention available for outlet geo-fields.
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
+  if (payload.gpsAccuracy !== undefined) fields.gps_accuracy = payload.gpsAccuracy;
 
   if (payload.photoUri) {
     const form = new FormData();
@@ -1077,17 +1107,16 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
     // non-jpeg camera URI is handled identically here instead of being sent
     // with a broken part name and a hardcoded mime type.
     form.append('image', buildPhotoPart(payload.photoUri));
-    await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
+    return mapUpdateOutletResult(await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
       method: 'POST',
       body: form,
-    });
-  } else {
-    await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fields),
-    });
+    }));
   }
+  return mapUpdateOutletResult(await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  }));
 };
 
 /** Skip an outlet visit via the RPC contract (`skip_outlet_visit`). */

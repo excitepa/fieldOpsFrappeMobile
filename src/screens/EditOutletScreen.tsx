@@ -71,13 +71,13 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [address, setAddress] = useState(outlet?.address || '');
   const [notes, setNotes] = useState(outlet?.notes || '');
   const [submitting, setSubmitting] = useState(false);
-  // `coords` is what actually gets submitted — it starts at the outlet's
-  // already-saved location so Save doesn't silently wipe it if the agent
-  // never touches this button. `justUpdated` is separate and always starts
-  // false: it only tracks whether *this button* was manually tapped in this
-  // session, so the label never claims a capture that didn't happen — no
-  // auto-updating on screen open just because a location was saved before.
+  // `coords` starts at the outlet's saved location. Only a location captured
+  // here (justUpdated: Update Location was tapped this session) is sent, and
+  // the backend makes it a request a supervisor approves — the outlet keeps
+  // its saved location until then, so an agent can't re-pin an outlet to
+  // wherever they're standing.
   const [coords, setCoords] = useState(parseGps(outlet?.gps));
+  const [coordsAccuracy, setCoordsAccuracy] = useState<number>();
   const [justUpdated, setJustUpdated] = useState(false);
   const [capturingLocation, setCapturingLocation] = useState(false);
   // Only a photo taken in this session — the outlet's existing image is shown
@@ -127,6 +127,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       }
       const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       setCoords({ lat: position.coords.latitude, lng: position.coords.longitude });
+      setCoordsAccuracy(position.coords.accuracy ?? undefined);
       setJustUpdated(true);
     } catch (e) {
       Alert.alert('Location Error', 'Could not read the device location. Check GPS and try again.');
@@ -172,8 +173,10 @@ const theme = useTheme();  const styles = createStyles(theme);
     // The watermarked snapshot, not the raw camera file, is what gets uploaded
     // (or kept for an offline draft) — same as the attendance selfie.
     const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
+    // A new location goes for approval: only one captured here is sent.
+    const newLocation = justUpdated && coords ? coords : null;
     try {
-      await updateOutlet(outlet.id, {
+      const { locationRequest } = await updateOutlet(outlet.id, {
         name: outletName.trim(),
         outletTypeId,
         channelId,
@@ -186,8 +189,9 @@ const theme = useTheme();  const styles = createStyles(theme);
         ownerPhone: ownerMobile,
         notes: notes.trim() || undefined,
         photoUri: uploadPhotoUri || undefined,
-        latitude: coords?.lat,
-        longitude: coords?.lng,
+        latitude: newLocation?.lat,
+        longitude: newLocation?.lng,
+        gpsAccuracy: newLocation ? coordsAccuracy : undefined,
       });
 
       const updatedOutlet: Outlet = {
@@ -202,10 +206,23 @@ const theme = useTheme();  const styles = createStyles(theme);
         ownerPhone: ownerMobile,
         address: address.trim(),
         notes: notes.trim(),
-        gps: coords ? `${coords.lat}, ${coords.lng}` : outlet.gps,
+        // A moved location waiting for approval leaves the saved one in place
+        // (a backend without approvals applies it straight away).
+        gps: newLocation && !locationRequest ? `${newLocation.lat}, ${newLocation.lng}` : outlet.gps,
+        pendingLocationRequest: newLocation && locationRequest
+          ? { id: locationRequest.id, latitude: newLocation.lat, longitude: newLocation.lng, requestedOn: new Date().toISOString() }
+          : outlet.pendingLocationRequest,
       };
       dispatch({ type: 'UPDATE_OUTLET', outlet: updatedOutlet });
       setSubmitting(false);
+      if (newLocation && locationRequest) {
+        Alert.alert(
+          'Location Sent for Approval',
+          'Location change sent for approval. The outlet keeps its saved location until a supervisor approves it.',
+          [{ text: 'OK', onPress: () => onNavigate('outletDetail', { outletId: outlet.id }) }],
+        );
+        return;
+      }
       onNavigate('outletDetail', { outletId: outlet.id });
     } catch (e: any) {
       setSubmitting(false);
@@ -227,7 +244,11 @@ const theme = useTheme();  const styles = createStyles(theme);
           ownerPhone: ownerMobile,
           address: address.trim(),
           notes: notes.trim(),
-          gps: coords ? `${coords.lat}, ${coords.lng}` : outlet.gps,
+          // The new location is sent for approval when the draft syncs; the
+          // saved one stays until a supervisor approves it.
+          pendingLocationRequest: newLocation
+            ? { id: '', latitude: newLocation.lat, longitude: newLocation.lng, requestedOn: new Date().toISOString() }
+            : outlet.pendingLocationRequest,
         };
         const outletDraft: OutletDraft = {
           id: `od_${Date.now()}`,
@@ -247,8 +268,9 @@ const theme = useTheme();  const styles = createStyles(theme);
           ownerPhone: ownerMobile,
           notes: notes.trim() || undefined,
           photoUri: draftPhotoUri,
-          latitude: coords?.lat,
-          longitude: coords?.lng,
+          latitude: newLocation?.lat,
+          longitude: newLocation?.lng,
+          gpsAccuracy: newLocation ? coordsAccuracy : undefined,
           createdAt: new Date().toISOString(),
           pendingSync: true,
         };
@@ -256,7 +278,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft });
         Alert.alert(
           'Saved Locally',
-          'No connection — these changes have been saved on this device and will upload automatically from the Sync page once you\'re back online.',
+          `No connection — these changes have been saved on this device and will upload automatically from the Sync page once you're back online.${newLocation ? ' The new location will then be sent for a supervisor\'s approval.' : ''}`,
         );
         onNavigate('outletDetail', { outletId: outlet.id });
       } else {
@@ -436,9 +458,16 @@ const theme = useTheme();  const styles = createStyles(theme);
               <Icon name="map-pin" size={16} color={theme.colors.navy} />
             )}
             <Text style={styles.updateLocationText}>
-              {capturingLocation ? 'Locating…' : justUpdated ? 'Location Updated' : 'Update Location'}
+              {capturingLocation ? 'Locating…' : justUpdated ? 'Location captured' : 'Update Location'}
             </Text>
           </Pressable>
+          <Text style={styles.locationNote}>
+            {outlet.pendingLocationRequest
+              ? 'Location change waiting for approval.'
+              : justUpdated
+                ? 'The new location is sent for a supervisor\'s approval when you save.'
+                : 'A new location needs a supervisor\'s approval.'}
+          </Text>
         </Card>
 
         <Button
@@ -488,5 +517,6 @@ const createStyles = (theme: any) => StyleSheet.create({
     paddingHorizontal: theme.spacing.md, paddingVertical: 10, marginTop: 4,
   },
   updateLocationText: { ...typography.body, color: theme.colors.navy },
+  locationNote: { ...typography.caption, color: theme.colors.textMuted, textAlign: 'right', marginTop: -4 },
   saveBtn: { marginTop: theme.spacing.sm },
 });
