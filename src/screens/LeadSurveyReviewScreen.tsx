@@ -10,7 +10,7 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
+import { discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles } from '../utils/surveyPhotos';
 import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
 import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
 
@@ -43,9 +43,17 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
   // Back to the form with the answers and photos as they are; missingIds are
-  // the questions to mark there.
-  const editAnswers = (missingIds?: string[]) =>
-    onNavigate('leadSurveyForm', { lead, survey, answers, photoUris, missingIds });
+  // the questions to mark there, and retakeIds photos to take again.
+  const editAnswers = (missingIds?: string[], retakeIds: string[] = []) => {
+    const keep = ([id]: [string, unknown]) => !retakeIds.includes(id);
+    onNavigate('leadSurveyForm', {
+      lead,
+      survey,
+      answers: Object.fromEntries(Object.entries(answers).filter(keep)),
+      photoUris: Object.fromEntries(Object.entries(photoUris).filter(keep)),
+      missingIds,
+    });
+  };
 
   const handleSubmit = async () => {
     if (!lead || !survey) return;
@@ -55,6 +63,14 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
     const left = requireAllAnswered(allQuestions, answers);
     if (left.length > 0) {
       editAnswers(left.map((q) => q.id));
+      return;
+    }
+    // The photos go up with the survey, so each must still be on the phone.
+    const photos = surveyPhotoFiles(allQuestions, photoUris);
+    const lost = lostSurveyPhotos(allQuestions, photos);
+    if (lost.length > 0) {
+      Alert.alert('Take the Photo Again', lostPhotosMessage(lost));
+      editAnswers(lost.map((q) => q.id), lost.map((q) => q.id));
       return;
     }
     setSubmitting(true);
@@ -71,11 +87,13 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
       const firstName = nameParts[0] || undefined;
       const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined;
 
-      const { responseId } = await submitSurveyResponse(
+      await submitSurveyResponse(
         survey.id,
         allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
         coordinates,
-        { leadId: lead.id, firstName, lastName, phone: lead.phone || undefined }
+        { leadId: lead.id, firstName, lastName, phone: lead.phone || undefined },
+        undefined,
+        photos
       );
 
       const surveyAnswers: LeadSurveyAnswer[] = allQuestions.map((q) => ({
@@ -95,18 +113,10 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
         },
       });
 
-      // The response is in — its photos go up against it now. One that still
-      // won't upload is queued for the Sync page; never throws.
-      const { failed: photosLeft, reason } = await uploadSurveyPhotos(responseId, photoUris, survey.name);
-      if (photosLeft.length > 0) dispatch({ type: 'QUEUE_SURVEY_PHOTOS', photos: photosLeft });
+      // Accepted with its photos, so the phone's copies can go.
+      discardSurveyPhotos(photos);
 
       setSubmitting(false);
-      if (photosLeft.length > 0) {
-        Alert.alert('Survey Saved — Photo Not Uploaded', photosNotUploadedMessage(photosLeft.length, reason), [
-          { text: 'OK', onPress: () => onNavigate('leadSurveys', lead) },
-        ]);
-        return;
-      }
       Alert.alert('Survey Submitted', `${survey.name} has been recorded for ${lead.name}.`, [
         { text: 'OK', onPress: () => onNavigate('leadSurveys', lead) },
       ]);

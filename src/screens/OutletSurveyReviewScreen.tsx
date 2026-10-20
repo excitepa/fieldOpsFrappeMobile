@@ -10,7 +10,7 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { uploadSurveyPhotos, photosNotUploadedMessage } from '../utils/surveyPhotos';
+import { discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles } from '../utils/surveyPhotos';
 import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
 import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
 
@@ -44,9 +44,17 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
   // Back to the form with the answers and photos as they are; missingIds are
-  // the questions to mark there.
-  const editAnswers = (missingIds?: string[]) =>
-    onNavigate('outletSurveyForm', { outletId: outlet?.id, survey, answers, photoUris, missingIds });
+  // the questions to mark there, and retakeIds photos to take again.
+  const editAnswers = (missingIds?: string[], retakeIds: string[] = []) => {
+    const keep = ([id]: [string, unknown]) => !retakeIds.includes(id);
+    onNavigate('outletSurveyForm', {
+      outletId: outlet?.id,
+      survey,
+      answers: Object.fromEntries(Object.entries(answers).filter(keep)),
+      photoUris: Object.fromEntries(Object.entries(photoUris).filter(keep)),
+      missingIds,
+    });
+  };
 
   const handleSubmit = async () => {
     if (!outlet || !survey) return;
@@ -56,6 +64,14 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
     const left = requireAllAnswered(allQuestions, answers);
     if (left.length > 0) {
       editAnswers(left.map((q) => q.id));
+      return;
+    }
+    // The photos go up with the survey, so each must still be on the phone.
+    const photos = surveyPhotoFiles(allQuestions, photoUris);
+    const lost = lostSurveyPhotos(allQuestions, photos);
+    if (lost.length > 0) {
+      Alert.alert('Take the Photo Again', lostPhotosMessage(lost));
+      editAnswers(lost.map((q) => q.id), lost.map((q) => q.id));
       return;
     }
     setSubmitting(true);
@@ -81,12 +97,13 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         coordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
       }
 
-      const { responseId } = await submitSurveyResponse(
+      await submitSurveyResponse(
         survey.id,
         allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
         coordinates,
         undefined,
-        outlet.id
+        outlet.id,
+        photos
       );
 
       const newSurvey: OutletSurvey = {
@@ -102,22 +119,10 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
 
       dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
       dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
-
-      // The response is in — its photos go up against it now. One that still
-      // won't upload is queued for the Sync page; never throws, so it can't
-      // land in the offline-draft path below and resubmit the survey.
-      const { failed: photosLeft, reason } = await uploadSurveyPhotos(responseId, photoUris, survey.name);
-      if (photosLeft.length > 0) dispatch({ type: 'QUEUE_SURVEY_PHOTOS', photos: photosLeft });
+      // Accepted with its photos, so the phone's copies can go.
+      discardSurveyPhotos(photos);
 
       setSubmitting(false);
-      if (photosLeft.length > 0) {
-        Alert.alert(
-          'Survey Saved — Photo Not Uploaded',
-          photosNotUploadedMessage(photosLeft.length, reason),
-          [{ text: 'OK', onPress: () => onNavigate('surveySuccess', { survey: newSurvey, outletId: outlet.id }) }]
-        );
-        return;
-      }
       onNavigate('surveySuccess', { survey: newSurvey, outletId: outlet.id });
     } catch (e: any) {
       setSubmitting(false);
@@ -125,7 +130,8 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         // Genuine connectivity failure, not a rejection — save a real local
         // copy (isDraft: true, same record shape a synced survey would have)
         // so the agent's answers aren't lost, and it can be pushed for real
-        // from the Sync page once back online.
+        // from the Sync page once back online. It's complete, and its photo
+        // answers point at the kept photos, which go up with it.
         const draftSurvey: OutletSurvey = {
           id: `surv-${Date.now()}`,
           outletId: outlet.id,
@@ -143,8 +149,9 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         );
         onNavigate('outletDetail', { outletId: outlet.id });
       } else {
-        // The request reached the server and was rejected — this will never
-        // succeed on retry, so don't disguise it as an offline save.
+        // The request reached the server and was refused — don't disguise
+        // that as an offline save. Its message says what to do (fix the
+        // answers it names, or submit again after PHOTO_SAVE_FAILED).
         const missing = missingQuestionIds(e);
         Alert.alert(
           'Could Not Submit',

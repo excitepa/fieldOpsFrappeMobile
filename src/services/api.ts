@@ -1744,27 +1744,23 @@ export interface SurveyRespondent {
 }
 
 /**
- * Submit answers via the RPC contract (`submit_survey_response`).
- *
- * IMPORTANT (flagged, not silently worked around): the backend dedupes an existing
- * response by `{survey, agent, status in [Draft, Submitted]}` only — there is no
- * outlet dimension. So submitting the same survey for a second outlet on the same day
- * updates/overwrites the agent's one existing response for that survey rather than
- * creating a second record. This app still tracks completion per-outlet locally
- * (OutletSurvey.outletId) for UI purposes, but that per-outlet distinction is NOT
- * preserved server-side under this contract — needs backend confirmation if outlet-
- * scoped survey responses are actually required.
- *
- * 'photo' (Image) questions are always sent with an empty answer — the device's local
- * file path means nothing server-side. The photo itself goes up afterwards through
- * uploadSurveyPhoto, against the `response_id` this returns.
+ * Submit a survey via the RPC contract (`submit_survey_response`), its photos
+ * in the same request: the server refuses a survey with any question
+ * unanswered, photo questions included (REQUIRED_ANSWERS_MISSING), so a photo
+ * can't follow later. With photos (question id -> local file) the request is
+ * multipart, each photo a file part named by its question id; the answers go
+ * as they do in JSON, a photo question's answer empty, since the device's
+ * file path means nothing to the server. A survey without photos is sent as
+ * JSON. Resubmitting a survey for the same outlet on the same day updates the
+ * agent's earlier response.
  */
 export const submitSurveyResponse = async (
   surveyId: string,
   responses: SurveyResponsePayload[],
   coordinates?: { lat: number; lng: number },
   respondent?: SurveyRespondent,
-  outletId?: string
+  outletId?: string,
+  photos?: Record<string, string>
 ): Promise<{ responseId: string }> => {
   const body: Record<string, any> = {
     survey: surveyId,
@@ -1791,11 +1787,27 @@ export const submitSurveyResponse = async (
     body.customer = outletId;
   }
 
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_survey_response', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const photoParts = Object.entries(photos || {}).filter(([, uri]) => !!uri);
+  let data: any;
+  if (photoParts.length > 0) {
+    const form = new FormData();
+    Object.entries(body).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) form.append(key, typeof value === 'string' ? value : JSON.stringify(value));
+    });
+    // Same part builder as the other photo uploads: throws, before anything
+    // is sent, for a photo whose file is no longer on the device.
+    photoParts.forEach(([questionId, uri]) => form.append(questionId, buildPhotoPart(uri)));
+    data = await authFetch('/api/method/fieldops.api.mobile_api.submit_survey_response', {
+      method: 'POST',
+      body: form,
+    });
+  } else {
+    data = await authFetch('/api/method/fieldops.api.mobile_api.submit_survey_response', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
   const result = data?.message ?? data?.data ?? data;
   return { responseId: String(result?.response_id || '') };
 };

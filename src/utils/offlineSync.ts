@@ -4,7 +4,7 @@ import {
   OrderLinePayload, AuthError, NetworkError,
 } from '../services/api';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto } from '../types';
-import { uploadSurveyPhotos, discardSurveyPhoto, surveyPhotoExists } from './surveyPhotos';
+import { discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
 import { debugLog } from './logger';
 
 /**
@@ -152,10 +152,10 @@ const isPhotoAnswer = (a: SurveyAnswer) =>
   a.questionType === 'photo' || (!a.questionType && typeof a.answer === 'string' && a.answer.startsWith('file://'));
 
 /**
- * Pushes every locally-queued draft survey (isDraft: true) to the server, then
- * uploads its photos against the response id it gets back. A photo that still
- * won't upload is queued on its own (see pushSurveyPhotos) — the survey itself
- * counts as synced.
+ * Pushes every locally-queued draft survey (isDraft: true) to the server, its
+ * photos in the same request: a photo answer holds the kept photo's path, and
+ * the server only accepts a survey that carries all of them. Once accepted,
+ * the phone's copies are deleted.
  */
 export async function pushSurveyDrafts(
   drafts: OutletSurvey[],
@@ -171,25 +171,21 @@ export async function pushSurveyDrafts(
       continue;
     }
     try {
-      const { responseId } = await submitSurveyResponse(
+      const photos: Record<string, string> = {};
+      draft.answers.forEach((a) => {
+        if (isPhotoAnswer(a) && typeof a.answer === 'string' && a.answer) photos[a.questionId] = a.answer;
+      });
+      await submitSurveyResponse(
         draft.surveyConfigId,
         draft.answers.map((a) => ({ questionId: a.questionId, questionType: isPhotoAnswer(a) ? 'photo' : a.questionType || 'text', answer: a.answer })),
         undefined,
         undefined,
-        draft.outletId
+        draft.outletId,
+        photos
       );
       dispatch({ type: 'MARK_SURVEY_SYNCED', surveyId: draft.id });
+      discardSurveyPhotos(photos);
       synced++;
-
-      const photoUris: Record<string, string> = {};
-      draft.answers.forEach((a) => {
-        if (isPhotoAnswer(a) && typeof a.answer === 'string' && a.answer) photoUris[a.questionId] = a.answer;
-      });
-      const { failed: photosLeft, reason } = await uploadSurveyPhotos(responseId, photoUris, draft.surveyName);
-      if (photosLeft.length > 0) {
-        dispatch({ type: 'QUEUE_SURVEY_PHOTOS', photos: photosLeft });
-        noteFailure(errors, `Photo for survey "${draft.surveyName || 'draft'}"`, new Error(`${reason} (queued to retry)`));
-      }
     } catch (e) {
       noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, e);
       failed++;

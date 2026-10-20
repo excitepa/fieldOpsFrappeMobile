@@ -1,7 +1,6 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
-import { uploadSurveyPhoto } from '../services/api';
-import { PendingSurveyPhoto } from '../types';
+import { DynamicSurveyQuestion } from '../types';
 import { debugLog } from './logger';
 
 const MAX_WIDTH = 1280;
@@ -9,7 +8,7 @@ const JPEG_QUALITY = 0.6;
 
 /**
  * Shrinks a just-captured survey photo (~1280px wide, JPEG 0.6) and keeps it in
- * the app's documents folder until it's uploaded. Camera and resize output live
+ * the app's documents folder until the survey is accepted. Camera and resize output live
  * in the cache folder, which the OS can clear first — the app has hit "photo
  * file is no longer on this device" that way before. If shrinking or keeping
  * fails, the photo is used as-is rather than lost.
@@ -46,7 +45,7 @@ export const surveyPhotoExists = (uri?: string | null): boolean => {
   }
 };
 
-/** Deletes a kept survey photo once it's no longer needed (uploaded, retaken or removed). */
+/** Deletes a kept survey photo once it's no longer needed (accepted with its survey, retaken or removed). */
 export const discardSurveyPhoto = (uri?: string | null) => {
   if (!surveyPhotoExists(uri)) return;
   try {
@@ -57,51 +56,22 @@ export const discardSurveyPhoto = (uri?: string | null) => {
 };
 
 /**
- * Uploads the captured photos (question id -> local uri) of a survey response
- * that just reached the server, trying each twice and deleting its local copy
- * once it's up. Never throws — the response itself already went through, so a
- * photo that didn't must not be treated as a failed or offline survey. Returns
- * the photos still to upload, ready to queue for the Sync page.
+ * A survey's photos, sent with it in one request (question id -> the kept
+ * file). The server only accepts a survey that carries a photo for every
+ * photo question.
  */
-export const uploadSurveyPhotos = async (
-  responseId: string,
-  photoUris: Record<string, string>,
-  surveyName?: string
-): Promise<{ failed: PendingSurveyPhoto[]; reason?: string }> => {
-  const failed: PendingSurveyPhoto[] = [];
-  let reason: string | undefined;
-  for (const [questionId, photoUri] of Object.entries(photoUris)) {
-    if (!photoUri) continue;
-    let uploaded = false;
-    for (let attempt = 1; attempt <= 2 && !uploaded; attempt++) {
-      try {
-        await uploadSurveyPhoto(responseId, questionId, photoUri);
-        uploaded = true;
-      } catch (e: any) {
-        reason = e?.message || 'The photo upload failed for an unknown reason.';
-        debugLog(`[surveyPhotos] response ${responseId} photo for ${questionId} failed (attempt ${attempt}/2) ->`, reason);
-      }
-    }
-    if (uploaded) {
-      discardSurveyPhoto(photoUri);
-    } else {
-      failed.push({
-        id: `sp_${Date.now()}_${questionId}`,
-        responseId,
-        questionId,
-        photoUri,
-        surveyName,
-        createdAt: new Date().toISOString(),
-      });
-    }
-  }
-  return { failed, reason };
-};
+export const surveyPhotoFiles = (questions: DynamicSurveyQuestion[], photoUris: Record<string, string>): Record<string, string> =>
+  Object.fromEntries(questions.filter((q) => q.type === 'photo').map((q) => [q.id, photoUris[q.id] || '']));
 
-/** Alert body for a survey that was saved while some of its photos weren't — same shape as the outlet photo alert. */
-export const photosNotUploadedMessage = (count: number, reason?: string): string =>
-  [
-    `The survey was saved, but ${count === 1 ? 'its photo' : `${count} of its photos`} could not be uploaded yet.`,
-    reason ? `\nReason: ${reason}` : '',
-    `\n${count === 1 ? 'It has' : 'They have'} been queued and will upload from the Sync page.`,
-  ].join('');
+/** The photo questions whose photo isn't on this device (any more), so it has to be taken again. */
+export const lostSurveyPhotos = (questions: DynamicSurveyQuestion[], files: Record<string, string>): DynamicSurveyQuestion[] =>
+  questions.filter((q) => q.type === 'photo' && !surveyPhotoExists(files[q.id]));
+
+/** What to tell the agent about photos that are gone. */
+export const lostPhotosMessage = (lost: DynamicSurveyQuestion[]): string =>
+  `The photo for ${lost.map((q) => `"${q.question}"`).join(', ')} is no longer on this device. Take it again.`;
+
+/** Deletes a survey's kept photos once the survey with them is accepted. */
+export const discardSurveyPhotos = (files: Record<string, string>) => {
+  Object.values(files).forEach(discardSurveyPhoto);
+};
