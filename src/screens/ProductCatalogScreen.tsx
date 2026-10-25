@@ -5,6 +5,7 @@ import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { ProductCatalogList } from '../components/ProductCatalogList';
 import { useFieldStore } from '../store/useFieldStore';
+import { withUnsentSales } from '../utils/stock';
 import { RouteName } from '../types';
 
 interface ProductCatalogScreenProps {
@@ -21,7 +22,7 @@ export const ProductCatalogScreen: React.FC<ProductCatalogScreenProps> = ({ onNa
       <Header title="Product Catalog" subtitle={`${state.products.length} products`} onNavigate={onNavigate} onBackPress={() => onNavigate('inventory')} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ProductCatalogList
-          products={state.products}
+          products={withUnsentSales(state.products, state.drafts)}
           onSelectProduct={(p) => onNavigate('productDetail', { productId: p.id })}
         />
       </ScrollView>

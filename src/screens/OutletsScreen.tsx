@@ -90,7 +90,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   // Real, server-derived visited-today set — see outletVisits.ts for why this
   // replaced the local-only outlet.status flag. Skip has no server equivalent
   // to derive from yet, so that half of `status` is still read as-is.
-  const visitedTodayIds = getOutletIdsVisitedToday(state.sales, state.orders);
+  const visitedTodayIds = getOutletIdsVisitedToday(state.sales, state.orders, state.drafts);
   const effectiveStatus = (o: { id: string; status: OutletStatus }): OutletStatus =>
     visitedTodayIds.has(o.id) ? 'visited' : o.status;
 

@@ -72,7 +72,7 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
 
   const todayIso = localDateStr();
   // Real, server-derived visited-today set — see outletVisits.ts.
-  const visitedTodayIds = getOutletIdsVisitedToday(state.sales, state.orders);
+  const visitedTodayIds = getOutletIdsVisitedToday(state.sales, state.orders, state.drafts);
   const outletsVisited = state.outlets.filter((o) => visitedTodayIds.has(o.id)).length;
   const salesToday = state.sales.filter((s) => isToday(s.timestamp));
   const salesTotal = salesToday.reduce((sum, s) => sum + s.total, 0);

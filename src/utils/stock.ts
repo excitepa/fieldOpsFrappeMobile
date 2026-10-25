@@ -1,6 +1,39 @@
-import { Product } from '../types';
-import { getProductUnits, getStockUnit, StockShortfall } from './cart';
+import { Draft, Product } from '../types';
+import { getProductUnits, getStockUnit, getStockQtyByProduct, StockShortfall } from './cart';
+import { previewFreeGoods } from './promotions';
 import { formatQty, formatUnitQty, unitWord } from './units';
+
+/**
+ * Stock units of each product that sales not yet sent will take: every
+ * unsent sale draft's lines, paid and free (free goods worked out as the app
+ * shows them). `exceptDraftId`: the draft being resumed, which is checked as
+ * the cart itself.
+ */
+export function unsentSaleStock(drafts: Draft[], products: Product[], exceptDraftId?: string): Map<string, number> {
+  const taken = new Map<string, number>();
+  drafts
+    .filter((d) => d.mode === 'sale' && d.id !== exceptDraftId)
+    .forEach((d) => {
+      getStockQtyByProduct(d.cart).forEach((qty, id) => taken.set(id, (taken.get(id) || 0) + qty));
+      previewFreeGoods(d.cart, products).forEach((f) => taken.set(f.productId, (taken.get(f.productId) || 0) + f.stockQty));
+    });
+  return taken;
+}
+
+/**
+ * The products with the stock the agent can still sell: the stock last
+ * downloaded from the server, less what unsent sales take — so neither an
+ * offline sale nor a refresh before it's sent lets the same stock be sold
+ * twice. Products no unsent sale touches are returned as they are.
+ */
+export function withUnsentSales(products: Product[], drafts: Draft[], exceptDraftId?: string): Product[] {
+  const taken = unsentSaleStock(drafts, products, exceptDraftId);
+  if (taken.size === 0) return products;
+  return products.map((p) => {
+    const qty = taken.get(p.id);
+    return qty ? { ...p, stock: Math.max(0, p.stock - qty) } : p;
+  });
+}
 
 export type StockStatus = 'in' | 'low' | 'out';
 

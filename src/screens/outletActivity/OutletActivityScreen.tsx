@@ -15,7 +15,7 @@ import { checkSaleLocation } from '../../utils/geofence';
 import { freshFix } from '../../utils/locationFix';
 import { RouteName, CartLine, Draft, OutletSale, OutletOrder, SaleLocation, ActionStamp } from '../../types';
 import { getStockShortfalls, lineFactor, lineStockQty, StockShortfall } from '../../utils/cart';
-import { describeShortfalls } from '../../utils/stock';
+import { describeShortfalls, withUnsentSales } from '../../utils/stock';
 import { previewFreeGoods } from '../../utils/promotions';
 import { newClientRef } from '../../utils/queue';
 import { localDateTimeStr } from '../../utils/timestamp';
@@ -92,9 +92,12 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // The Sale/Order product catalog is scoped to the active campaign's
   // `productIds`, matching the reference (e.g. Silver Card Rollout only
   // sells the ₦250k tier) instead of always listing every product.
+  // Stock as the agent can still sell it: less what their unsent sales take
+  // (a resumed draft is the cart itself, so it doesn't count against it).
+  const stockProducts = withUnsentSales(state.products, state.drafts, routeData?.resumeDraftId);
   const scopedProducts = activeCampaign?.productIds?.length
-    ? state.products.filter((p) => activeCampaign.productIds!.includes(p.id))
-    : state.products;
+    ? stockProducts.filter((p) => activeCampaign.productIds!.includes(p.id))
+    : stockProducts;
   // get_items returns the FULL company item catalog, not just what this agent
   // actually has on hand — confirmed against a real account whose stock only
   // covered 3 of 8 catalog items. A Sale is sold from the agent's own stock
@@ -112,7 +115,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // have to be one of this campaign's products.
   const freeGoods = category === 'merchandising' ? [] : previewFreeGoods(activeCart.cart, state.products);
   // A sale also needs stock for its free goods.
-  const stockShortfalls = category === 'sale' ? getStockShortfalls(activeCart.cart, state.products, freeGoods) : [];
+  const stockShortfalls = category === 'sale' ? getStockShortfalls(activeCart.cart, stockProducts, freeGoods) : [];
 
   // Hydrate a saved draft on first mount, if resuming one.
   useEffect(() => {
@@ -215,8 +218,8 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   };
 
   // A sale is checked against stock refreshed from the server; when that
-  // can't be loaded, against the stock on this device, and the server
-  // decides on submit.
+  // can't be loaded, against the stock on this device. Either way less what
+  // unsent sales take, so a sale offline can't sell stock another one has.
   const checkSaleStock = async (): Promise<StockShortfall[]> => {
     let products = state.products;
     try {
@@ -224,7 +227,8 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     } catch {
       // Offline or failing: the stock on this device.
     }
-    return getStockShortfalls(saleCart.cart, products, previewFreeGoods(saleCart.cart, products));
+    const sellable = withUnsentSales(products, state.drafts, routeData?.resumeDraftId);
+    return getStockShortfalls(saleCart.cart, sellable, previewFreeGoods(saleCart.cart, products));
   };
 
   // The sale's cart as an order: a pre-order doesn't need the agent's stock.
@@ -246,7 +250,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // short now means it may be refused when it syncs.
   const draftStockWarning = (mode: 'sale' | 'order', cart: CartLine[]): string => {
     if (mode !== 'sale') return '';
-    const short = getStockShortfalls(cart, state.products, previewFreeGoods(cart, state.products));
+    const short = getStockShortfalls(cart, stockProducts, previewFreeGoods(cart, state.products));
     return short.length > 0
       ? `The stock on this device doesn't cover this sale:\n${describeShortfalls(short)}\n\nIt may be refused when it syncs. An order doesn't need stock.`
       : '';
@@ -395,6 +399,8 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         // of just losing it, so it can be pushed for real from the Sync page
         // once back online.
         dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart, location, stamp, true) });
+        // The visit happened: the outlet shows as visited before it's sent.
+        dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
         const warning = draftStockWarning(mode, activeCart.cart);
         Alert.alert(
           'Saved Locally',

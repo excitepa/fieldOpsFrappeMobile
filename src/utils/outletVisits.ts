@@ -1,7 +1,7 @@
-import { OutletSale, OutletOrder } from '../types';
-import { parseAppTimestamp } from './timestamp';
+import { Draft, OutletSale, OutletOrder } from '../types';
+import { localDateStr, parseAppTimestamp } from './timestamp';
 
-function isToday(timestamp: string, today: Date = new Date()): boolean {
+export function isToday(timestamp: string, today: Date = new Date()): boolean {
   const d = parseAppTimestamp(timestamp);
   if (isNaN(d.getTime())) return false;
   return d.toDateString() === today.toDateString();
@@ -21,13 +21,17 @@ function isToday(timestamp: string, today: Date = new Date()): boolean {
  * no outlet field at all) — so a survey-only visit is currently invisible to this.
  * That's a backend gap, not something fixable from here.
  */
-export function getOutletIdsVisitedToday(sales: OutletSale[], orders: OutletOrder[]): Set<string> {
+export function getOutletIdsVisitedToday(sales: OutletSale[], orders: OutletOrder[], drafts: Draft[] = []): Set<string> {
   const ids = new Set<string>();
   sales.forEach((s) => { if (isToday(s.timestamp)) ids.add(s.outletId); });
   orders.forEach((o) => { if (isToday(o.timestamp)) ids.add(o.outletId); });
+  // A sale or order submitted today with no connection: the visit happened,
+  // it just hasn't been sent.
+  const today = localDateStr();
+  drafts.forEach((d) => { if (d.ready && d.happenedAt?.startsWith(today)) ids.add(d.outletId); });
   return ids;
 }
 
-export function isOutletVisitedToday(outletId: string, sales: OutletSale[], orders: OutletOrder[]): boolean {
-  return getOutletIdsVisitedToday(sales, orders).has(outletId);
+export function isOutletVisitedToday(outletId: string, sales: OutletSale[], orders: OutletOrder[], drafts: Draft[] = []): boolean {
+  return getOutletIdsVisitedToday(sales, orders, drafts).has(outletId);
 }

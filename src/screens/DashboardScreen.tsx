@@ -20,6 +20,9 @@ import { getMtdRingPct, DashboardContext } from '../utils/dashboardMetrics';
 import { isDayLocked } from '../utils/dayLock';
 import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
+import { getCartTotal } from '../utils/cart';
+import { isToday } from '../utils/outletVisits';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, Campaign, Lead } from '../types';
 
 interface DashboardScreenProps {
@@ -151,7 +154,12 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
     setPendingCampaign(null);
   };
 
-  const todaySalesTotal = state.sales.reduce((sum, s) => sum + s.total, 0);
+  // Today's sales, those recorded with no connection included (marked below).
+  const todayIso = localDateStr();
+  const unsentSalesTotal = state.drafts
+    .filter((d) => d.mode === 'sale' && d.ready && d.happenedAt?.startsWith(todayIso))
+    .reduce((sum, d) => sum + getCartTotal(d.cart), 0);
+  const todaySalesTotal = state.sales.filter((s) => isToday(s.timestamp)).reduce((sum, s) => sum + s.total, 0) + unsentSalesTotal;
   const myLocation = useCurrentLocation();
   const pendingOutlets = state.outlets.filter((o) => o.status === 'pending');
   // Nearest un-visited outlet by real distance when GPS is available — falls back to
@@ -277,6 +285,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
               <View style={styles.nextStopSalesCol}>
                 <Text style={styles.nextStopSalesValue}>₦{todaySalesTotal.toLocaleString()}</Text>
                 <Text style={styles.nextStopSalesLabel}>sales today</Text>
+                {unsentSalesTotal > 0 ? (
+                  <Text style={styles.nextStopSalesLabel}>₦{unsentSalesTotal.toLocaleString()} not sent yet</Text>
+                ) : null}
               </View>
             </View>
           </Card>

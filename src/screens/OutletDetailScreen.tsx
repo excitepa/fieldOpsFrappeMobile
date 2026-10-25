@@ -22,6 +22,7 @@ import { groupSalesByInvoice, groupOrdersByRef } from '../utils/transactions';
 import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
 import { isOutletVisitedToday } from '../utils/outletVisits';
+import { getCartTotal } from '../utils/cart';
 import { getMySales, getMyOrders } from '../services/api';
 import { dueSurveyConfig, dueSurveyFor } from '../utils/afterEditSurvey';
 
@@ -83,7 +84,9 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
   const groupedOrders = groupOrdersByRef(ordersList);
   // Real, server-derived — see outletVisits.ts for why this replaced the local
   // outlet.status flag.
-  const visitedToday = isOutletVisitedToday(outlet.id, salesList, ordersList);
+  const visitedToday = isOutletVisitedToday(outlet.id, salesList, ordersList, state.drafts);
+  // Sales and orders recorded here that haven't reached the server yet.
+  const unsentHere = state.drafts.filter((d) => d.outletId === outlet.id);
 
   const outletCoords = parseGps(outlet.gps);
   const dueSurvey = dueSurveyFor(outlet, state.surveys);
@@ -319,6 +322,27 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
               <Text style={styles.skippedSummaryTime}>{skipRecord.timestamp}</Text>
             ) : null}
           </Card>
+        )}
+
+        {/* Not sent yet: recorded here, waiting for a connection (or saved to finish later) */}
+        {unsentHere.length > 0 && (
+          <View style={styles.historySection}>
+            <Text style={styles.sectionTitle}>NOT SENT YET ({unsentHere.length})</Text>
+            {unsentHere.map((d) => (
+              <Pressable key={d.id} onPress={() => onNavigate('draftsList')}>
+                <Card style={styles.historyItemCard}>
+                  <View style={styles.historyRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.historyTitle}>{d.mode === 'sale' ? 'Sale' : 'Order'} · {d.cart.length} item{d.cart.length === 1 ? '' : 's'}</Text>
+                      <Text style={styles.historySub}>{d.syncError ? `Not sent: ${d.syncError}` : d.ready ? 'Not sent yet' : 'Saved to finish later'}</Text>
+                    </View>
+                    <Text style={styles.historyAmount}>₦{getCartTotal(d.cart).toLocaleString()}</Text>
+                    <Icon name="chevron-right" size={16} color={theme.colors.textMuted} />
+                  </View>
+                </Card>
+              </Pressable>
+            ))}
+          </View>
         )}
 
         {/* Sales History */}

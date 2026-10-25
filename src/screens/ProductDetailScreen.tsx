@@ -7,7 +7,7 @@ import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { RouteName } from '../types';
-import { getStockStatus, formatCaseUnits } from '../utils/stock';
+import { getStockStatus, formatCaseUnits, withUnsentSales } from '../utils/stock';
 
 interface ProductDetailScreenProps {
   routeData?: { productId?: string };
@@ -18,7 +18,8 @@ export const ProductDetailScreen: React.FC<ProductDetailScreenProps> = ({ routeD
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state } = useFieldStore();
-  const product = state.products.find((p) => p.id === routeData?.productId);
+  // The stock the agent can still sell: less what unsent sales take.
+  const product = withUnsentSales(state.products, state.drafts).find((p) => p.id === routeData?.productId);
 
   const statusMeta = {
     in: { label: 'In Stock', color: theme.colors.emerald, bg: theme.colors.emeraldLight },
