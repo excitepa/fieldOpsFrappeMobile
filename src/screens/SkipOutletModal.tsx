@@ -18,7 +18,7 @@ import { Button } from '../components/Button';
 import { skipOutletVisit, NetworkError } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { newStamp } from '../utils/queue';
+import { isOfflineOutletId, newStamp } from '../utils/queue';
 import { SkipRecord, ActionStamp } from '../types';
 
 interface SkipOutletModalProps {
@@ -50,7 +50,7 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
   const theme = useTheme();
   const styles = createStyles(theme);
   const insets = useSafeAreaInsets();
-  const { state } = useFieldStore();
+  const { state, dispatch } = useFieldStore();
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -90,16 +90,35 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
     }
 
     const reasonText = isOther ? note.trim() : selectedReason;
+    let savedOffline = false;
     try {
+      // An outlet onboarded offline isn't on the server yet: its skip waits
+      // in the queue and goes once the outlet has.
+      if (isOfflineOutletId(outletId)) throw new NetworkError('The outlet is not on the server yet.');
       await skipOutletVisit(outletId, campaignId, reasonText, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }, coords);
     } catch (e: any) {
-      setSubmitting(false);
-      if (e instanceof NetworkError) {
-        Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
-      } else {
+      if (!(e instanceof NetworkError)) {
+        setSubmitting(false);
         Alert.alert('Could Not Skip Outlet', e?.message || 'The server rejected this. Please try again.');
+        return;
       }
-      return;
+      // No connection: kept on the phone and sent once there is one. The
+      // outlet shows as skipped straight away.
+      dispatch({
+        type: 'QUEUE_ACTION',
+        action: {
+          ...stamp,
+          id: `qa_skip_${Date.now()}`,
+          kind: 'skip',
+          outletId,
+          outletName,
+          campaignId,
+          reason: reasonText,
+          latitude: coords?.lat,
+          longitude: coords?.lng,
+        },
+      });
+      savedOffline = true;
     }
 
     const skipRecord: SkipRecord = {
@@ -117,6 +136,9 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
     setNote('');
     stampRef.current = null;
     onClose();
+    if (savedOffline) {
+      Alert.alert('Saved on This Phone', "No connection, so the skip is saved here. It's sent automatically once you're back online.");
+    }
   };
 
   return (

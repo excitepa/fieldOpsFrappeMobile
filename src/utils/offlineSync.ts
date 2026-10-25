@@ -1,9 +1,10 @@
 import {
   createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse, uploadSurveyPhoto,
+  skipOutletVisit, updateLeadStage, requestLeadRegression, submitStockRequest,
   getOutlets, getItems, getMyOrders, getMySales, getMyGeofence,
   OrderLinePayload, AuthError, NetworkError, ActionMeta,
 } from '../services/api';
-import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto, ActionStamp } from '../types';
+import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto, ActionStamp, QueuedAction } from '../types';
 import { discardKeptPhoto, discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
 import { isAnswered, surveyRejectionMessage } from './surveyAnswers';
 import { isOfflineLeadId, isOfflineOutletId, newClientRef, oldestFirst } from './queue';
@@ -293,6 +294,60 @@ export async function pushSurveyPhotos(
   return { synced, failed, errors };
 }
 
+/** How a queued action is named on the Drafts and Sync pages. */
+export const queuedActionLabel = (a: QueuedAction): string =>
+  a.kind === 'skip' ? `Skip at ${a.outletName}`
+  : a.kind === 'leadStage' ? `${a.leadName}: move to ${a.stage}`
+  : a.kind === 'leadRegression' ? `${a.leadName}: ask to move back to ${a.toStage}`
+  : `Stock request (${a.lines.length} product${a.lines.length === 1 ? '' : 's'})`;
+
+/**
+ * Pushes every queued skip, lead stage change, approval request and stock
+ * request, oldest first, each with its one-time ID, deleting each once the
+ * server has it. One the server refuses stays with its reason; one for an
+ * outlet or lead added offline that hasn't reached the server yet waits.
+ */
+export async function pushQueuedActions(
+  actions: QueuedAction[],
+  dispatch: (action: any) => void
+): Promise<SyncResult> {
+  let synced = 0;
+  let failed = 0;
+  const errors: string[] = [];
+  for (const queued of oldestFirst(actions)) {
+    const action = withRef(queued, (a) => dispatch({ type: 'QUEUE_ACTION', action: a }));
+    const label = queuedActionLabel(action);
+    const waitingFor = action.kind === 'skip' && isOfflineOutletId(action.outletId) ? 'its new outlet'
+      : (action.kind === 'leadStage' || action.kind === 'leadRegression') && isOfflineLeadId(action.leadId) ? 'its new lead'
+      : '';
+    if (waitingFor) {
+      noteFailure(errors, label, new Error(`waiting for ${waitingFor} to be sent first`));
+      failed++;
+      continue;
+    }
+    try {
+      const meta = queuedMeta(action);
+      if (action.kind === 'skip') {
+        const coords = action.latitude !== undefined && action.longitude !== undefined ? { lat: action.latitude, lng: action.longitude } : undefined;
+        await skipOutletVisit(action.outletId, action.campaignId, action.reason, meta, coords);
+      } else if (action.kind === 'leadStage') {
+        await updateLeadStage(action.leadId, action.stage, action.reason, action.notes, meta);
+      } else if (action.kind === 'leadRegression') {
+        await requestLeadRegression(action.leadId, action.toStage, action.reason, meta);
+      } else {
+        await submitStockRequest(action.campaignId, action.lines, action.note, meta);
+      }
+      dispatch({ type: 'DELETE_QUEUED_ACTION', actionId: action.id });
+      synced++;
+    } catch (e: any) {
+      noteFailure(errors, label, e);
+      failed++;
+      if (isRefusal(e)) dispatch({ type: 'QUEUE_ACTION', action: { ...action, syncError: e?.message || 'The server refused it.' } });
+    }
+  }
+  return { synced, failed, errors };
+}
+
 /** Items recorded at an outlet that's still waiting to reach the server: they can't go before it. */
 const waitingForOutlet = <T>(items: T[], outletOf: (item: T) => string | undefined, label: (item: T) => string, result: SyncResult): T[] =>
   items.filter((item) => {
@@ -311,10 +366,13 @@ const waitingForOutlet = <T>(items: T[], outletOf: (item: T) => string | undefin
  * go together.
  */
 export async function pushAllDrafts(
-  queues: { leadDrafts: LeadDraft[]; cartDrafts: Draft[]; surveyDrafts: OutletSurvey[]; outletDrafts: OutletDraft[]; surveyPhotos?: PendingSurveyPhoto[] },
+  queues: {
+    leadDrafts: LeadDraft[]; cartDrafts: Draft[]; surveyDrafts: OutletSurvey[]; outletDrafts: OutletDraft[];
+    surveyPhotos?: PendingSurveyPhoto[]; queuedActions?: QueuedAction[];
+  },
   dispatch: (action: any) => void,
   fallbackCampaignId: string
-): Promise<{ leads: SyncResult; carts: SyncResult; surveys: SyncResult; outlets: SyncResult; photos: SyncResult; notices: string[] }> {
+): Promise<{ leads: SyncResult; carts: SyncResult; surveys: SyncResult; outlets: SyncResult; photos: SyncResult; actions: SyncResult; notices: string[] }> {
   const outlets = await pushOutletDrafts(queues.outletDrafts, dispatch);
   const leads = await pushLeadDrafts(queues.leadDrafts, dispatch);
 
@@ -335,11 +393,19 @@ export async function pushAllDrafts(
     waitingSurveys,
   );
 
-  const [cartsSent, surveysSent, photos] = await Promise.all([
+  // A skip at a new outlet and a stage change of a new lead go with the ids the server gave them.
+  const queuedActions = (queues.queuedActions || []).map((a) => {
+    if (a.kind === 'skip' && outlets.ids[a.outletId]) return { ...a, outletId: outlets.ids[a.outletId] };
+    if ((a.kind === 'leadStage' || a.kind === 'leadRegression') && leads.ids[a.leadId]) return { ...a, leadId: leads.ids[a.leadId] };
+    return a;
+  });
+
+  const [cartsSent, surveysSent, actions] = await Promise.all([
     pushCartDrafts(carts, dispatch, fallbackCampaignId),
     pushSurveyDrafts(surveys, dispatch),
-    pushSurveyPhotos(queues.surveyPhotos || [], dispatch),
+    pushQueuedActions(queuedActions, dispatch),
   ]);
+  const photos = await pushSurveyPhotos(queues.surveyPhotos || [], dispatch);
   const merge = (a: SyncResult, b: SyncResult): SyncResult => ({ synced: a.synced + b.synced, failed: a.failed + b.failed, errors: [...b.errors, ...a.errors] });
   return {
     leads,
@@ -347,6 +413,7 @@ export async function pushAllDrafts(
     surveys: merge(surveysSent, waitingSurveys),
     outlets,
     photos,
+    actions,
     notices: outlets.notices,
   };
 }

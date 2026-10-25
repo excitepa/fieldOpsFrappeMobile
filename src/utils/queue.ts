@@ -1,6 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import type { FieldState } from '../store/useFieldStore';
-import { ActionStamp, Lead } from '../types';
+import { ActionStamp, Lead, QueuedAction } from '../types';
 import { localDateTimeStr } from './timestamp';
 
 /** A one-time ID for an action (client_ref): the server answers a repeat of it as it did the first time. */
@@ -86,4 +86,24 @@ export function remapLeadInState(state: FieldState, from: string, to: string, le
       (a.kind === 'leadStage' || a.kind === 'leadRegression') && a.leadId === from ? { ...a, leadId: to } : a),
     leadSurveyResponses: state.leadSurveyResponses.map((r) => (r.leadId === from ? { ...r, leadId: to } : r)),
   };
+}
+
+/**
+ * Leads refreshed from the server, with the stage changes and approval
+ * requests still waiting to be sent put back on top: the server doesn't
+ * know them yet, so without this a refresh would undo them on the phone.
+ */
+export function withQueuedLeadChanges(leads: Lead[], actions: QueuedAction[]): Lead[] {
+  const changes = oldestFirst(actions.filter((a) => a.kind === 'leadStage' || a.kind === 'leadRegression'));
+  if (changes.length === 0) return leads;
+  return leads.map((lead) => {
+    let next = lead;
+    changes.forEach((a) => {
+      if (a.kind === 'leadStage' && a.leadId === lead.id) next = { ...next, stage: a.stage };
+      if (a.kind === 'leadRegression' && a.leadId === lead.id && !next.pendingStageRequest) {
+        next = { ...next, pendingStageRequest: { id: '', toStage: a.toStage, requestedOn: a.happenedAt?.slice(0, 10) } };
+      }
+    });
+    return next;
+  });
 }

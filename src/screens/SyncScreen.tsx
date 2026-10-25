@@ -8,7 +8,7 @@ import { Card } from '../components/Card';
 import { useFieldStore } from '../store/useFieldStore';
 import { getOutlets, getItems, getMyOrders, getMySales } from '../services/api';
 import {
-  pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos, pushAllDrafts,
+  pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos, pushQueuedActions, pushAllDrafts,
   pullServerData as pullServerDataShared, summariseSyncErrors,
 } from '../utils/offlineSync';
 import { RouteName, LeadDraft } from '../types';
@@ -27,7 +27,7 @@ interface ServerDataSet {
 
 /** Rows for data captured on-device that hasn't reached the backend yet. */
 interface PendingUploadSet {
-  id: 'leadDrafts' | 'cartDrafts' | 'surveyDrafts' | 'outletDrafts' | 'surveyPhotos';
+  id: 'leadDrafts' | 'cartDrafts' | 'surveyDrafts' | 'outletDrafts' | 'surveyPhotos' | 'queuedActions';
   label: string;
   icon: IconName;
   pending: number;
@@ -50,7 +50,8 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const surveyDraftsPending = surveyDraftsList.length;
   const outletDraftsPending = state.outletDrafts.length;
   const surveyPhotosPending = state.pendingSurveyPhotos.length;
-  const pendingTotal = cartDraftsPending + leadDraftsPending + surveyDraftsPending + outletDraftsPending + surveyPhotosPending;
+  const queuedActionsPending = state.queuedActions.length;
+  const pendingTotal = cartDraftsPending + leadDraftsPending + surveyDraftsPending + outletDraftsPending + surveyPhotosPending + queuedActionsPending;
 
   const pendingUploadSets: PendingUploadSet[] = [
     { id: 'leadDrafts', label: 'Lead Drafts', icon: 'users', pending: leadDraftsPending },
@@ -58,6 +59,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     { id: 'surveyDrafts', label: 'Survey Drafts', icon: 'clipboard-list', pending: surveyDraftsPending },
     { id: 'outletDrafts', label: 'Outlet Drafts', icon: 'map-pin', pending: outletDraftsPending },
     { id: 'surveyPhotos', label: 'Survey Photos', icon: 'camera', pending: surveyPhotosPending },
+    { id: 'queuedActions', label: 'Skips, Stage Changes & Stock Requests', icon: 'clock', pending: queuedActionsPending },
   ];
 
   const serverDataSets: ServerDataSet[] = [
@@ -77,21 +79,23 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     setSyncingAll(true);
     try {
       const fallbackCampaignId = state.activeCampaign?.id || '';
-      const { leads, carts, surveys: surveysRes, outlets: outletsRes2, photos: photosRes } = await pushAllDrafts({
+      const { leads, carts, surveys: surveysRes, outlets: outletsRes2, photos: photosRes, actions, notices } = await pushAllDrafts({
         leadDrafts: state.leadDrafts,
         cartDrafts: state.drafts,
         surveyDrafts: surveyDraftsList,
         outletDrafts: state.outletDrafts,
         surveyPhotos: state.pendingSurveyPhotos,
+        queuedActions: state.queuedActions,
       }, dispatch, fallbackCampaignId);
       await pullServerData();
-      const synced = leads.synced + carts.synced + surveysRes.synced + outletsRes2.synced + photosRes.synced;
-      const failed = leads.failed + carts.failed + surveysRes.failed + outletsRes2.failed + photosRes.failed;
-      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outletsRes2.errors, ...photosRes.errors];
+      const synced = leads.synced + carts.synced + surveysRes.synced + outletsRes2.synced + photosRes.synced + actions.synced;
+      const failed = leads.failed + carts.failed + surveysRes.failed + outletsRes2.failed + photosRes.failed + actions.failed;
+      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outletsRes2.errors, ...photosRes.errors, ...actions.errors];
       const parts: string[] = [];
       if (synced > 0) parts.push(`${synced} item${synced === 1 ? '' : 's'} uploaded`);
       if (failed > 0) parts.push(`${failed} item${failed === 1 ? '' : 's'} still pending`);
       parts.push('server data refreshed');
+      if (notices.length > 0) parts.push(...notices);
       // Show why anything was rejected rather than just a count.
       const body = errors.length > 0 ? `${parts.join(' · ')}\n\n${summariseSyncErrors(errors)}` : parts.join(' · ');
       Alert.alert(failed > 0 && synced === 0 ? 'Nothing Could Be Synced' : 'Sync Complete', body);
@@ -146,6 +150,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
         : id === 'cartDrafts' ? await pushCartDrafts(state.drafts, dispatch, fallbackCampaignId)
         : id === 'surveyDrafts' ? await pushSurveyDrafts(surveyDraftsList, dispatch)
         : id === 'surveyPhotos' ? await pushSurveyPhotos(state.pendingSurveyPhotos, dispatch)
+        : id === 'queuedActions' ? await pushQueuedActions(state.queuedActions, dispatch)
         : await pushOutletDrafts(state.outletDrafts, dispatch);
       if (result.synced > 0 || result.failed > 0) {
         const lines = [`${result.synced} uploaded${result.failed > 0 ? `, ${result.failed} still pending` : ''}.`];

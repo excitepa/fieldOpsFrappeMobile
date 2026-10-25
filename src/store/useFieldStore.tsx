@@ -12,7 +12,7 @@ import { keepUnsyncedEdit } from '../utils/afterEditSurvey';
 import { getUserInfo } from '../services/apiConfig';
 import { mapUserInfoToProfile, fetchUserProfile, getMyGeofence, AttendanceStats, StockRequestSummary } from '../services/api';
 import { createPersistence, lastDays } from './persistence';
-import { remapOutletInState, remapLeadInState, newestFirst } from '../utils/queue';
+import { remapOutletInState, remapLeadInState, newestFirst, withQueuedLeadChanges } from '../utils/queue';
 import { debugLog } from '../utils/logger';
 
 // ─── State Shape ──────────────────────────────────────────────────────────────
@@ -96,6 +96,7 @@ type Action =
   | { type: 'RESET_OUTLET_VISIT_STATUS' }
   | { type: 'ADD_OUTLET'; outlet: Outlet }
   | { type: 'UPDATE_OUTLET'; outlet: Outlet }
+  | { type: 'REMOVE_OUTLET'; outletId: string }
   | { type: 'MARK_OUTLET_VISITED'; outletId: string }
   | { type: 'SKIP_OUTLET'; outletId: string; skipRecord: SkipRecord }
   | { type: 'SET_PRODUCTS'; products: Product[] }
@@ -160,10 +161,11 @@ function reducer(state: FieldState, action: Action): FieldState {
       };
 
     case 'SET_LEADS': {
-      // A lead added on this phone stays until its draft reaches the server.
+      // A lead added on this phone stays until its draft reaches the server,
+      // and a stage change made offline stays until it's sent.
       const unsynced = new Set(state.leadDrafts.map((d) => d.id));
       const local = state.leads.filter((l) => unsynced.has(l.id) && !action.leads.some((s) => s.id === l.id));
-      return { ...state, leads: [...local, ...action.leads] };
+      return { ...state, leads: withQueuedLeadChanges([...local, ...action.leads], state.queuedActions) };
     }
 
     case 'ADD_LEAD':
@@ -349,6 +351,10 @@ function reducer(state: FieldState, action: Action): FieldState {
         ...state,
         outlets: state.outlets.map((o: Outlet) => (o.id === action.outlet.id ? action.outlet : o)),
       };
+
+    // Only for an outlet onboarded offline whose draft the agent deletes.
+    case 'REMOVE_OUTLET':
+      return { ...state, outlets: state.outlets.filter((o) => o.id !== action.outletId) };
 
     case 'MARK_OUTLET_VISITED':
       return {

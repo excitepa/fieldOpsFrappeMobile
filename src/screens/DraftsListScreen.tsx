@@ -8,10 +8,11 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { getOutlets } from '../services/api';
-import { pushAllDrafts, pushLeadDrafts, summariseSyncErrors } from '../utils/offlineSync';
+import { pushAllDrafts, pushLeadDrafts, queuedActionLabel, summariseSyncErrors } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
-import { discardSurveyPhoto } from '../utils/surveyPhotos';
-import { RouteName, LeadDraft, OutletSurvey } from '../types';
+import { discardKeptPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
+import { formatServerDateTime } from '../utils/timestamp';
+import { RouteName, LeadDraft, OutletSurvey, Draft, OutletDraft, QueuedAction } from '../types';
 
 interface DraftsListScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -28,14 +29,15 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
   const leadDrafts = getLeadDraftsList();
   const surveyDrafts = state.surveys.filter((s) => s.isDraft);
   const outletDrafts = getOutletDraftsList();
-  const totalCount = cartDrafts.length + leadDrafts.length + surveyDrafts.length + outletDrafts.length;
+  const queuedActions = state.queuedActions;
+  const totalCount = cartDrafts.length + leadDrafts.length + surveyDrafts.length + outletDrafts.length + queuedActions.length;
 
   const handleSyncNow = async () => {
     setSyncing(true);
     try {
       const fallbackCampaignId = state.activeCampaign?.id || '';
-      const { leads, carts, surveys: surveysRes, outlets } = await pushAllDrafts(
-        { leadDrafts, cartDrafts, surveyDrafts, outletDrafts },
+      const { leads, carts, surveys: surveysRes, outlets, actions, notices } = await pushAllDrafts(
+        { leadDrafts, cartDrafts, surveyDrafts, outletDrafts, queuedActions, surveyPhotos: state.pendingSurveyPhotos },
         dispatch,
         fallbackCampaignId,
       );
@@ -54,12 +56,13 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
           // Keeps whatever's already local.
         }
       }
-      const syncedCount = leads.synced + carts.synced + surveysRes.synced + outlets.synced;
-      const stillPending = leads.failed + carts.failed + surveysRes.failed + outlets.failed;
-      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outlets.errors];
+      const syncedCount = leads.synced + carts.synced + surveysRes.synced + outlets.synced + actions.synced;
+      const stillPending = leads.failed + carts.failed + surveysRes.failed + outlets.failed + actions.failed;
+      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outlets.errors, ...actions.errors];
       // A bare "0 synced, N still pending" gives nobody anything to act on —
       // show the actual reason each item was rejected.
       const lines = [`${syncedCount} item${syncedCount === 1 ? '' : 's'} synced. ${stillPending} item${stillPending === 1 ? '' : 's'} still pending.`];
+      if (notices.length > 0) lines.push('', ...notices);
       if (errors.length > 0) lines.push('', summariseSyncErrors(errors));
       Alert.alert(
         stillPending > 0 && syncedCount === 0 ? 'Nothing Could Be Synced' : 'Synchronization Complete',
@@ -87,6 +90,46 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
         },
       },
     ]);
+  };
+
+  // Any unsent item can be deleted: one the server refused has to be fixed or
+  // deleted before the day can be closed.
+  const confirmDelete = (title: string, body: string, onDelete: () => void) => {
+    Alert.alert(title, `${body} This can't be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: onDelete },
+    ]);
+  };
+
+  const deleteCartDraft = (draft: Draft) =>
+    confirmDelete(`Delete ${draft.mode === 'sale' ? 'Sale' : 'Order'}?`, `The ${draft.mode} at ${draft.outletName} will be removed from this device.`, () =>
+      dispatch({ type: 'DELETE_DRAFT', draftId: draft.id }));
+
+  const deleteLeadDraft = (draft: LeadDraft) =>
+    confirmDelete('Delete Lead?', `${draft.name} will be removed from this device.`, () =>
+      dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id }));
+
+  const deleteQueuedAction = (action: QueuedAction) =>
+    confirmDelete('Delete?', `"${queuedActionLabel(action)}" will be removed from this device.`, () =>
+      dispatch({ type: 'DELETE_QUEUED_ACTION', actionId: action.id }));
+
+  // A new outlet that's deleted takes what was recorded there with it: it
+  // could never be sent without the outlet.
+  const deleteOutletDraft = (draft: OutletDraft) => {
+    const recordedThere = draft.mode === 'create'
+      ? [
+          ...cartDrafts.filter((d) => d.outletId === draft.id).map((d) => () => dispatch({ type: 'DELETE_DRAFT', draftId: d.id })),
+          ...surveyDrafts.filter((d) => d.outletId === draft.id).map((d) => () => dispatch({ type: 'DELETE_SURVEY', surveyId: d.id })),
+          ...queuedActions.filter((a) => a.kind === 'skip' && a.outletId === draft.id).map((a) => () => dispatch({ type: 'DELETE_QUEUED_ACTION', actionId: a.id })),
+        ]
+      : [];
+    const also = recordedThere.length > 0 ? ` So will the ${recordedThere.length} item${recordedThere.length === 1 ? '' : 's'} recorded there.` : '';
+    confirmDelete(draft.mode === 'create' ? 'Delete New Outlet?' : 'Delete Outlet Edit?', `${draft.name} will be removed from this device.${also}`, () => {
+      recordedThere.forEach((remove) => remove());
+      discardKeptPhoto(draft.photoUri);
+      dispatch({ type: 'DELETE_OUTLET_DRAFT', draftId: draft.id });
+      if (draft.mode === 'create') dispatch({ type: 'REMOVE_OUTLET', outletId: draft.id });
+    });
   };
 
   const retryLeadDraft = async (draft: LeadDraft) => {
@@ -138,9 +181,9 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                     </Text>
                     {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
                   </View>
-                  <View style={styles.pendingBadge}>
-                    <Text style={styles.pendingBadgeText}>Pending Sync</Text>
-                  </View>
+                  <Pressable onPress={() => deleteCartDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
+                    <Text style={styles.deleteBtnText}>Delete</Text>
+                  </Pressable>
                 </Card>
               </Pressable>
             ))}
@@ -159,10 +202,17 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                   <View style={{ flex: 1 }}>
                     <Text style={styles.draftTitle}>{draft.name} · {draft.company}</Text>
                     <Text style={styles.draftSub}>{draft.phone} · Created {draft.createdAt}</Text>
+                    {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
                   </View>
-                  <View style={styles.pendingBadge}>
-                    <Text style={styles.pendingBadgeText}>Tap to Retry</Text>
-                  </View>
+                  {draft.syncError ? (
+                    <Pressable onPress={() => deleteLeadDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
+                      <Text style={styles.deleteBtnText}>Delete</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={styles.pendingBadge}>
+                      <Text style={styles.pendingBadgeText}>{retryingLeadId === draft.id ? 'Sending…' : 'Tap to Retry'}</Text>
+                    </View>
+                  )}
                 </Card>
               </Pressable>
             ))}
@@ -209,10 +259,32 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                 <View style={{ flex: 1 }}>
                   <Text style={styles.draftTitle}>{draft.mode === 'create' ? 'New outlet' : 'Outlet edit'} · {draft.name}</Text>
                   <Text style={styles.draftSub}>{draft.address} · {draft.createdAt}</Text>
+                  {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
                 </View>
-                <View style={styles.pendingBadge}>
-                  <Text style={styles.pendingBadgeText}>Pending Sync</Text>
+                <Pressable onPress={() => deleteOutletDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
+                  <Text style={styles.deleteBtnText}>Delete</Text>
+                </Pressable>
+              </Card>
+            ))}
+          </View>
+        )}
+
+        {queuedActions.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>SKIPS, STAGE CHANGES AND STOCK REQUESTS ({queuedActions.length})</Text>
+            {queuedActions.map((action) => (
+              <Card key={action.id} style={styles.draftCard}>
+                <View style={[styles.modeIcon, { backgroundColor: theme.colors.tintPeach }]}>
+                  <Icon name={action.kind === 'skip' ? 'x' : action.kind === 'stockRequest' ? 'package' : 'trending-up'} size={18} color={theme.colors.tintPeachIcon} />
                 </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.draftTitle}>{queuedActionLabel(action)}</Text>
+                  <Text style={styles.draftSub}>{action.happenedAt ? formatServerDateTime(action.happenedAt) : 'Not sent yet'}</Text>
+                  {action.syncError ? <Text style={styles.draftError}>Not sent: {action.syncError}</Text> : null}
+                </View>
+                <Pressable onPress={() => deleteQueuedAction(action)} hitSlop={8} style={styles.deleteBtn}>
+                  <Text style={styles.deleteBtnText}>Delete</Text>
+                </Pressable>
               </Card>
             ))}
           </View>

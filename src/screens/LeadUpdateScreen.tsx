@@ -11,7 +11,7 @@ import { getLeads, updateLeadStage, requestLeadRegression, NetworkError } from '
 import { useLeadStages } from '../hooks/useLeadStages';
 import { LOST_STAGE, backwardStages, forwardStages, stageScore } from '../utils/leadStages';
 import { localDateStr } from '../utils/timestamp';
-import { newStamp } from '../utils/queue';
+import { isOfflineLeadId, newStamp } from '../utils/queue';
 import { RouteName, Lead, LeadStage, ActionStamp } from '../types';
 
 interface LeadUpdateScreenProps {
@@ -26,7 +26,7 @@ type Mode = 'forward' | 'back';
 export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, leadData, onUpdateLead }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { state } = useFieldStore();
+  const { state, dispatch } = useFieldStore();
   const leadStages = useLeadStages();
   const [mode, setMode] = useState<Mode>('forward');
   const [target, setTarget] = useState<LeadStage>();
@@ -76,6 +76,8 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
     setSubmitting(true);
     const stamp = requestStampRef.current || (requestStampRef.current = newStamp(state.user.email));
     try {
+      // A lead added offline isn't on the server yet: the request waits in the queue.
+      if (isOfflineLeadId(leadData.id)) throw new NetworkError('The lead is not on the server yet.');
       const request = await requestLeadRegression(leadData.id, stage, reason.trim(), { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
       const updated = await withServerCopy({ ...leadData, pendingStageRequest: request });
       setSubmitting(false);
@@ -88,7 +90,19 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
     } catch (e: any) {
       setSubmitting(false);
       if (e instanceof NetworkError) {
-        Alert.alert('Not Sent', 'No connection, so the request wasn\'t sent. Try again when you\'re back online.');
+        // Kept on the phone and sent once there's a connection; the lead
+        // shows the request waiting straight away.
+        dispatch({
+          type: 'QUEUE_ACTION',
+          action: { ...stamp, id: `qa_back_${Date.now()}`, kind: 'leadRegression', leadId: leadData.id, leadName: leadData.name, toStage: stage, reason: reason.trim() },
+        });
+        const updated: Lead = { ...leadData, pendingStageRequest: { id: '', toStage: stage, requestedOn: localDateStr() } };
+        onUpdateLead(updated);
+        Alert.alert(
+          'Saved on This Phone',
+          `No connection, so the request is saved here and sent automatically once you're back online. ${leadData.name} stays at ${leadData.stage} until a supervisor approves it.`,
+          [{ text: 'OK', onPress: () => onNavigate('leadDetail', updated) }],
+        );
       } else {
         Alert.alert('Could Not Send', e?.message || 'The server refused this request.');
       }
@@ -111,24 +125,36 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
 
     setSubmitting(true);
     const stamp = stageStampRef.current || (stageStampRef.current = newStamp(state.user.email));
+    const changed: Lead = {
+      ...leadData,
+      stage: picked,
+      score: stageScore(picked, leadStages),
+      lastContactDate: localDateStr(),
+      notes: notes.trim() ? `${leadData.notes ? leadData.notes + '\n' : ''}${notes.trim()}` : leadData.notes,
+    };
     try {
-      // Changed on the device only once the server has it — a save that
-      // stayed local is what made leads go back to their old stage.
+      // A lead added offline isn't on the server yet: the change waits in the queue.
+      if (isOfflineLeadId(leadData.id)) throw new NetworkError('The lead is not on the server yet.');
+      // With a connection, changed on the device once the server has it — a
+      // save that stayed local is what made leads go back to their old stage.
       await updateLeadStage(leadData.id, picked, reason.trim(), notes.trim() || undefined, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
-      const updated = await withServerCopy({
-        ...leadData,
-        stage: picked,
-        score: stageScore(picked, leadStages),
-        lastContactDate: localDateStr(),
-        notes: notes.trim() ? `${leadData.notes ? leadData.notes + '\n' : ''}${notes.trim()}` : leadData.notes,
-      });
+      const updated = await withServerCopy(changed);
       setSubmitting(false);
       onUpdateLead(updated);
       onNavigate('leadDetail', updated);
     } catch (e: any) {
       setSubmitting(false);
       if (e instanceof NetworkError) {
-        Alert.alert('Not Saved', 'No connection, so the stage change wasn\'t saved. Try again when you\'re back online.');
+        // No connection: kept on the phone (with its one-time ID) and sent
+        // once there is one, so it can't go back to its old stage on a refresh.
+        dispatch({
+          type: 'QUEUE_ACTION',
+          action: { ...stamp, id: `qa_stage_${Date.now()}`, kind: 'leadStage', leadId: leadData.id, leadName: leadData.name, stage: picked, reason: reason.trim(), notes: notes.trim() || undefined },
+        });
+        onUpdateLead(changed);
+        Alert.alert('Saved on This Phone', "No connection, so the stage change is saved here. It's sent automatically once you're back online.", [
+          { text: 'OK', onPress: () => onNavigate('leadDetail', changed) },
+        ]);
       } else if (e?.code === 'STAGE_REGRESSION_NEEDS_APPROVAL') {
         Alert.alert('Needs Approval', e.message || 'This move needs a supervisor\'s approval.', [
           { text: 'Cancel', style: 'cancel' },

@@ -118,6 +118,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     if (mainTab === 'stock') fetchMyInventory();
   }, [mainTab, fetchStockRequests, fetchMyInventory]);
 
+  // Stock requests made with no connection, waiting to be sent.
+  const unsentRequests = state.queuedActions.flatMap((a) => (a.kind === 'stockRequest' ? [a] : []));
+
   const categories = ['All', ...Array.from(new Set(products.map((p) => p.category).filter(Boolean) as string[]))];
 
   // MSL (must-stock-list) products first.
@@ -156,21 +159,28 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     if (basketLines.length === 0) return;
     setSubmitting(true);
     const stamp = requestStampRef.current || (requestStampRef.current = newStamp(state.user.email));
+    const lines = basketLines.map(toStockRequestLine);
+    let savedOffline = false;
     try {
       await submitStockRequest(
         state.activeCampaign?.id || '',
-        basketLines.map(toStockRequestLine),
+        lines,
         note.trim() || undefined,
         { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
     } catch (e: any) {
-      setSubmitting(false);
-      if (e instanceof NetworkError) {
-        Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
-      } else {
+      if (!(e instanceof NetworkError)) {
+        setSubmitting(false);
         Alert.alert('Could Not Submit Request', e?.message || 'The server rejected this request. Please try again.');
+        return;
       }
-      return;
+      // No connection: kept on the phone and sent once there is one; My
+      // Requests lists it as not sent yet.
+      dispatch({
+        type: 'QUEUE_ACTION',
+        action: { ...stamp, id: `qa_stock_${Date.now()}`, kind: 'stockRequest', campaignId: state.activeCampaign?.id || '', lines, note: note.trim() || undefined },
+      });
+      savedOffline = true;
     }
 
     setSubmitting(false);
@@ -178,7 +188,11 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     setQuantities({});
     setNote('');
     setView('list');
-    setMainTab('request');
+    setMainTab(savedOffline ? 'requests' : 'request');
+    if (savedOffline) {
+      Alert.alert('Saved on This Phone', "No connection, so the request is saved here. It's sent for approval automatically once you're back online.");
+      return;
+    }
     fetchStockRequests();
     Alert.alert('Request Submitted', 'Your stock request has been sent for approval.');
   };
@@ -434,9 +448,33 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               <Text style={styles.errorText}>{requestsError}</Text>
             </View>
           )}
-          {!loadingRequests && requestsError === '' && stockRequests.length === 0 && (
+          {!loadingRequests && requestsError === '' && stockRequests.length === 0 && unsentRequests.length === 0 && (
             <Text style={styles.emptyText}>You haven't submitted any stock requests yet.</Text>
           )}
+          {unsentRequests.map((r) => (
+            <Card key={r.id} style={styles.requestCard}>
+              <View style={styles.requestTopRow}>
+                <View style={styles.flex1}>
+                  <Text style={styles.requestId}>Saved on this phone</Text>
+                  {r.happenedAt ? <Text style={styles.productMeta}>{formatServerDateTime(r.happenedAt)}</Text> : null}
+                </View>
+                <View style={[styles.statusBadge, { backgroundColor: theme.colors.amberLight }]}>
+                  <Text style={[styles.statusBadgeText, { color: theme.colors.amber }]}>{r.syncError ? 'Not sent' : 'Not sent yet'}</Text>
+                </View>
+              </View>
+              {r.lines.map((it, idx) => {
+                const product = products.find((p) => p.id === it.itemCode);
+                const qtyText = formatUnitQty(it.qty, product ? getStockUnit(product).uom : 'unit');
+                return (
+                  <View key={`${it.itemCode}-${idx}`} style={styles.requestLineRow}>
+                    <Text style={styles.requestLineName}>{it.itemName || it.itemCode}</Text>
+                    <Text style={styles.requestLineQty}>{qtyText}</Text>
+                  </View>
+                );
+              })}
+              {r.syncError ? <Text style={styles.requestNote}>{r.syncError}</Text> : r.note ? <Text style={styles.requestNote}>{r.note}</Text> : null}
+            </Card>
+          ))}
           {stockRequests.map((r) => {
             const statusLower = r.status.toLowerCase();
             const statusStyle = statusLower.includes('approv')
