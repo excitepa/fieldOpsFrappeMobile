@@ -18,15 +18,18 @@ import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { SelectField } from '../components/SelectField';
+import { DuplicateOutletSheet } from '../components/DuplicateOutletSheet';
 import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
 import { useOutletFormOptions } from '../hooks/useOutletFormOptions';
-import { createOutlet, NetworkError } from '../services/api';
+import { createOutlet, NetworkError, OutletMatch, possibleDuplicateMatches } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
 import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, keepPhotoForDraft, streetAddressFromPlace } from '../utils/photoStamp';
 import { newStamp } from '../utils/queue';
+import { findLocalMatches } from '../utils/outletDuplicates';
+import { loadOutletDirectory } from '../utils/outletDirectory';
 import { RouteName, Outlet, OutletDraft, ActionStamp } from '../types';
 
 interface AddOutletScreenProps {
@@ -90,6 +93,10 @@ const theme = useTheme();  const styles = createStyles(theme);
   // This outlet's one-time ID and when it was onboarded, from the first Save:
   // a second Save after one that got no answer is the same outlet to the server.
   const stampRef = useRef<ActionStamp | null>(null);
+  // The outlets this one looks like (the sheet is open while set), and
+  // whether the agent has said it's a different outlet from them.
+  const [duplicates, setDuplicates] = useState<OutletMatch[] | null>(null);
+  const confirmedNewRef = useRef(false);
 
   useEffect(() => {
     autoCaptureGps();
@@ -217,13 +224,33 @@ const theme = useTheme();  const styles = createStyles(theme);
       distributorName: pickedName(options.distributors, distributorId),
     };
 
+    // An outlet already onboarded, spotted before it's saved: among the
+    // agent's outlets and the territory list from the morning download (an
+    // older backend has no list: the agent's own outlets, then). Offline too.
+    if (!confirmedNewRef.current) {
+      setSubmitting(true);
+      const directory = await loadOutletDirectory();
+      const me = state.user.email?.trim().toLowerCase();
+      const theirs = directory && (!directory.agentEmail || directory.agentEmail === me) ? directory : null;
+      const matches = await findLocalMatches(
+        { name: outletName.trim(), phones: [outletPhone, ownerPhone], latitude: gpsCoords?.lat, longitude: gpsCoords?.lng },
+        state.outlets,
+        theirs,
+      ).catch(() => []);
+      setSubmitting(false);
+      if (matches.length > 0) {
+        setDuplicates(matches);
+        return;
+      }
+    }
+
     setSubmitting(true);
     const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
     // The watermarked snapshot, not the raw camera file, is what gets uploaded
     // (or kept for an offline draft) — same as the attendance selfie.
     const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
     try {
-      const { outlet: created, photoUploaded, photoError } = await createOutlet(activeCampaignId, {
+      const { outlet: created, photoUploaded, photoError, possibleDuplicate } = await createOutlet(activeCampaignId, {
         name: outletName.trim(),
         outletTypeId,
         channelId,
@@ -237,6 +264,10 @@ const theme = useTheme();  const styles = createStyles(theme);
         photoUri: uploadPhotoUri || undefined,
         latitude: gpsCoords?.lat,
         longitude: gpsCoords?.lng,
+        // The server checks it against every outlet and asks first (POSSIBLE_DUPLICATE),
+        // unless the agent has already said it's a different one.
+        checkDuplicates: true,
+        confirmedNew: confirmedNewRef.current,
       }, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
 
       // Enrich with fields the API doesn't return/accept yet
@@ -252,6 +283,12 @@ const theme = useTheme();  const styles = createStyles(theme);
 
       dispatch({ type: 'ADD_OUTLET', outlet: newOutlet });
       setSubmitting(false);
+      if (possibleDuplicate) {
+        Alert.alert('Outlet Saved', `Your supervisor will check whether ${newOutlet.name} is a duplicate.`, [
+          { text: 'OK', onPress: () => onNavigate('outlets') },
+        ]);
+        return;
+      }
       // The outlet itself is saved either way — only say something if the photo
       // specifically didn't make it, so the agent knows to re-add it rather
       // than assuming the whole onboarding failed.
@@ -316,6 +353,8 @@ const theme = useTheme();  const styles = createStyles(theme);
           photoUri: draftPhotoUri,
           latitude: gpsCoords?.lat,
           longitude: gpsCoords?.lng,
+          // Sent with it, so the server checks it but never refuses it.
+          confirmedNew: confirmedNewRef.current || undefined,
           createdAt: new Date().toISOString(),
           pendingSync: true,
         };
@@ -326,6 +365,9 @@ const theme = useTheme();  const styles = createStyles(theme);
           "No connection, so this outlet is saved on this phone. It's sent automatically once you're back online, and you can sell and survey there meanwhile.",
         );
         onNavigate('outlets');
+      } else if (possibleDuplicateMatches(e).length > 0) {
+        // The server found an outlet it looks like: the agent decides.
+        setDuplicates(possibleDuplicateMatches(e));
       } else {
         // The request reached the server and was rejected — this will never
         // succeed on retry, so don't disguise it as an offline save.
@@ -484,6 +526,20 @@ const theme = useTheme();  const styles = createStyles(theme);
         />
       </ScrollView>
 
+      <DuplicateOutletSheet
+        matches={duplicates}
+        canOpen={(m) => m.onMyList && state.outlets.some((o) => o.id === m.outletId)}
+        onOpen={(m) => {
+          setDuplicates(null);
+          onNavigate('outletDetail', { outletId: m.outletId });
+        }}
+        onDifferent={() => {
+          setDuplicates(null);
+          confirmedNewRef.current = true;
+          handleSubmit();
+        }}
+        onCancel={() => setDuplicates(null)}
+      />
     </SafeAreaView>
   );
 };
