@@ -11,6 +11,7 @@ export type RouteName =
   | 'campaignDetail'
   | 'attendance'
   | 'attendanceSuccess'
+  | 'dayDownload'
   | 'leads'
   | 'leadForm'
   | 'leadDetail'

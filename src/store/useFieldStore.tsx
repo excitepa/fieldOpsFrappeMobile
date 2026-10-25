@@ -10,7 +10,7 @@ import { mockCampaigns, mockUser } from '../services/mockService';
 import { setLeadStageList } from '../utils/leadStages';
 import { keepUnsyncedEdit } from '../utils/afterEditSurvey';
 import { getUserInfo } from '../services/apiConfig';
-import { mapUserInfoToProfile, fetchUserProfile, getMyGeofence, AttendanceStats, StockRequestSummary } from '../services/api';
+import { mapUserInfoToProfile, fetchUserProfile, getMyGeofence, AttendanceStats, StockRequestSummary, MySurveyResponseSummary } from '../services/api';
 import { createPersistence, lastDays } from './persistence';
 import { remapOutletInState, remapLeadInState, newestFirst, withQueuedLeadChanges } from '../utils/queue';
 import { debugLog } from '../utils/logger';
@@ -78,6 +78,8 @@ export interface FieldState {
   campaigns: Campaign[];
   /** The agent's stock requests (get_my_stock_requests) as last loaded. */
   stockRequests: StockRequestSummary[];
+  /** The agent's submitted survey responses (get_my_surveys) as last loaded: which surveys are done where. */
+  surveyResponses: MySurveyResponseSummary[];
   /** Skips, lead stage changes and stock requests made with no connection, still to send. */
   queuedActions: QueuedAction[];
   /** How the morning download last went. */
@@ -134,6 +136,7 @@ type Action =
   | { type: 'SET_ROUTE_ASSIGNMENTS'; assignments: RouteAssignment[] }
   | { type: 'SET_CAMPAIGNS'; campaigns: Campaign[] }
   | { type: 'SET_STOCK_REQUESTS'; requests: StockRequestSummary[] }
+  | { type: 'SET_SURVEY_RESPONSES'; responses: MySurveyResponseSummary[] }
   | { type: 'QUEUE_ACTION'; action: QueuedAction }
   | { type: 'DELETE_QUEUED_ACTION'; actionId: string }
   | { type: 'SET_DAY_PACK'; status: Partial<DayPackStatus> }
@@ -182,6 +185,9 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_STOCK_REQUESTS':
       return { ...state, stockRequests: action.requests };
+
+    case 'SET_SURVEY_RESPONSES':
+      return { ...state, surveyResponses: action.responses };
 
     case 'QUEUE_ACTION': {
       const exists = state.queuedActions.some((a) => a.id === action.action.id);
@@ -307,6 +313,7 @@ function reducer(state: FieldState, action: Action): FieldState {
         routeAssignments: [],
         campaigns: [],
         stockRequests: [],
+        surveyResponses: [],
         dayPack: { parts: {} },
         syncStatus: { running: false, notices: [] },
       };
@@ -598,6 +605,7 @@ const initialState: FieldState = {
   routeAssignments: [],
   campaigns: [],
   stockRequests: [],
+  surveyResponses: [],
   queuedActions: [],
   dayPack: { parts: {} },
   syncStatus: { running: false, notices: [] },
@@ -621,12 +629,13 @@ const persistence = createPersistence({
     sales: { fields: ['sales'], debounceMs: 1000, prepare: (s) => ({ sales: lastDays(s.sales, HISTORY_DAYS) }) },
     orders: { fields: ['orders'], debounceMs: 1000, prepare: (s) => ({ orders: lastDays(s.orders, HISTORY_DAYS) }) },
     surveys: {
-      fields: ['surveys', 'leadSurveyResponses'],
+      fields: ['surveys', 'leadSurveyResponses', 'surveyResponses'],
       debounceMs: 1000,
       // The unsent ones are saved with the rest of the unsent work.
       prepare: (s) => ({
         surveys: lastDays((s.surveys || []).filter((x: OutletSurvey) => !x.isDraft), HISTORY_DAYS),
         leadSurveyResponses: s.leadSurveyResponses,
+        surveyResponses: s.surveyResponses,
       }),
     },
     leads: { fields: ['leads'], debounceMs: 1000 },

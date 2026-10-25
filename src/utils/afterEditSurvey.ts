@@ -3,12 +3,25 @@ import { CampaignSurveyConfig, Outlet, OutletSurvey, SurveyDue } from '../types'
 
 /**
  * A campaign's surveys with their questions, from the server, kept on the
- * device (SET_CAMPAIGN_SURVEYS) so a survey opens offline. Throws when they
- * can't be loaded; the caller falls back to the copy kept on the device.
+ * device (SET_CAMPAIGN_SURVEYS) so a survey opens offline. The questions come
+ * with the list (include_questions); an older backend sends the list only, so
+ * each survey's are fetched. Throws when they can't all be loaded; the caller
+ * falls back to the copy kept on the device, which is never replaced by part
+ * of the surveys.
  */
-export async function loadCampaignSurveys(campaignId: string, dispatch: (action: any) => void): Promise<CampaignSurveyConfig[]> {
-  const list = await getSurveysForCampaign(campaignId);
-  const details = await Promise.all(list.map((s) => getSurveyDetail(s.id)));
+export async function loadCampaignSurveys(
+  campaignId: string,
+  dispatch: (action: any) => void,
+  options?: { oneAtATime?: boolean },
+): Promise<CampaignSurveyConfig[]> {
+  const list = await getSurveysForCampaign(campaignId, { includeQuestions: true });
+  // oneAtATime: the morning download keeps to one request at a time per part.
+  const details: (CampaignSurveyConfig | null)[] = [];
+  if (options?.oneAtATime) {
+    for (const s of list) details.push(s.detail || (await getSurveyDetail(s.id)));
+  } else {
+    details.push(...(await Promise.all(list.map((s) => (s.detail ? Promise.resolve(s.detail) : getSurveyDetail(s.id))))));
+  }
   const surveys = details
     .map((d, i): CampaignSurveyConfig | null => (d ? { ...d, afterOutletEdit: d.afterOutletEdit || list[i].afterOutletEdit } : null))
     .filter((d): d is CampaignSurveyConfig => !!d);

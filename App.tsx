@@ -17,6 +17,8 @@ import { getAccessToken } from './src/services/apiConfig';
 import { localDateStr } from './src/utils/timestamp';
 import { isDayLocked } from './src/utils/dayLock';
 import { pullServerData } from './src/utils/offlineSync';
+import { clearOutletDirectory } from './src/utils/outletDirectory';
+import { useDayPack } from './src/hooks/useDayPack';
 import NetInfo from '@react-native-community/netinfo';
 import { FieldProvider, useFieldStore } from './src/store/useFieldStore';
 import { BottomTabs } from './src/components/BottomTabs';
@@ -38,6 +40,7 @@ import { CampaignsScreen } from './src/screens/CampaignsScreen';
 import { CampaignDetailScreen } from './src/screens/CampaignDetailScreen';
 import { AttendanceScreen } from './src/screens/AttendanceScreen';
 import { AttendanceSuccessScreen } from './src/screens/AttendanceSuccessScreen';
+import { DayDownloadScreen } from './src/screens/DayDownloadScreen';
 import { LeadsScreen } from './src/screens/LeadsScreen';
 import { LeadFormScreen } from './src/screens/LeadFormScreen';
 import { LeadDetailScreen } from './src/screens/LeadDetailScreen';
@@ -251,6 +254,27 @@ function AppInner() {
   // failure never blanks out what they already had. Drafts stay deliberately
   // manual (the Sync button pushes those), since re-submitting real sales/
   // surveys shouldn't fire itself off the back of a network blip.
+  // Today's download is tried again until it has all come in: on getting
+  // into the app (a session resumed already clocked in today runs it here)
+  // and every few minutes after, while there's a connection.
+  const dayPack = useDayPack();
+  const dayPackRef = useRef(dayPack);
+  dayPackRef.current = dayPack;
+  const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === localDateStr();
+  useEffect(() => {
+    if (appStage !== 'app' || !clockedInToday) return;
+    const attempt = async () => {
+      const pack = dayPackRef.current;
+      if (pack.done || pack.running) return;
+      const net = await NetInfo.fetch().catch(() => null);
+      if (net && (net.isConnected === false || net.isInternetReachable === false)) return;
+      pack.run().catch(() => {});
+    };
+    attempt();
+    const timer = setInterval(attempt, 3 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [appStage, clockedInToday]);
+
   const wasOfflineRef = useRef(false);
   useEffect(() => {
     if (appStage !== 'app') return;
@@ -326,8 +350,10 @@ function AppInner() {
     // never silently resumes into this agent's still-clocked-in state.
     dispatch({ type: 'SET_SESSION_AGENT_EMAIL', email: state.user.email || null });
     historyRef.current = [];
-    setAppStage('app');
-    setRoute('home');
+    // The day's data comes down before Home, for working offline.
+    setRouteData({ campaign: selectedCampaign });
+    setAppStage('campaignSelect');
+    setRoute('dayDownload');
   };
 
   const handleDayComplete = () => {
@@ -384,7 +410,11 @@ function AppInner() {
             // campaign-select and attendance into someone else's session.
             const sameAgent = !!user?.email && !!state.sessionAgentEmail
               && user.email.trim().toLowerCase() === state.sessionAgentEmail.trim().toLowerCase();
-            if (!sameAgent) dispatch({ type: 'RESET_AGENT_SESSION' });
+            if (!sameAgent) {
+              dispatch({ type: 'RESET_AGENT_SESSION' });
+              // The previous agent's territory outlets aren't this one's.
+              clearOutletDirectory();
+            }
 
             // A different agent's local state no longer applies (just reset above,
             // but that won't be reflected in `state` until next render) — pass an
@@ -431,6 +461,22 @@ function AppInner() {
             onNavigate={navigate}
             onClockInSuccess={handleClockInComplete}
             routeData={routeData}
+          />
+          <StatusBar style={statusBarStyle} />
+        </>
+      );
+    }
+
+    if (route === 'dayDownload') {
+      return (
+        <>
+          <DayDownloadScreen
+            campaignId={routeData?.campaign?.id || activeCampaign?.id}
+            onDone={() => {
+              historyRef.current = [];
+              setAppStage('app');
+              setRoute('home');
+            }}
           />
           <StatusBar style={statusBarStyle} />
         </>

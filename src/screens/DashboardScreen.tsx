@@ -20,6 +20,8 @@ import { getMtdRingPct, DashboardContext } from '../utils/dashboardMetrics';
 import { isDayLocked } from '../utils/dayLock';
 import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
+import { useDayPack } from '../hooks/useDayPack';
+import { formatLastUpdated } from '../utils/dayPack';
 import { getCartTotal } from '../utils/cart';
 import { isToday } from '../utils/outletVisits';
 import { localDateStr } from '../utils/timestamp';
@@ -159,6 +161,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
   const unsentSalesTotal = state.drafts
     .filter((d) => d.mode === 'sale' && d.ready && d.happenedAt?.startsWith(todayIso))
     .reduce((sum, d) => sum + getCartTotal(d.cart), 0);
+  // Today's download hasn't all come in: say how old the phone's data is.
+  const dayPack = useDayPack();
   const todaySalesTotal = state.sales.filter((s) => isToday(s.timestamp)).reduce((sum, s) => sum + s.total, 0) + unsentSalesTotal;
   const myLocation = useCurrentLocation();
   const pendingOutlets = state.outlets.filter((o) => o.status === 'pending');
@@ -246,6 +250,21 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
               <Text style={styles.dayLockTitle}>You're done for today</Text>
               <Text style={styles.dayLockSub}>New activity is locked until 12:00 AM. You can still look around, or log out.</Text>
             </View>
+          </View>
+        )}
+
+        {!dayPack.done && (
+          <View style={styles.staleBanner}>
+            <Icon name="refresh" size={16} color={theme.colors.amber} />
+            <View style={styles.flex1}>
+              <Text style={styles.dayLockTitle}>Last updated: {formatLastUpdated(dayPack.lastUpdated)}</Text>
+              <Text style={styles.dayLockSub}>
+                {dayPack.running ? "Getting today's data…" : "Some of today's data hasn't downloaded yet. It keeps trying while you're online."}
+              </Text>
+            </View>
+            <Pressable onPress={() => { dayPack.run().catch(() => {}); }} disabled={dayPack.running} style={styles.staleRetryBtn}>
+              <Text style={styles.staleRetryText}>{dayPack.running ? 'Wait' : 'Retry'}</Text>
+            </Pressable>
           </View>
         )}
 
@@ -428,6 +447,14 @@ const createStyles = (theme: any) => StyleSheet.create({
     padding: theme.spacing.md, marginBottom: theme.spacing.md,
   },
   dayLockTitle: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textDark },
+  staleBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.md,
+    borderLeftWidth: 3, borderLeftColor: theme.colors.amber,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
+  staleRetryBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: theme.radius.full, backgroundColor: theme.colors.cardWhite },
+  staleRetryText: { fontFamily: theme.fonts.bold, fontSize: 12, color: theme.colors.navy },
   dayLockSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 2, lineHeight: 16 },
   campaignSwitchCard: { backgroundColor: theme.colors.campaignCardBg, borderColor: theme.colors.campaignCardBorder, marginBottom: theme.spacing.md, padding: theme.spacing.md },
   campaignSwitchRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },

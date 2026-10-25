@@ -15,6 +15,7 @@ import {
 import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, SurveyDue, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
+import type { OutletDirectory } from '../utils/outletDirectory';
 import { firstStage, normalizeStage, stageScore } from '../utils/leadStages';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
@@ -215,7 +216,9 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
     throw new AuthError(serverErrorMessage(data) || 'Your session has expired. Please sign in again.');
   }
   if (!response.ok || data?.status === 'error') {
-    throw new Error(serverErrorMessage(data) || `Request failed (HTTP ${response.status}).`);
+    const failure: Error & { status?: number } = new Error(serverErrorMessage(data) || `Request failed (HTTP ${response.status}).`);
+    failure.status = response.status;
+    throw failure;
   }
 
   // A real HTTP 200 can still carry a soft failure nested inside `message` —
@@ -233,6 +236,15 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
 
   return data;
 };
+
+/**
+ * Whether a request failed because the backend doesn't have the endpoint
+ * (an older backend): Frappe answers "Failed to get method for command ..."
+ * or 404. The app then carries on without what it gives.
+ */
+export const isMissingEndpoint = (e: any): boolean =>
+  !(e instanceof NetworkError) && !(e instanceof AuthError)
+  && (e?.status === 404 || /failed to get method|has no attribute|not found: .*fieldops\.api/i.test(String(e?.message || '')));
 
 export const mapUserInfoToProfile = (info: any, fallbackEmail?: string): UserProfile => {
   const email = info?.email || (typeof info?.user === 'string' && info.user.includes('@') ? info.user : fallbackEmail || '');
@@ -643,28 +655,23 @@ export const getLeadStages = async (): Promise<LeadStageInfo[]> => {
  * Fetch leads for the active campaign via the RPC contract (`get_my_leads`). The old
  * campaign-nested REST route (`/agent/campaigns/{id}/leads`) no longer exists — get_my_leads
  * returns leads across all of the agent's campaigns, so results are narrowed to campaignId
- * client-side whenever the response actually carries a campaign field. Falls back to an
- * empty array on error.
+ * client-side whenever the response actually carries a campaign field. Throws when it
+ * can't be loaded, so the copy on the phone is kept.
  */
 export const getLeads = async (campaignId: string): Promise<Lead[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_leads');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    const scoped = campaignId
-      ? list.filter((l: any) => {
-          // An empty string is common on leads whose campaign link didn't save server-side —
-          // treat it the same as "unknown" rather than a real mismatch, or the lead vanishes
-          // from every campaign's list.
-          const c = l?.campaign || l?.campaign_id;
-          return !c || String(c) === String(campaignId);
-        })
-      : list;
-    return scoped.map(mapLead);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_leads');
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  const scoped = campaignId
+    ? list.filter((l: any) => {
+        // An empty string is common on leads whose campaign link didn't save server-side —
+        // treat it the same as "unknown" rather than a real mismatch, or the lead vanishes
+        // from every campaign's list.
+        const c = l?.campaign || l?.campaign_id;
+        return !c || String(c) === String(campaignId);
+      })
+    : list;
+  return scoped.map(mapLead);
 };
 
 export interface CreateLeadPayload {
@@ -836,21 +843,16 @@ const mapSurveyDue = (raw: any): SurveyDue | undefined =>
     ? { surveyId: String(raw.survey_id), surveyName: String(raw.survey_name || raw.survey_id), since: raw.since ? String(raw.since) : undefined }
     : undefined;
 
-/** Fetch outlets via the RPC contract (`get_outlets`). Falls back to an empty array on error. */
+/** Fetch outlets via the RPC contract (`get_outlets`). Throws when it can't be loaded, so the copy on the phone is kept. */
 export const getOutlets = async (campaignId: string): Promise<Outlet[]> => {
-  try {
-    const [data, tenantId] = await Promise.all([
-      authFetch('/api/method/fieldops.api.mobile_api.get_outlets'),
-      getTenantId(),
-    ]);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    const baseUrl = getBaseUrl(tenantId || '');
-    return list.map((o: any) => mapOutlet(o, campaignId, baseUrl));
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const [data, tenantId] = await Promise.all([
+    authFetch('/api/method/fieldops.api.mobile_api.get_outlets'),
+    getTenantId(),
+  ]);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  const baseUrl = getBaseUrl(tenantId || '');
+  return list.map((o: any) => mapOutlet(o, campaignId, baseUrl));
 };
 
 /**
@@ -1344,20 +1346,15 @@ const flattenInventoryResponse = (raw: any[], baseUrl: string): Product[] => {
   return raw.map((it: any) => mapItem(it, baseUrl));
 };
 
-/** Fetch the product catalog via the RPC contract (`get_items`). Falls back to an empty array on error. */
+/** Fetch the product catalog via the RPC contract (`get_items`). Throws when it can't be loaded, so the copy on the phone is kept. */
 export const getItems = async (): Promise<Product[]> => {
-  try {
-    const [data, tenantId] = await Promise.all([
-      authFetch('/api/method/fieldops.api.mobile_api.get_items'),
-      getTenantId(),
-    ]);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map((it: any) => mapItem(it, getBaseUrl(tenantId || "")));
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const [data, tenantId] = await Promise.all([
+    authFetch('/api/method/fieldops.api.mobile_api.get_items'),
+    getTenantId(),
+  ]);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map((it: any) => mapItem(it, getBaseUrl(tenantId || "")));
 };
 
 export interface OrderLinePayload {
@@ -1655,30 +1652,67 @@ const mapSaleDoc = (raw: any): OutletSale[] => {
   }));
 };
 
-/** Fetch this agent's orders via the RPC contract (`get_my_orders`). Falls back to an empty array on error. */
+/** Fetch this agent's orders via the RPC contract (`get_my_orders`). Throws when it can't be loaded, so the copy on the phone is kept. */
 export const getMyOrders = async (): Promise<OutletOrder[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_orders');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.flatMap(mapOrderDoc);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_orders');
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.flatMap(mapOrderDoc);
 };
 
-/** Fetch this agent's field sales via the RPC contract (`get_my_sales`). Falls back to an empty array on error. */
+/** Fetch this agent's field sales via the RPC contract (`get_my_sales`). Throws when it can't be loaded, so the copy on the phone is kept. */
 export const getMySales = async (): Promise<OutletSale[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_sales');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.flatMap(mapSaleDoc);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_sales');
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.flatMap(mapSaleDoc);
+};
+
+// ─── Morning download ───────────────────────────────────────────────────────────
+
+/**
+ * The outlets the agent may come across (in their territories, in the zone or
+ * area of an outlet on their list, or on it) via `get_outlet_directory`, for
+ * spotting an outlet that's already onboarded offline. Phone numbers come only
+ * as lowercase hex sha256(phoneHashSalt + number), with their last 4 digits.
+ */
+export const getOutletDirectory = async (): Promise<Omit<OutletDirectory, 'savedAt' | 'agentEmail'>> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_outlet_directory');
+  const body = data?.message ?? data;
+  const distance = Number(body?.duplicate_distance_m);
+  const number = (value: any) => (value === null || value === undefined || value === '' ? null : Number(value));
+  return {
+    duplicateDistanceM: Number.isFinite(distance) && distance >= 0 ? distance : 50,
+    phoneHashSalt: String(body?.phone_hash_salt || ''),
+    outlets: (Array.isArray(body?.outlets) ? body.outlets : [])
+      .filter((o: any) => o?.id)
+      .map((o: any) => ({
+        id: String(o.id),
+        name: String(o.name || o.id),
+        address: o.address ? String(o.address) : '',
+        latitude: number(o.latitude),
+        longitude: number(o.longitude),
+        phoneHashes: Array.isArray(o.phone_hashes) ? o.phone_hashes.map(String) : [],
+        phoneLast4: Array.isArray(o.phone_last4) ? o.phone_last4.map(String) : [],
+        onboardedByName: o.onboarded_by_name ? String(o.onboarded_by_name) : undefined,
+        onboardedOn: o.onboarded_on ? String(o.onboarded_on) : undefined,
+        onMyList: !!o.on_my_list,
+      })),
+  };
+};
+
+/**
+ * A fresh access token for the signed-in agent via `renew_access_token`, saved
+ * in place of the old one; the app asks after each clock-in so a login never
+ * runs out mid-shift. Throws when it can't be had (an older backend doesn't
+ * have it: the old token stays).
+ */
+export const renewAccessToken = async (): Promise<void> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.renew_access_token', { method: 'POST' });
+  const body = data?.message ?? data;
+  const token = body?.access_token || data?.access_token;
+  if (!token) throw new Error('No new access token came back.');
+  await setAccessToken(String(token));
 };
 
 // ─── Stock Requests / Reconciliations API ───────────────────────────────────────
@@ -1776,15 +1810,10 @@ const mapStockRequest = (raw: any): StockRequestSummary => {
 
 /** Fetch this agent's submitted stock requests and their approval status via `get_my_stock_requests`. */
 export const getMyStockRequests = async (): Promise<StockRequestSummary[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_stock_requests');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapStockRequest);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_stock_requests');
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(mapStockRequest);
 };
 
 export interface ReconciliationLine {
@@ -1826,6 +1855,8 @@ export interface SurveyListItem {
   endDate?: string;
   /** The campaign's survey to fill after an outlet is edited. */
   afterOutletEdit: boolean;
+  /** Its questions, when they were asked for (includeQuestions) and the backend sends them. */
+  detail?: CampaignSurveyConfig;
 }
 
 const mapSurveyListItem = (raw: any): SurveyListItem => ({
@@ -1835,23 +1866,22 @@ const mapSurveyListItem = (raw: any): SurveyListItem => ({
   startDate: raw?.start_date || undefined,
   endDate: raw?.end_date || undefined,
   afterOutletEdit: Number(raw?.after_outlet_edit) === 1 || raw?.after_outlet_edit === true,
+  detail: raw?.detail && typeof raw.detail === 'object' ? mapSurveyDetail(raw.detail) : undefined,
 });
 
 /**
- * List surveys assigned to the agent for a campaign via `get_surveys_for_campaign`.
- * Only returns id/name/status/dates (no questions) — call `getSurveyDetail` per survey
- * for the actual form.
+ * List surveys assigned to the agent for a campaign via `get_surveys_for_campaign`:
+ * id/name/status/dates, and with includeQuestions each survey's `detail` (what
+ * get_survey_detail returns), so the morning download needs one request, not one
+ * per survey. An older backend sends no `detail`: call `getSurveyDetail` per survey.
+ * Throws when it can't be loaded, so the copy on the phone is kept.
  */
-export const getSurveysForCampaign = async (campaignId: string): Promise<SurveyListItem[]> => {
-  try {
-    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_surveys_for_campaign?campaign=${encodeURIComponent(campaignId)}`);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapSurveyListItem);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+export const getSurveysForCampaign = async (campaignId: string, options?: { includeQuestions?: boolean }): Promise<SurveyListItem[]> => {
+  const questions = options?.includeQuestions ? '&include_questions=1' : '';
+  const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_surveys_for_campaign?campaign=${encodeURIComponent(campaignId)}${questions}`);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(mapSurveyListItem);
 };
 
 /**
@@ -1911,17 +1941,12 @@ const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
   };
 };
 
-/** Fetch a survey's full question set via `get_survey_detail`. */
+/** Fetch a survey's full question set via `get_survey_detail`; null for a survey that isn't there. Throws when it can't be loaded. */
 export const getSurveyDetail = async (surveyId: string): Promise<CampaignSurveyConfig | null> => {
-  try {
-    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_survey_detail?survey_id=${encodeURIComponent(surveyId)}`);
-    const raw = data?.message ?? data?.data ?? data;
-    if (!raw || typeof raw !== 'object') return null;
-    return mapSurveyDetail(raw);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return null;
-  }
+  const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_survey_detail?survey_id=${encodeURIComponent(surveyId)}`);
+  const raw = data?.message ?? data?.data ?? data;
+  if (!raw || typeof raw !== 'object') return null;
+  return mapSurveyDetail(raw);
 };
 
 export interface SurveyResponsePayload {
@@ -2053,16 +2078,11 @@ const mapMySurveyResponse = (raw: any): MySurveyResponseSummary => ({
  * lead, so an older response left off the page would show its survey as not done.
  */
 export const getMySurveys = async (campaignId?: string): Promise<MySurveyResponseSummary[]> => {
-  try {
-    const qs = `?limit_page_length=500${campaignId ? `&campaign=${encodeURIComponent(campaignId)}` : ''}`;
-    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_my_surveys${qs}`);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapMySurveyResponse);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const qs = `?limit_page_length=500${campaignId ? `&campaign=${encodeURIComponent(campaignId)}` : ''}`;
+  const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_my_surveys${qs}`);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(mapMySurveyResponse);
 };
 
 // ─── Journey Maps / Beat Plans API ───────────────────────────────────────────────
@@ -2082,15 +2102,10 @@ const mapBeat = (raw: any): RouteAssignment => ({
 
 /** Fetch this agent's day-by-day route/beat assignments via `get_agent_beats`. */
 export const getAgentBeats = async (): Promise<RouteAssignment[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_agent_beats');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapBeat).filter((a: RouteAssignment) => a.date);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_agent_beats');
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(mapBeat).filter((a: RouteAssignment) => a.date);
 };
 
 // ─── Notifications API ──────────────────────────────────────────────────────────
