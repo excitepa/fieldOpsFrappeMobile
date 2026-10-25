@@ -104,6 +104,7 @@ type Action =
   | { type: 'ADD_SALE'; sale: OutletSale }
   | { type: 'ADD_ORDER'; order: OutletOrder }
   | { type: 'ADD_SURVEY'; survey: OutletSurvey }
+  | { type: 'UPDATE_SURVEY'; survey: OutletSurvey }
   | { type: 'MARK_SURVEY_SYNCED'; surveyId: string }
   | { type: 'SET_SURVEY_SYNC_ERROR'; surveyId: string; error: string }
   | { type: 'DELETE_SURVEY'; surveyId: string }
@@ -392,6 +393,9 @@ function reducer(state: FieldState, action: Action): FieldState {
         ...state,
         surveys: [action.survey, ...state.surveys],
       };
+
+    case 'UPDATE_SURVEY':
+      return { ...state, surveys: state.surveys.map((s) => (s.id === action.survey.id ? action.survey : s)) };
 
     // Flips a locally-queued draft survey to synced once it's actually been
     // pushed to the server (see offlineSync.ts) — the record itself already

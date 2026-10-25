@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -12,7 +12,8 @@ import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles } from '../utils/surveyPhotos';
 import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
-import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer, ActionStamp } from '../types';
 
 interface LeadSurveyReviewScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -39,6 +40,9 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
   const answers = routeData?.answers || {};
   const photoUris = routeData?.photoUris || {};
   const [submitting, setSubmitting] = useState(false);
+  // This survey's one-time ID and when it was filled in, from the first
+  // Submit: a second Submit after one that got no answer is the same survey.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
@@ -74,6 +78,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
       return;
     }
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
 
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -93,7 +98,8 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
         coordinates,
         { leadId: lead.id, firstName, lastName, phone: lead.phone || undefined },
         undefined,
-        photos
+        photos,
+        { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
 
       const surveyAnswers: LeadSurveyAnswer[] = allQuestions.map((q) => ({

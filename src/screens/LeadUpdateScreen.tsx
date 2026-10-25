@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -11,7 +11,8 @@ import { getLeads, updateLeadStage, requestLeadRegression, NetworkError } from '
 import { useLeadStages } from '../hooks/useLeadStages';
 import { LOST_STAGE, backwardStages, forwardStages, stageScore } from '../utils/leadStages';
 import { localDateStr } from '../utils/timestamp';
-import { RouteName, Lead, LeadStage } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Lead, LeadStage, ActionStamp } from '../types';
 
 interface LeadUpdateScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -32,6 +33,10 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
   const [reason, setReason] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // One-time IDs for this screen's stage change and approval request, from
+  // their first try: a second try after one that got no answer is the same one.
+  const stageStampRef = useRef<ActionStamp | null>(null);
+  const requestStampRef = useRef<ActionStamp | null>(null);
 
   if (!leadData) {
     return (
@@ -69,8 +74,9 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
 
   const askForApproval = async (stage: LeadStage) => {
     setSubmitting(true);
+    const stamp = requestStampRef.current || (requestStampRef.current = newStamp(state.user.email));
     try {
-      const request = await requestLeadRegression(leadData.id, stage, reason.trim());
+      const request = await requestLeadRegression(leadData.id, stage, reason.trim(), { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
       const updated = await withServerCopy({ ...leadData, pendingStageRequest: request });
       setSubmitting(false);
       onUpdateLead(updated);
@@ -104,10 +110,11 @@ export const LeadUpdateScreen: React.FC<LeadUpdateScreenProps> = ({ onNavigate, 
     }
 
     setSubmitting(true);
+    const stamp = stageStampRef.current || (stageStampRef.current = newStamp(state.user.email));
     try {
       // Changed on the device only once the server has it — a save that
       // stayed local is what made leads go back to their old stage.
-      await updateLeadStage(leadData.id, picked, reason.trim(), notes.trim() || undefined);
+      await updateLeadStage(leadData.id, picked, reason.trim(), notes.trim() || undefined, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
       const updated = await withServerCopy({
         ...leadData,
         stage: picked,

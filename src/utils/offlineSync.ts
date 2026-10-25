@@ -1,12 +1,27 @@
 import {
   createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse, uploadSurveyPhoto,
   getOutlets, getItems, getMyOrders, getMySales, getMyGeofence,
-  OrderLinePayload, AuthError, NetworkError,
+  OrderLinePayload, AuthError, NetworkError, ActionMeta,
 } from '../services/api';
-import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto } from '../types';
+import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto, ActionStamp } from '../types';
 import { discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
 import { isAnswered, surveyRejectionMessage } from './surveyAnswers';
+import { newClientRef } from './queue';
 import { debugLog } from './logger';
+
+/**
+ * An item saved before items carried a one-time ID gets one now, kept on it
+ * before it's first sent, so the server recognises a retry of it.
+ */
+const withRef = <T extends ActionStamp>(item: T, keep: (stamped: T) => void): T => {
+  if (item.clientRef) return item;
+  const stamped = { ...item, clientRef: newClientRef() };
+  keep(stamped);
+  return stamped;
+};
+
+/** What a queued item is sent with: its one-time ID and when it happened, as sent later from the queue. */
+const queuedMeta = (item: ActionStamp): ActionMeta => ({ clientRef: item.clientRef, happenedAt: item.happenedAt, capturedOffline: true });
 
 /**
  * Refreshes the core server-owned datasets the app caches locally (outlets,
@@ -77,7 +92,8 @@ export async function pushLeadDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const draft of drafts) {
+  for (const queued of drafts) {
+    const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_LEAD_DRAFT', leadDraft: d }));
     try {
       await createLead(draft.campaignId, {
         name: draft.name,
@@ -88,7 +104,7 @@ export async function pushLeadDrafts(
         source: draft.source,
         notes: draft.notes,
         value: draft.leadValue ? parseFloat(draft.leadValue) || undefined : undefined,
-      });
+      }, queuedMeta(draft));
       dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id });
       synced++;
     } catch (e) {
@@ -112,7 +128,8 @@ export async function pushCartDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const draft of drafts) {
+  for (const queued of drafts) {
+    const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_DRAFT', draft: d }));
     try {
       const campaignId = draft.campaignId || fallbackCampaignId;
       // A line saved before units has no uom: the server reads it as the
@@ -129,9 +146,9 @@ export async function pushCartDrafts(
         // Where it was recorded (and the agent's reason when that was away
         // from the outlet), for the server's check; it's synced later, so
         // captured offline.
-        await submitFieldSale(draft.outletId, campaignId, lines, total, { ...draft.saleLocation, capturedOffline: true }, draft.promoCode);
+        await submitFieldSale(draft.outletId, campaignId, lines, total, { ...draft.saleLocation, capturedOffline: true }, draft.promoCode, queuedMeta(draft));
       } else {
-        await submitSalesOrder(draft.outletId, campaignId, lines, draft.promoCode);
+        await submitSalesOrder(draft.outletId, campaignId, lines, draft.promoCode, queuedMeta(draft));
       }
       dispatch({ type: 'DELETE_DRAFT', draftId: draft.id });
       synced++;
@@ -184,7 +201,8 @@ export async function pushSurveyDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const draft of drafts) {
+  for (const queued of drafts) {
+    const draft = withRef(queued, (d) => dispatch({ type: 'UPDATE_SURVEY', survey: d }));
     if (!draft.surveyConfigId) {
       noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, new Error('saved without a survey id, cannot be resubmitted'));
       failed++;
@@ -208,7 +226,8 @@ export async function pushSurveyDrafts(
         undefined,
         undefined,
         draft.outletId,
-        photos
+        photos,
+        queuedMeta(draft)
       );
       dispatch({ type: 'MARK_SURVEY_SYNCED', surveyId: draft.id });
       discardSurveyPhotos(photos);
@@ -290,7 +309,8 @@ export async function pushOutletDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const draft of drafts) {
+  for (const queued of drafts) {
+    const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft: d }));
     try {
       if (draft.mode === 'create') {
         await createOutlet(draft.campaignId, {
@@ -308,7 +328,8 @@ export async function pushOutletDrafts(
           photoUri: draft.photoUri,
           latitude: draft.latitude,
           longitude: draft.longitude,
-        });
+          confirmedNew: draft.confirmedNew,
+        }, queuedMeta(draft));
       } else if (draft.outletId) {
         await updateOutlet(draft.outletId, {
           name: draft.name,
@@ -331,7 +352,7 @@ export async function pushOutletDrafts(
           gpsAccuracy: draft.gpsAccuracy,
           // Its campaign's after-edit survey becomes due once it reaches the server.
           campaign: draft.campaignId,
-        });
+        }, queuedMeta(draft));
       } else {
         noteFailure(errors, `Outlet "${draft.name}"`, new Error('edit draft is missing its outlet id'));
         failed++;

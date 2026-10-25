@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -12,7 +12,8 @@ import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles } from '../utils/surveyPhotos';
 import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
-import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey, ActionStamp } from '../types';
 
 interface OutletSurveyReviewScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -40,6 +41,9 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
   const answers = routeData?.answers || {};
   const photoUris = routeData?.photoUris || {};
   const [submitting, setSubmitting] = useState(false);
+  // This survey's one-time ID and when it was filled in, from the first
+  // Submit: a second Submit after one that got no answer is the same survey.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
 
@@ -75,6 +79,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
       return;
     }
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
 
     // Built up-front (not just on success) so a genuine offline failure below
     // can still save a real, resubmittable local copy instead of losing the
@@ -103,7 +108,8 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         coordinates,
         undefined,
         outlet.id,
-        photos
+        photos,
+        { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
 
       const newSurvey: OutletSurvey = {
@@ -138,6 +144,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         // from the Sync page once back online. It's complete, and its photo
         // answers point at the kept photos, which go up with it.
         const draftSurvey: OutletSurvey = {
+          ...stamp,
           id: `surv-${Date.now()}`,
           outletId: outlet.id,
           campaignId: state.activeCampaign?.id || 'c2',

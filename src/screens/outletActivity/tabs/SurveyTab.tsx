@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput, Image, Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
@@ -14,7 +14,8 @@ import {
   keepSurveyPhoto, discardSurveyPhoto, discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles,
 } from '../../../utils/surveyPhotos';
 import { cannotBeAnswered, missingQuestionIds, NO_OPTIONS_MESSAGE, requireAllAnswered, surveyRejectionMessage } from '../../../utils/surveyAnswers';
-import { CampaignSurveyConfig, DynamicSurveyQuestion, SurveyAnswer, OutletSurvey } from '../../../types';
+import { newStamp } from '../../../utils/queue';
+import { CampaignSurveyConfig, DynamicSurveyQuestion, SurveyAnswer, OutletSurvey, ActionStamp } from '../../../types';
 
 interface SurveyTabProps {
   outletId: string;
@@ -40,6 +41,9 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
   const [photoUris, setPhotoUris] = useState<Record<string, string>>({});
   const [validationErrors, setValidationErrors] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
+  // This survey's one-time ID and when it was filled in, from the first
+  // Submit: a second Submit after one that got no answer is the same survey.
+  const stampRef = useRef<ActionStamp | null>(null);
   const [pickerQuestion, setPickerQuestion] = useState<DynamicSurveyQuestion | null>(null);
 
   const handleAnswerChange = (qId: string, val: any) => {
@@ -119,6 +123,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
     }
 
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
 
     const nowStr = new Date().toLocaleString('en-US', {
       month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
@@ -160,7 +165,8 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
         coordinates,
         undefined,
         outletId,
-        photos
+        photos,
+        { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
 
       dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
@@ -172,6 +178,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
       Alert.alert('Survey Submitted', `${surveyConfig.name} recorded for this visit.`);
       setAnswers({});
       setPhotoUris({});
+      stampRef.current = null;
       onSubmitted?.();
     } catch (e: any) {
       setSubmitting(false);

@@ -51,6 +51,27 @@ export class SoftError extends Error {
   }
 }
 
+/**
+ * What an action the app may send again carries (see ActionStamp): its
+ * one-time ID, which the server answers a repeat of exactly as the first time
+ * ("idempotent": true), when the agent did it, which the server dates the
+ * record by, and whether it's being sent later from the phone's queue. A
+ * backend without them ignores them.
+ */
+export interface ActionMeta {
+  clientRef?: string;
+  happenedAt?: string;
+  capturedOffline?: boolean;
+}
+
+const stampFields = (meta?: ActionMeta): Record<string, any> => {
+  const fields: Record<string, any> = {};
+  if (meta?.clientRef) fields.client_ref = meta.clientRef;
+  if (meta?.happenedAt) fields.happened_at = meta.happenedAt;
+  if (meta?.capturedOffline) fields.captured_offline = 1;
+  return fields;
+};
+
 export interface LoginResult {
   success: boolean;
   message?: string;
@@ -676,8 +697,8 @@ const leadFields = (payload: CreateLeadPayload): Record<string, any> => ({
  * `outlet_id` (a real linked Outlet record) and `latitude`/`longitude` are left out — the
  * app has no outlet-picker or GPS capture on this form yet, so there's no real value to send.
  */
-export const createLead = async (campaignId: string, payload: CreateLeadPayload): Promise<Lead> => {
-  const body: Record<string, any> = { ...leadFields(payload), campaign: campaignId };
+export const createLead = async (campaignId: string, payload: CreateLeadPayload, meta?: ActionMeta): Promise<Lead> => {
+  const body: Record<string, any> = { ...leadFields(payload), campaign: campaignId, ...stampFields(meta) };
 
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_lead', {
     method: 'POST',
@@ -710,11 +731,11 @@ export const createLead = async (campaignId: string, payload: CreateLeadPayload)
  * SoftError: code STAGE_REGRESSION_NEEDS_APPROVAL for a move back (or out of
  * Won or Lost), STAGE_CHANGE_NOT_ALLOWED otherwise.
  */
-export const updateLeadStage = async (leadId: string, stage: LeadStage, reason: string, notes?: string): Promise<void> => {
+export const updateLeadStage = async (leadId: string, stage: LeadStage, reason: string, notes?: string, meta?: ActionMeta): Promise<void> => {
   await authFetch('/api/method/fieldops.api.mobile_api.update_lead_stage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead_id: leadId, funnel_stage: stage, reason, notes }),
+    body: JSON.stringify({ lead_id: leadId, funnel_stage: stage, reason, notes, ...stampFields(meta) }),
   });
 };
 
@@ -723,11 +744,11 @@ export const updateLeadStage = async (leadId: string, stage: LeadStage, reason: 
  * `request_lead_regression`. Returns the request (the lead's existing
  * pending one, if it already had one).
  */
-export const requestLeadRegression = async (leadId: string, toStage: LeadStage, reason: string): Promise<PendingStageRequest> => {
+export const requestLeadRegression = async (leadId: string, toStage: LeadStage, reason: string, meta?: ActionMeta): Promise<PendingStageRequest> => {
   const data = await authFetch('/api/method/fieldops.api.mobile_api.request_lead_regression', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead_id: leadId, to_stage: toStage, reason }),
+    body: JSON.stringify({ lead_id: leadId, to_stage: toStage, reason, ...stampFields(meta) }),
   });
   const result = data?.message ?? data;
   const request = result?.request ?? result;
@@ -928,7 +949,46 @@ export interface CreateOutletPayload extends OutletClassificationPayload {
   photoUri?: string;
   latitude?: number;
   longitude?: number;
+  /** Ask the server to refuse it (POSSIBLE_DUPLICATE) when it looks like an outlet already onboarded. */
+  checkDuplicates?: boolean;
+  /** The agent said it's a different outlet from the ones it looked like. */
+  confirmedNew?: boolean;
 }
+
+/** An outlet already onboarded that a new one looks like (submit_outlet's POSSIBLE_DUPLICATE, or the phone's own check). */
+export interface OutletMatch {
+  outletId: string;
+  outletName: string;
+  address: string;
+  /** Meters between the two; null when either has no location. */
+  distanceM: number | null;
+  /** Same phone number, or near with a similar name. */
+  match: 'phone' | 'nearby_name';
+  onboardedByName?: string;
+  onboardedOn?: string;
+  /** Assigned to this agent or on their routes. */
+  onMyList: boolean;
+  phoneLast4?: string;
+}
+
+const mapOutletMatches = (raw: any): OutletMatch[] =>
+  (Array.isArray(raw) ? raw : [])
+    .filter((m: any) => m?.outlet_id)
+    .map((m: any) => ({
+      outletId: String(m.outlet_id),
+      outletName: String(m.outlet_name || m.outlet_id),
+      address: m.address ? String(m.address) : '',
+      distanceM: m.distance_m === null || m.distance_m === undefined ? null : Number(m.distance_m),
+      match: m.match === 'phone' ? 'phone' : 'nearby_name',
+      onboardedByName: m.onboarded_by_name ? String(m.onboarded_by_name) : undefined,
+      onboardedOn: m.onboarded_on ? String(m.onboarded_on) : undefined,
+      onMyList: !!m.on_my_list,
+      phoneLast4: m.phone_last4 ? String(m.phone_last4) : undefined,
+    }));
+
+/** The outlets submit_outlet says a new one looks like, when it refused it as POSSIBLE_DUPLICATE ([] for any other error). */
+export const possibleDuplicateMatches = (e: any): OutletMatch[] =>
+  e instanceof SoftError && e.code === 'POSSIBLE_DUPLICATE' ? mapOutletMatches(e.data?.matches) : [];
 
 /**
  * Builds the multipart file part for an outlet photo. Since Expo 57 the global
@@ -983,8 +1043,15 @@ export const uploadOutletPhoto = async (outletId: string, photoUri: string): Pro
  */
 export const createOutlet = async (
   campaignId: string,
-  payload: CreateOutletPayload
-): Promise<{ outlet: Outlet; photoUploaded: boolean; photoError?: string }> => {
+  payload: CreateOutletPayload,
+  meta?: ActionMeta
+): Promise<{
+  outlet: Outlet;
+  photoUploaded: boolean;
+  photoError?: string;
+  /** Onboarded, but it looks like an outlet already onboarded: a supervisor will check it. */
+  possibleDuplicate?: { reviewId: string; matches: OutletMatch[] };
+}> => {
   const fields: Record<string, any> = {
     outlet_name: payload.name,
     ...classificationFields(payload),
@@ -992,9 +1059,13 @@ export const createOutlet = async (
     phone_number: payload.phone,
     owner_name: payload.ownerName,
     owner_phone: payload.ownerPhone,
+    ...stampFields(meta),
   };
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
+  // An older backend ignores both and onboards it as before.
+  if (payload.checkDuplicates) fields.check_duplicates = 1;
+  if (payload.confirmedNew) fields.confirmed_new = 1;
 
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_outlet', {
     method: 'POST',
@@ -1042,7 +1113,13 @@ export const createOutlet = async (
     // a local device URI with its own scheme (file://, content://, ...), which
     // resolveImageUrl passes through untouched regardless of baseUrl.
   }, campaignId, '');
-  return { outlet, photoUploaded, photoError };
+  const flagged = result?.possible_duplicate;
+  return {
+    outlet,
+    photoUploaded,
+    photoError,
+    possibleDuplicate: flagged?.review_id ? { reviewId: String(flagged.review_id), matches: mapOutletMatches(flagged.matches) } : undefined,
+  };
 };
 
 export interface UpdateOutletPayload extends OutletClassificationPayload {
@@ -1091,13 +1168,14 @@ const mapUpdateOutletResult = (data: any): UpdateOutletResult => {
  * (`surveyDue`); while one is due, an edit is refused with
  * SURVEY_REQUIRED_AFTER_EDIT (a SoftError carrying survey_id, survey_name).
  */
-export const updateOutlet = async (outletId: string, payload: UpdateOutletPayload): Promise<UpdateOutletResult> => {
+export const updateOutlet = async (outletId: string, payload: UpdateOutletPayload, meta?: ActionMeta): Promise<UpdateOutletResult> => {
   const fields: Record<string, any> = {
     // Identity key naming isn't confirmed against a real device log yet — sending both
     // `outlet` and `outlet_id` since those are the two conventions used elsewhere in
     // this contract (record_outlet_visit uses `outlet`, update_lead_stage uses `lead_id`).
     outlet: outletId,
     outlet_id: outletId,
+    ...stampFields(meta),
   };
   if (payload.name !== undefined) fields.outlet_name = payload.name;
   Object.assign(fields, classificationFields(payload));
@@ -1135,12 +1213,23 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
   }));
 };
 
-/** Skip an outlet visit via the RPC contract (`skip_outlet_visit`). */
-export const skipOutletVisit = async (outletId: string, campaignId: string, reason: string): Promise<void> => {
+/** Skip an outlet visit via the RPC contract (`skip_outlet_visit`), with where the agent was when there's a fix. */
+export const skipOutletVisit = async (
+  outletId: string,
+  campaignId: string,
+  reason: string,
+  meta?: ActionMeta,
+  coordinates?: { lat: number; lng: number }
+): Promise<void> => {
+  const body: Record<string, any> = { outlet: outletId, outlet_id: outletId, campaign: campaignId, reason, skip_reason: reason, ...stampFields(meta) };
+  if (coordinates) {
+    body.latitude = coordinates.lat;
+    body.longitude = coordinates.lng;
+  }
   await authFetch('/api/method/fieldops.api.mobile_api.skip_outlet_visit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ outlet: outletId, outlet_id: outletId, campaign: campaignId, reason, skip_reason: reason }),
+    body: JSON.stringify(body),
   });
 };
 
@@ -1395,10 +1484,12 @@ export const submitFieldSale = async (
   lines: OrderLinePayload[],
   amountPaid: number,
   location?: SaleLocation & { capturedOffline?: boolean },
-  promoCode?: string
+  promoCode?: string,
+  meta?: ActionMeta
 ): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number; location?: SaleLocationResult }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
+    ...stampFields(meta),
     outlet: outletId,
     outlet_id: outletId,
     campaign: campaignId,
@@ -1456,10 +1547,12 @@ export const submitSalesOrder = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[],
-  promoCode?: string
+  promoCode?: string,
+  meta?: ActionMeta
 ): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
+    ...stampFields(meta),
     outletId,
     outlet_id: outletId,
     campaignId,
@@ -1629,9 +1722,11 @@ export interface StockRequestLine {
 export const submitStockRequest = async (
   campaignId: string,
   lines: StockRequestLine[],
-  purpose?: string
+  purpose?: string,
+  meta?: ActionMeta
 ): Promise<{ ref: string }> => {
   const body = {
+    ...stampFields(meta),
     // The documented contract field is `campaign_id` (not `campaign`, which this app
     // uses elsewhere for other endpoints) — sending both since an extra unrecognized
     // key is harmless but a missing required one silently drops the campaign link.
@@ -1859,9 +1954,11 @@ export const submitSurveyResponse = async (
   coordinates?: { lat: number; lng: number },
   respondent?: SurveyRespondent,
   outletId?: string,
-  photos?: Record<string, string>
+  photos?: Record<string, string>,
+  meta?: ActionMeta
 ): Promise<{ responseId: string }> => {
   const body: Record<string, any> = {
+    ...stampFields(meta),
     survey: surveyId,
     responses: responses.map((r) => ({
       question: r.questionId,

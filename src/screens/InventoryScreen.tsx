@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert, ActivityIndicator, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -15,7 +15,8 @@ import { formatStockBreakdown } from '../utils/stock';
 import { formatServerDateTime } from '../utils/timestamp';
 import { buildBasketLine, toStockRequestLine } from '../utils/stockRequest';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { RouteName, Product } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Product, ActionStamp } from '../types';
 
 interface InventoryScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -39,6 +40,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   const [view, setView] = useState<StockView>('list');
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // The basket's one-time ID and when it was sent, from its first Submit: a
+  // second Submit after one that got no answer is the same request.
+  const requestStampRef = useRef<ActionStamp | null>(null);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
   const [stockRequests, setStockRequests] = useState<StockRequestSummary[]>([]);
@@ -151,11 +155,13 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (basketLines.length === 0) return;
     setSubmitting(true);
+    const stamp = requestStampRef.current || (requestStampRef.current = newStamp(state.user.email));
     try {
       await submitStockRequest(
         state.activeCampaign?.id || '',
         basketLines.map(toStockRequestLine),
-        note.trim() || undefined
+        note.trim() || undefined,
+        { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
     } catch (e: any) {
       setSubmitting(false);
@@ -168,6 +174,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     }
 
     setSubmitting(false);
+    requestStampRef.current = null;
     setQuantities({});
     setNote('');
     setView('list');

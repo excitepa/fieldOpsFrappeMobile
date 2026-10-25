@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,8 @@ import { Button } from '../components/Button';
 import { skipOutletVisit, NetworkError } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { SkipRecord } from '../types';
+import { newStamp } from '../utils/queue';
+import { SkipRecord, ActionStamp } from '../types';
 
 interface SkipOutletModalProps {
   visible: boolean;
@@ -53,6 +54,8 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // This skip's one-time ID and when it happened, from the first Submit.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const isOther = selectedReason === 'Other';
   const isValid = selectedReason !== null && (!isOther || note.trim().length > 0);
@@ -61,6 +64,7 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (!selectedReason || !isValid) return;
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
 
     const nowStr = new Date().toLocaleString('en-US', {
       month: 'numeric',
@@ -73,10 +77,12 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
     });
 
     let gps = 'Location unavailable';
+    let coords: { lat: number; lng: number } | undefined;
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
         const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        coords = { lat: position.coords.latitude, lng: position.coords.longitude };
         gps = `${position.coords.latitude.toFixed(4)}, ${position.coords.longitude.toFixed(4)}`;
       }
     } catch (e) {
@@ -85,7 +91,7 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
 
     const reasonText = isOther ? note.trim() : selectedReason;
     try {
-      await skipOutletVisit(outletId, campaignId, reasonText);
+      await skipOutletVisit(outletId, campaignId, reasonText, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }, coords);
     } catch (e: any) {
       setSubmitting(false);
       if (e instanceof NetworkError) {
@@ -109,6 +115,7 @@ export const SkipOutletModal: React.FC<SkipOutletModalProps> = ({
     setSubmitting(false);
     setSelectedReason(null);
     setNote('');
+    stampRef.current = null;
     onClose();
   };
 

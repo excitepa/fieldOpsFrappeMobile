@@ -26,7 +26,8 @@ import { blockIfDayLocked } from '../utils/dayLock';
 import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
 import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, keepPhotoForDraft, streetAddressFromPlace } from '../utils/photoStamp';
-import { RouteName, Outlet, OutletDraft } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Outlet, OutletDraft, ActionStamp } from '../types';
 
 interface AddOutletScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -86,6 +87,9 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [photoAspect, setPhotoAspect] = useState(3 / 4);
   const photoViewRef = useRef<View>(null);
   const [submitting, setSubmitting] = useState(false);
+  // This outlet's one-time ID and when it was onboarded, from the first Save:
+  // a second Save after one that got no answer is the same outlet to the server.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   useEffect(() => {
     autoCaptureGps();
@@ -214,6 +218,7 @@ const theme = useTheme();  const styles = createStyles(theme);
     };
 
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
     // The watermarked snapshot, not the raw camera file, is what gets uploaded
     // (or kept for an offline draft) — same as the attendance selfie.
     const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
@@ -232,7 +237,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         photoUri: uploadPhotoUri || undefined,
         latitude: gpsCoords?.lat,
         longitude: gpsCoords?.lng,
-      });
+      }, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
 
       // Enrich with fields the API doesn't return/accept yet
       const newOutlet: Outlet = {
@@ -293,6 +298,7 @@ const theme = useTheme();  const styles = createStyles(theme);
           campaignId: activeCampaignId,
         };
         const outletDraft: OutletDraft = {
+          ...stamp,
           id: draftId,
           mode: 'create',
           campaignId: activeCampaignId,

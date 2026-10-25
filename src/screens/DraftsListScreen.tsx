@@ -7,8 +7,8 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { createLead, getOutlets } from '../services/api';
-import { pushAllDrafts, summariseSyncErrors } from '../utils/offlineSync';
+import { getOutlets } from '../services/api';
+import { pushAllDrafts, pushLeadDrafts, summariseSyncErrors } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
 import { discardSurveyPhoto } from '../utils/surveyPhotos';
 import { RouteName, LeadDraft, OutletSurvey } from '../types';
@@ -92,19 +92,10 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
   const retryLeadDraft = async (draft: LeadDraft) => {
     setRetryingLeadId(draft.id);
     try {
-      await createLead(draft.campaignId, {
-        name: draft.name,
-        company: draft.company,
-        phone: draft.phone,
-        email: draft.email,
-        address: draft.address,
-        source: draft.source,
-        notes: draft.notes,
-      });
-      dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id });
-      Alert.alert('Synced', `Lead "${draft.name}" uploaded successfully.`);
-    } catch (e: any) {
-      Alert.alert('Retry Failed', e?.message || 'Could not sync this lead. Will try again later.');
+      // The same send as a full sync: with the draft's one-time ID.
+      const result = await pushLeadDrafts([draft], dispatch);
+      if (result.synced > 0) Alert.alert('Synced', `Lead "${draft.name}" uploaded successfully.`);
+      else Alert.alert('Retry Failed', summariseSyncErrors(result.errors) || 'Could not sync this lead. Will try again later.');
     } finally {
       setRetryingLeadId(null);
     }

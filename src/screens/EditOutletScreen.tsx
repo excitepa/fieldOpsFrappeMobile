@@ -30,7 +30,8 @@ import { blockIfDayLocked } from '../utils/dayLock';
 import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
 import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, getStampLocation, keepPhotoForDraft } from '../utils/photoStamp';
-import { RouteName, Outlet, OutletDraft, SurveyDue } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Outlet, OutletDraft, SurveyDue, ActionStamp } from '../types';
 
 interface EditOutletScreenProps {
   routeData?: { outletId?: string };
@@ -99,6 +100,9 @@ const theme = useTheme();  const styles = createStyles(theme);
   // apart from `coords`, so taking a photo never moves the outlet's saved location.
   const [photoLocation, setPhotoLocation] = useState<Awaited<ReturnType<typeof getStampLocation>>>(null);
   const photoViewRef = useRef<View>(null);
+  // This edit's one-time ID, from the first Save: a second Save after one
+  // that got no answer is the same edit to the server.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const handleTakePhoto = async () => {
     try {
@@ -192,6 +196,7 @@ const theme = useTheme();  const styles = createStyles(theme);
     };
 
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
     // The watermarked snapshot, not the raw camera file, is what gets uploaded
     // (or kept for an offline draft) — same as the attendance selfie.
     const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
@@ -215,7 +220,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         longitude: newLocation?.lng,
         gpsAccuracy: newLocation ? coordsAccuracy : undefined,
         campaign: campaignId || undefined,
-      });
+      }, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
 
       const updatedOutlet: Outlet = {
         ...outlet,
@@ -292,7 +297,8 @@ const theme = useTheme();  const styles = createStyles(theme);
           surveyDue: afterEdit ? { surveyId: afterEdit.id, surveyName: afterEdit.name, since: new Date().toISOString() } : outlet.surveyDue,
         };
         const outletDraft: OutletDraft = {
-          id: `od_${Date.now()}`,
+          ...stamp,
+          id: `oe_${Date.now()}`,
           mode: 'edit',
           outletId: outlet.id,
           // update_outlet's campaign at sync: its after-edit survey becomes due.

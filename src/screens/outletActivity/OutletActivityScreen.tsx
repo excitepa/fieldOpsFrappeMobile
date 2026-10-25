@@ -13,10 +13,12 @@ import { blockIfDayLocked } from '../../utils/dayLock';
 import { parseGps } from '../../utils/geo';
 import { checkSaleLocation } from '../../utils/geofence';
 import { freshFix } from '../../utils/locationFix';
-import { RouteName, CartLine, Draft, OutletSale, OutletOrder, SaleLocation } from '../../types';
+import { RouteName, CartLine, Draft, OutletSale, OutletOrder, SaleLocation, ActionStamp } from '../../types';
 import { getStockShortfalls, lineFactor, lineStockQty, StockShortfall } from '../../utils/cart';
 import { describeShortfalls } from '../../utils/stock';
 import { previewFreeGoods } from '../../utils/promotions';
+import { newClientRef } from '../../utils/queue';
+import { localDateTimeStr } from '../../utils/timestamp';
 import { mslFirst, missingMslProducts } from '../../utils/msl';
 import { useCart } from './useCart';
 import { OrderWorkspace } from './OrderWorkspace';
@@ -169,7 +171,24 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     );
   }
 
-  const buildDraft = (mode: 'sale' | 'order', cart: CartLine[], saleLocation?: SaleLocation): Draft => ({
+  // What a sale or order is sent with (see ActionStamp): a resumed draft's
+  // one-time ID, so the server knows it if an earlier send of it got through,
+  // else a new one. A sale turned into an order gets a new one: they're the
+  // same kind of record on the server, so the sale's ID would bring the sale back.
+  const stampFor = (mode: 'sale' | 'order'): ActionStamp => {
+    const resumed = resumeDraft && resumeDraft.mode === mode ? resumeDraft : undefined;
+    return {
+      clientRef: resumed?.clientRef || newClientRef(),
+      happenedAt: localDateTimeStr(),
+      agentEmail: resumed?.agentEmail || state.user.email?.trim().toLowerCase() || undefined,
+    };
+  };
+
+  // `ready`: submitted with no connection, so it goes up on its own once
+  // there's one; a cart saved to finish later doesn't.
+  const buildDraft = (mode: 'sale' | 'order', cart: CartLine[], saleLocation?: SaleLocation, stamp: ActionStamp = stampFor(mode), ready = false): Draft => ({
+    ...stamp,
+    ready,
     id: routeData?.resumeDraftId && category === mode ? routeData.resumeDraftId : `draft-${mode}-${outlet.id}-${Date.now()}`,
     mode,
     outletId: outlet.id,
@@ -337,6 +356,10 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
     const nowStr = new Date().toLocaleString('en-US', {
       month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
     });
+    // Taken before the first request and kept on the draft if it fails, so a
+    // sale the server saved before the answer was lost isn't saved twice.
+    const stamp = stampFor(mode);
+    const meta = { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt };
 
     // Each line goes in its own unit; a line from a draft saved before units has
     // no uom, which the server reads as the stock unit.
@@ -356,11 +379,11 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
       if (mode === 'sale') {
         // With where it was recorded (taken before submitting, see
         // handleSubmit): the server checks it again and flags it.
-        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, location, promoCode);
+        const result = await submitFieldSale(outlet.id, activeCampaign?.id || '', lines, activeCart.total, location, promoCode, meta);
         ref = result.ref || generateInvoiceRef();
         savedLines = result.items;
       } else {
-        const result = await submitSalesOrder(outlet.id, activeCampaign?.id || '', lines, promoCode);
+        const result = await submitSalesOrder(outlet.id, activeCampaign?.id || '', lines, promoCode, meta);
         ref = result.ref || generateOrderRef();
         savedLines = result.items;
       }
@@ -371,7 +394,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         // a real draft (same record a manual "Save Draft" would create) instead
         // of just losing it, so it can be pushed for real from the Sync page
         // once back online.
-        dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart, location) });
+        dispatch({ type: 'SAVE_DRAFT', draft: buildDraft(mode, activeCart.cart, location, stamp, true) });
         const warning = draftStockWarning(mode, activeCart.cart);
         Alert.alert(
           'Saved Locally',

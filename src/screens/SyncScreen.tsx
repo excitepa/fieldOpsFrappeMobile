@@ -6,7 +6,7 @@ import { Header } from '../components/Header';
 import { Icon, IconName } from '../components/Icon';
 import { Card } from '../components/Card';
 import { useFieldStore } from '../store/useFieldStore';
-import { createLead, getOutlets, getItems, getMyOrders, getMySales } from '../services/api';
+import { getOutlets, getItems, getMyOrders, getMySales } from '../services/api';
 import {
   pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos, pushAllDrafts,
   pullServerData as pullServerDataShared, summariseSyncErrors,
@@ -179,19 +179,10 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     if (!online) return;
     setRetryingLeadId(draft.id);
     try {
-      await createLead(draft.campaignId, {
-        name: draft.name,
-        company: draft.company,
-        phone: draft.phone,
-        email: draft.email,
-        address: draft.address,
-        source: draft.source,
-        notes: draft.notes,
-      });
-      dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id });
-      Alert.alert('Synced', `Lead "${draft.name}" uploaded successfully.`);
-    } catch (e: any) {
-      Alert.alert('Retry Failed', e?.message || 'Could not sync this lead. Will try again later.');
+      // The same send as a full sync: with the draft's one-time ID.
+      const result = await pushLeadDrafts([draft], dispatch);
+      if (result.synced > 0) Alert.alert('Synced', `Lead "${draft.name}" uploaded successfully.`);
+      else Alert.alert('Retry Failed', summariseSyncErrors(result.errors) || 'Could not sync this lead. Will try again later.');
     } finally {
       setRetryingLeadId(null);
     }

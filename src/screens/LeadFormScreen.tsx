@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -12,7 +12,8 @@ import { blockIfDayLocked } from '../utils/dayLock';
 import { localDateStr } from '../utils/timestamp';
 import { normalizePhone, phoneError } from '../utils/phone';
 import { firstStage, stageScore } from '../utils/leadStages';
-import { RouteName, Lead, LeadDraft } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Lead, LeadDraft, ActionStamp } from '../types';
 
 interface LeadFormScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -38,6 +39,9 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [pipeline, setPipeline] = useState(PIPELINE_OPTIONS[0]);
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
+  // This lead's one-time ID and when it was captured, from the first Save: a
+  // second Save after one that got no answer is the same lead to the server.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
@@ -50,6 +54,9 @@ const theme = useTheme();  const styles = createStyles(theme);
     if (nextPhoneProblem) return;
     const leadPhone = normalizePhone(phone);
     setLoading(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
+    // An offline lead goes by its draft's id until it reaches the server.
+    const draftId = `ld_${Date.now()}`;
 
     let newLead: Lead;
     try {
@@ -63,7 +70,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         source,
         notes: notes || undefined,
         value: numericValue > 0 ? numericValue : undefined,
-      });
+      }, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
       // Enrich with fields the API doesn't return yet
       newLead = {
         ...newLead,
@@ -84,7 +91,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       // Genuine connectivity failure — build a local optimistic lead so the UI doesn't go blank
       const numericValue = parseFloat(leadValue) || 0;
       newLead = {
-        id: `l_${Date.now()}`,
+        id: draftId,
         name,
         phone: leadPhone,
         email: email || undefined,
@@ -104,7 +111,8 @@ const theme = useTheme();  const styles = createStyles(theme);
 
       // Persist to offline sync queue
       const leadDraft: LeadDraft = {
-        id: `ld_${Date.now()}`,
+        ...stamp,
+        id: draftId,
         campaignId,
         name,
         company: outlet,
