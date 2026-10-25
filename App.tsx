@@ -183,7 +183,8 @@ function AppInner() {
   const [route, setRoute] = useState<RouteName>('home');
 
   const [routeData, setRouteData] = useState<any>(null);
-  const [leadsList, setLeadsList] = useState<Lead[]>([]);
+  // The agent's leads are saved with the rest of their data (offline too).
+  const leadsList = state.leads;
   const [splashDone, setSplashDone] = useState(false);
 
   // Screen-history stack so the device's hardware/gesture back button steps
@@ -331,11 +332,11 @@ function AppInner() {
   }, [splashDone, state.hydrated]);
 
   const handleAddLead = (newLead: Lead) => {
-    setLeadsList((prev) => [newLead, ...prev]);
+    dispatch({ type: 'ADD_LEAD', lead: newLead });
   };
 
   const handleUpdateLead = (updated: Lead) => {
-    setLeadsList((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
+    dispatch({ type: 'UPDATE_LEAD', lead: updated });
   };
 
   const handleClockInComplete = (selectedCampaign: Campaign) => {

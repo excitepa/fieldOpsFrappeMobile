@@ -46,29 +46,19 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // App.tsx's `leadsList` prop is only ever appended to locally right after a lead
-  // is created in THIS session — it's never persisted or re-fetched, so it reads
-  // empty on a fresh app launch even though real leads exist on the server. This
-  // fetches the real list directly (same as Pipeline's own leads fetch) so "Leads
-  // created today" reflects what actually happened today, not just this session.
-  const [liveLeads, setLiveLeads] = useState<Lead[]>(leadsList);
+  // The agent's leads, saved on the phone and brought up to date here, so
+  // "Leads created today" counts today's whichever device they were made on.
+  const liveLeads = state.leads;
   const fetchLeads = useCallback(async () => {
     if (!state.activeCampaign?.id) return;
     try {
-      const fetched = await getLeads(state.activeCampaign.id);
-      setLiveLeads(fetched);
+      dispatch({ type: 'SET_LEADS', leads: await getLeads(state.activeCampaign.id) });
     } catch {
       // Non-fatal: keep showing whatever's already there rather than blocking EOD.
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.activeCampaign?.id]);
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
-  useEffect(() => {
-    setLiveLeads((prev) => {
-      const mergeMap = new Map(prev.map((l) => [l.id, l]));
-      leadsList.forEach((l) => { if (!mergeMap.has(l.id)) mergeMap.set(l.id, l); });
-      return Array.from(mergeMap.values());
-    });
-  }, [leadsList]);
 
   const todayIso = localDateStr();
   // Real, server-derived visited-today set — see outletVisits.ts.

@@ -32,7 +32,8 @@ export const OrdersListScreen: React.FC<OrdersListScreenProps> = ({ onNavigate }
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState('');
-  const [stockRequests, setStockRequests] = useState<StockRequestSummary[]>([]);
+  // Saved with the rest of the agent's data, so they're there offline.
+  const stockRequests: StockRequestSummary[] = state.stockRequests;
 
   const fetchAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -44,7 +45,7 @@ export const OrdersListScreen: React.FC<OrdersListScreenProps> = ({ onNavigate }
       const [orders, sales, requests] = await Promise.all([getMyOrders(), getMySales(), getMyStockRequests()]);
       dispatch({ type: 'SET_ORDERS', orders });
       dispatch({ type: 'SET_SALES', sales });
-      setStockRequests(requests);
+      dispatch({ type: 'SET_STOCK_REQUESTS', requests });
     } catch (e: any) {
       if (!silent) setFetchError(e?.message || 'Could not load your activity.');
     } finally {

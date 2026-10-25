@@ -44,9 +44,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
   const [showSwitchModal, setShowSwitchModal] = useState(false);
   const [pendingCampaign, setPendingCampaign] = useState<Campaign | null>(null);
 
-  // The switcher lists the agent's real assigned campaigns — starts with just the
-  // current one so the modal is never empty, then fills in from the backend.
-  const [campaignsList, setCampaignsList] = useState<Campaign[]>([currentCampaign]);
+  // The switcher lists the agent's real assigned campaigns, saved on the phone
+  // (offline too) — just the current one until they've loaded once.
+  const campaignsList: Campaign[] = state.campaigns.length > 0 ? state.campaigns : [currentCampaign];
   // Shows the last real fetch immediately (this call is slow, 2s+) while a
   // fresh one quietly refines it below — same idea as useCurrentLocation's
   // last-known-fix. Cache is agent-scoped (RESET_AGENT_SESSION wipes it), so
@@ -67,7 +67,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
     (async () => {
       try {
         const data = await getCampaigns();
-        if (!cancelled && data.length > 0) setCampaignsList(data);
+        if (!cancelled && data.length > 0) dispatch({ type: 'SET_CAMPAIGNS', campaigns: data });
       } catch (e) {
         // Non-fatal — the switcher just keeps showing the current campaign only.
       }

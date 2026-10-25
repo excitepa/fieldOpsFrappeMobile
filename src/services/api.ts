@@ -1349,7 +1349,8 @@ const flattenInventoryResponse = (raw: any[], baseUrl: string): Product[] => {
 /** Fetch the product catalog via the RPC contract (`get_items`). Throws when it can't be loaded, so the copy on the phone is kept. */
 export const getItems = async (): Promise<Product[]> => {
   const [data, tenantId] = await Promise.all([
-    authFetch('/api/method/fieldops.api.mobile_api.get_items'),
+    // The backend's page is 100 items: a bigger catalog was cut off, offline included.
+    authFetch('/api/method/fieldops.api.mobile_api.get_items?limit_page_length=1000'),
     getTenantId(),
   ]);
   const raw = data?.message ?? data?.data ?? data;

@@ -36,9 +36,11 @@ const theme = useTheme();  const styles = createStyles(theme);
   // get_agent_beats only feeds DayRouteNav's routeName label for the selected date —
   // it deliberately does NOT filter outlets by outletIds/leadIds (that caused every
   // real outlet to vanish behind the date picker when this ran on mock ids earlier).
-  const [routeAssignments, setRouteAssignments] = useState<RouteAssignment[]>([]);
+  // Saved with the rest of the agent's data (the day's download fetches it), and refreshed here.
+  const routeAssignments: RouteAssignment[] = state.routeAssignments;
   useEffect(() => {
-    getAgentBeats().then(setRouteAssignments).catch(() => {});
+    getAgentBeats().then((assignments) => dispatch({ type: 'SET_ROUTE_ASSIGNMENTS', assignments })).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // "Visited today" is now derived from real sales/orders (see outletVisits.ts),

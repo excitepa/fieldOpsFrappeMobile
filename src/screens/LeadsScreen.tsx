@@ -37,7 +37,7 @@ const FILTERS: { id: FilterId; label: string }[] = [
 export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList = [] }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { state } = useFieldStore();
+  const { state, dispatch } = useFieldStore();
   const activeCampaign = state.activeCampaign;
   // Loads the backend's stage list for the lead screens.
   useLeadStages();
@@ -46,8 +46,9 @@ export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterId>('all');
 
-  // Live data from backend — initialise from the prop (mock or parent state)
-  const [liveLeads, setLiveLeads] = useState<Lead[]>(leadsList);
+  // Saved with the rest of the agent's data, so they're there offline; brought
+  // up to date when this opens. A failed refresh leaves them as they are.
+  const liveLeads = state.leads;
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState('');
@@ -62,7 +63,7 @@ export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList 
       // empty list — never leaves a previous (possibly stale, possibly
       // another agent's) lead list sitting there looking current. The merge
       // effect below still re-adds any lead created locally this session.
-      setLiveLeads(fetched);
+      dispatch({ type: 'SET_LEADS', leads: fetched });
       if (fetched.length === 0 && !silent) setFetchError('No leads are currently assigned to you.');
     } catch (e: any) {
       if (!silent) setFetchError(e?.message || 'Could not load leads.');
@@ -81,21 +82,14 @@ export const LeadsScreen: React.FC<LeadsScreenProps> = ({ onNavigate, leadsList 
     fetchLeads(true);
   };
 
-  // Keep in sync when the parent adds/updates a lead locally
-  useEffect(() => {
-    setLiveLeads((prev) => {
-      const mergeMap = new Map(prev.map((l) => [l.id, l]));
-      leadsList.forEach((l) => { if (!mergeMap.has(l.id)) mergeMap.set(l.id, l); });
-      return Array.from(mergeMap.values());
-    });
-  }, [leadsList]);
-
   // get_agent_beats only feeds DayRouteNav's routeName label for the selected date —
   // it deliberately does NOT filter leads by outletIds/leadIds (that caused every real
   // lead to vanish behind the date picker when this ran on mock ids earlier).
-  const [routeAssignments, setRouteAssignments] = useState<RouteAssignment[]>([]);
+  // Saved too (the day's download fetches it), and refreshed here.
+  const routeAssignments: RouteAssignment[] = state.routeAssignments;
   useEffect(() => {
-    getAgentBeats().then(setRouteAssignments).catch(() => {});
+    getAgentBeats().then((assignments) => dispatch({ type: 'SET_ROUTE_ASSIGNMENTS', assignments })).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const query = search.trim().toLowerCase();

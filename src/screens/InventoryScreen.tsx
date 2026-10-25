@@ -7,11 +7,12 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getItems, getMyInventory, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
+import { getItems, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
 import { mslFirst } from '../utils/msl';
 import { getSellingUnits, getStockUnit } from '../utils/cart';
 import { formatQty, formatUnitQty, unitWord } from '../utils/units';
-import { formatStockBreakdown } from '../utils/stock';
+import { formatStockBreakdown, withUnsentSales } from '../utils/stock';
+import { formatLastUpdated } from '../utils/dayPack';
 import { formatServerDateTime } from '../utils/timestamp';
 import { buildBasketLine, toStockRequestLine } from '../utils/stockRequest';
 import { blockIfDayLocked } from '../utils/dayLock';
@@ -31,7 +32,12 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
-  const products = state.products;
+  // Read by the refreshes below without making them change on every update.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // The stock the agent can still sell: as last downloaded, less what their
+  // unsent sales take.
+  const products = withUnsentSales(state.products, state.drafts);
 
   const [mainTab, setMainTab] = useState<MainTab>('request');
   const [searchQuery, setSearchQuery] = useState('');
@@ -45,10 +51,10 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   const requestStampRef = useRef<ActionStamp | null>(null);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
-  const [stockRequests, setStockRequests] = useState<StockRequestSummary[]>([]);
+  // Saved with the rest of the agent's data, so they show offline too.
+  const stockRequests: StockRequestSummary[] = state.stockRequests;
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [requestsError, setRequestsError] = useState('');
-  const [myInventory, setMyInventory] = useState<Product[]>([]);
   const [loadingMyStock, setLoadingMyStock] = useState(false);
   const [myStockError, setMyStockError] = useState('');
 
@@ -57,15 +63,13 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     setInventoryError('');
     try {
       // get_items is the full catalog (including zero-stock items), which is what
-      // Request Stock needs on purpose — you request what you don't have. It does
-      // NOT reflect approved stock request transfers though (confirmed live: after
-      // two stock requests for ITC002 were approved, get_items still showed 0 for
-      // it) — that's what get_my_inventory (fetched separately below) is for.
+      // Request Stock needs on purpose — you request what you don't have — with
+      // the agent's warehouse stock (the figure get_my_inventory shows).
       const fetched = await getItems();
-      // Always reflects exactly what the server just said — including a real
-      // empty result — never leaves a previous (possibly stale, possibly
-      // another agent's) list sitting there looking current.
+      // get_items answers an empty list when it fails: never put in place of products the phone has.
+      if (fetched.length === 0 && stateRef.current.products.length > 0) throw new Error('No products came back.');
       dispatch({ type: 'SET_PRODUCTS', products: fetched });
+      dispatch({ type: 'SET_DAY_PACK', status: { parts: { products: new Date().toISOString() } } });
       if (fetched.length === 0) {
         setInventoryError('No products are currently allocated to your account.');
       }
@@ -76,38 +80,36 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     }
   }, [dispatch]);
 
+  // My Stock shows the stock saved on the phone straight away and brings it up
+  // to date in the background. A refresh that fails leaves the list as it
+  // is: a timeout used to leave the tab empty.
   const fetchMyInventory = useCallback(async () => {
     setLoadingMyStock(true);
     setMyStockError('');
     try {
-      // get_my_inventory is what actually reflects an approved stock request transfer
-      // (confirmed live: after two ITC002 requests were approved, this correctly
-      // returned quantity 2 for it, while get_items stayed at 0) — so "My Stock",
-      // meaning what the agent is holding right now, has to read from here and not
-      // from the shared get_items-backed product catalog used by Request Stock.
-      const fetched = await getMyInventory();
-      // No stock isn't a load failure: the list's own empty message says so,
-      // and the red row is kept for a load that failed.
-      setMyInventory(fetched);
-    } catch (e: any) {
-      setMyStockError(e?.message || 'Could not load your stock.');
+      const fetched = await getItems();
+      if (fetched.length === 0 && stateRef.current.products.length > 0) throw new Error('No products came back.');
+      dispatch({ type: 'SET_PRODUCTS', products: fetched });
+      dispatch({ type: 'SET_DAY_PACK', status: { parts: { products: new Date().toISOString() } } });
+    } catch {
+      setMyStockError(`Couldn't update just now. Showing your stock as of ${formatLastUpdated(stateRef.current.dayPack.parts.products)}.`);
     } finally {
       setLoadingMyStock(false);
     }
-  }, []);
+  }, [dispatch]);
 
   const fetchStockRequests = useCallback(async () => {
     setLoadingRequests(true);
     setRequestsError('');
     try {
       const fetched = await getMyStockRequests();
-      setStockRequests(fetched);
+      dispatch({ type: 'SET_STOCK_REQUESTS', requests: fetched });
     } catch (e: any) {
       setRequestsError(e?.message || 'Could not load your stock requests.');
     } finally {
       setLoadingRequests(false);
     }
-  }, []);
+  }, [dispatch]);
 
   useEffect(() => { fetchInventory(); }, [fetchInventory]);
   useEffect(() => {
@@ -197,11 +199,8 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     Alert.alert('Request Submitted', 'Your stock request has been sent for approval.');
   };
 
-  // "My Stock" means what the agent is actually holding right now — sourced from
-  // get_my_inventory (see fetchMyInventory above), not the get_items-backed
-  // `products` catalog Request Stock uses, since only get_my_inventory reflects
-  // an approved stock request transfer.
-  const myStockProducts = myInventory.filter((p) => p.stock > 0);
+  // "My Stock": what the agent is holding right now, less what unsent sales take.
+  const myStockProducts = products.filter((p) => p.stock > 0);
   // The server marks low stock per item ("Low Stock"); a minimum, if one is sent, counts too.
   const lowStockItems = myStockProducts.filter((p) => p.stockStatus === 'Low Stock' || (p.minStock !== undefined && p.stock < p.minStock));
 
@@ -235,7 +234,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
       {(mainTab === 'stock' ? loadingMyStock : loadingInventory) && (
         <View style={styles.loadingRow}>
           <ActivityIndicator size="small" color={theme.colors.navy} />
-          <Text style={styles.loadingText}>{mainTab === 'stock' ? 'Loading your stock…' : 'Loading your inventory…'}</Text>
+          <Text style={styles.loadingText}>{mainTab === 'stock' ? 'Updating your stock…' : 'Loading your inventory…'}</Text>
         </View>
       )}
       {mainTab === 'stock'

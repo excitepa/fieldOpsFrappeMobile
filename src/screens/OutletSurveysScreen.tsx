@@ -27,9 +27,11 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
   const outlet = state.outlets.find((o) => o.id === outletId);
   const activeCampaign = state.activeCampaign;
 
-  const [surveyConfigs, setSurveyConfigs] = useState<CampaignSurveyConfig[]>([]);
-  const [submittedResponses, setSubmittedResponses] = useState<MySurveyResponseSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  // What's saved on the phone shows straight away; the server's copy replaces it when it loads.
+  const [surveyConfigs, setSurveyConfigs] = useState<CampaignSurveyConfig[]>(state.campaignSurveys[activeCampaign?.id || ''] || []);
+  // Which surveys are done where: saved (the day's download fetches it), refreshed here.
+  const submittedResponses: MySurveyResponseSummary[] = state.surveyResponses.filter((r) => r.status === 'Submitted');
+  const [loading, setLoading] = useState(!state.campaignSurveys[activeCampaign?.id || '']);
   const [error, setError] = useState('');
 
   const submittedLocally = outletId ? getSurveysForOutlet(outletId) : [];
@@ -40,7 +42,8 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
       setLoading(false);
       return;
     }
-    setLoading(true);
+    // The saved surveys stay on screen while they're refreshed.
+    setLoading(!keptSurveys.current[activeCampaign.id]);
     setError('');
     try {
       const [surveys, mySurveys] = await Promise.all([
@@ -48,7 +51,7 @@ export const OutletSurveysScreen: React.FC<OutletSurveysScreenProps> = ({ onNavi
         getMySurveys(activeCampaign.id),
       ]);
       setSurveyConfigs(surveys);
-      setSubmittedResponses(mySurveys.filter((r) => r.status === 'Submitted'));
+      dispatch({ type: 'SET_SURVEY_RESPONSES', responses: mySurveys });
     } catch (e: any) {
       // Offline: the surveys kept on the device still open (what was
       // submitted on other devices isn't known until it's back online).

@@ -23,10 +23,11 @@ interface PipelineOverviewScreenProps {
 export const PipelineOverviewScreen: React.FC<PipelineOverviewScreenProps> = ({ onNavigate, leadsList = [] }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { state } = useFieldStore();
+  const { state, dispatch } = useFieldStore();
   const activeCampaign = state.activeCampaign;
 
-  const [liveLeads, setLiveLeads] = useState<Lead[]>(leadsList);
+  // Saved with the rest of the agent's data (offline too), refreshed here.
+  const liveLeads = state.leads;
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -38,7 +39,7 @@ export const PipelineOverviewScreen: React.FC<PipelineOverviewScreenProps> = ({ 
       // Always reflects exactly what the server just said, including a real
       // empty list — never leaves a previous (possibly stale, possibly
       // another agent's) lead list sitting there looking current.
-      setLiveLeads(fetched);
+      dispatch({ type: 'SET_LEADS', leads: fetched });
     } catch {
       // Non-fatal: keep showing existing data
     } finally {
@@ -48,15 +49,6 @@ export const PipelineOverviewScreen: React.FC<PipelineOverviewScreenProps> = ({ 
   }, [activeCampaign?.id]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
-
-  // Keep in sync when parent adds a lead
-  useEffect(() => {
-    setLiveLeads((prev) => {
-      const mergeMap = new Map(prev.map((l) => [l.id, l]));
-      leadsList.forEach((l) => { if (!mergeMap.has(l.id)) mergeMap.set(l.id, l); });
-      return Array.from(mergeMap.values());
-    });
-  }, [leadsList]);
 
   const leadStages = useLeadStages();
   const weightedValue = getWeightedPipelineValue(liveLeads);
