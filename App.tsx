@@ -160,7 +160,8 @@ export default function App() {
 function AppInner() {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const statusBarStyle = theme.mode === 'dark' ? 'light' : 'dark';
+  // Light-only app: dark status-bar text on the light background.
+  const statusBarStyle = 'dark';
 
   // Active campaign lives in the shared store so every screen (Dashboard,
   // Attendance, Outlet Activity's module gating) reads the same value instead

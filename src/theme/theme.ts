@@ -1,13 +1,9 @@
 import { Platform, StatusBar } from 'react-native';
 
-export type ThemeMode = 'light' | 'dark';
-
-// Note: several keys below keep their historical "dark*"/"light-ish" names
-// (darkBg, darkText, cardWhite, textDark, ...) even though their values now
-// flip with the active mode — the whole app was originally built dark-only
-// and every screen already reads these exact keys, so remapping the values
-// per mode (instead of renaming ~650 call sites) is what makes theme
-// switching safe to do in one pass.
+// The app is light-only — dark mode was removed. Several keys below keep their
+// historical "dark*"/"light-ish" names (darkBg, darkText, cardWhite, textDark,
+// ...) because the app was originally built dark-only and every screen still
+// reads these exact keys; their values are the light palette.
 export interface ThemeColors {
   darkBg: string; darkSurface: string; darkCard: string; darkBorder: string;
   darkText: string; darkMuted: string; darkInputBg: string;
@@ -60,63 +56,6 @@ const NAVY_PRESSED = '#122346';
 const ACCENT_ORANGE = '#F5A623';
 const ACCENT_ORANGE_DARK = '#D6890A';
 const ACCENT_ORANGE_PRESSED = '#C27A08';
-
-export const darkColors: ThemeColors = {
-  darkBg:       '#0C0D16',
-  darkSurface:  '#131422',
-  darkCard:     '#171828',
-  darkBorder:   '#25273C',
-  darkText:     '#F3F4F6',
-  darkMuted:    '#8B95A5',
-  darkInputBg:  '#12131F',
-
-  primary:      BRAND_PRIMARY,
-  primaryLight: BRAND_PRIMARY_ACCENT,
-  primaryDark:  BRAND_PRIMARY_DARK,
-  primaryBg:    '#0D2A4D',
-  primaryText:  '#B8D9FF',
-
-  limePrimary:     '#84CC16',
-  limePrimaryDark: '#65A30D',
-  limeText:        '#0E1008',
-  limeBg:          '#1D2A12',
-
-  appBg:       '#0C0D16',
-  cardWhite:   '#171828',
-  cardBorder:  '#25273C',
-  textDark:    '#F3F4F6',
-  textMuted:   '#8B95A5',
-  textLight:   '#6B7280',
-
-  tintBeige:       '#241E15',  tintBeigeIcon:  '#D97706',
-  tintMint:        '#064E3B',  tintMintIcon:   '#34D399',
-  tintPeach:       '#3A1C1A',  tintPeachIcon:  '#F87171',
-  tintBlue:        '#1E293B',  tintBlueIcon:   '#60A5FA',
-  tintPurple:      '#1E2A5E',  tintPurpleIcon: '#93A5F0',
-  tintGray:        '#1F2937',  tintGrayIcon:   '#9CA3AF',
-  tintGold:        '#35260A',  tintGoldIcon:   '#FBBF24',
-  tintTeal:        '#134E4A',  tintTealIcon:   '#2DD4BF',
-
-  visitedBg:     '#064E3B',  visitedText:   '#34D399',
-  skippedBg:     '#451A03',  skippedText:   '#F59E0B',
-  pendingBg:     '#1F2937',  pendingText:   '#9CA3AF',
-
-  teal:        '#10B981',
-  tealLight:   '#064E3B',
-  emerald:     '#10B981',
-  emeraldLight:'#064E3B',
-  amber:       '#F59E0B',
-  amberLight:  '#451A03',
-  red:         '#EF4444',
-  redLight:    '#451212',
-
-  campaignCardBg:     '#171828',
-  campaignCardBorder: '#25273C',
-
-  navy: NAVY, navyDark: NAVY_DARK, navyPressed: NAVY_PRESSED,
-  accent: ACCENT_ORANGE, accentDark: ACCENT_ORANGE_DARK, accentPressed: ACCENT_ORANGE_PRESSED,
-  fieldFill: '#12131F', fieldBorder: '#25273C',
-};
 
 export const lightColors: ThemeColors = {
   darkBg:       '#F7F8FC',
@@ -226,7 +165,6 @@ export const shadows = {
 };
 
 export interface Theme {
-  mode: ThemeMode;
   colors: ThemeColors;
   fonts: typeof fonts;
   spacing: typeof spacing;
@@ -235,17 +173,11 @@ export interface Theme {
   safeTopPadding: number;
 }
 
-export function buildTheme(mode: ThemeMode): Theme {
-  return {
-    mode,
-    colors: mode === 'dark' ? darkColors : lightColors,
-    fonts,
-    spacing,
-    radius,
-    shadows,
-    safeTopPadding,
-  };
-}
-
-// Static default (dark) kept only for the brief pre-ThemeProvider render in App.tsx.
-export const theme: Theme = buildTheme('dark');
+export const theme: Theme = {
+  colors: lightColors,
+  fonts,
+  spacing,
+  radius,
+  shadows,
+  safeTopPadding,
+};

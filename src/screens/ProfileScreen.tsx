@@ -84,18 +84,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onNavigate, onLogo
           </View>
         </View>
 
-        {/* ── Theme ────────────────────────────────────────────────────── */}
-        <Pressable onPress={theme.toggleMode} style={styles.menuCard}>
-          <View style={styles.menuIconBox}>
-            <Icon name={theme.mode === 'dark' ? 'moon' : 'sun'} size={18} color={theme.colors.primary} />
-          </View>
-          <View style={styles.flex1}>
-            <Text style={styles.menuText}>Theme</Text>
-            <Text style={styles.menuSubText}>{theme.mode === 'dark' ? 'Dark' : 'Light'}</Text>
-          </View>
-          <Icon name="chevron-right" size={18} color={theme.colors.textMuted} />
-        </Pressable>
-
         {/* ── Profile ──────────────────────────────────────────────────── */}
         <Pressable onPress={() => onNavigate('profileDetail')} style={styles.menuCard}>
           <View style={styles.menuIconBox}>
