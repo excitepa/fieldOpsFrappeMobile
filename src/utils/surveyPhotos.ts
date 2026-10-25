@@ -45,8 +45,12 @@ export const surveyPhotoExists = (uri?: string | null): boolean => {
   }
 };
 
-/** Deletes a kept survey photo once it's no longer needed (accepted with its survey, retaken or removed). */
-export const discardSurveyPhoto = (uri?: string | null) => {
+/**
+ * Deletes a photo kept on the phone for something not yet sent once it's no
+ * longer needed: a survey's (accepted with its survey, retaken or removed),
+ * or an outlet draft's (kept by keepPhotoForDraft, sent with the outlet).
+ */
+export const discardKeptPhoto = (uri?: string | null) => {
   if (!surveyPhotoExists(uri)) return;
   try {
     new File(uri as string).delete();
@@ -54,6 +58,8 @@ export const discardSurveyPhoto = (uri?: string | null) => {
     debugLog('[surveyPhotos] could not delete photo', uri, e);
   }
 };
+
+export const discardSurveyPhoto = discardKeptPhoto;
 
 /**
  * A survey's photos, sent with it in one request (question id -> the kept

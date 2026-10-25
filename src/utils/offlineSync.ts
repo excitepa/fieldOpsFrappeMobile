@@ -4,9 +4,9 @@ import {
   OrderLinePayload, AuthError, NetworkError, ActionMeta,
 } from '../services/api';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto, ActionStamp } from '../types';
-import { discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
+import { discardKeptPhoto, discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
 import { isAnswered, surveyRejectionMessage } from './surveyAnswers';
-import { newClientRef } from './queue';
+import { isOfflineLeadId, isOfflineOutletId, newClientRef, oldestFirst } from './queue';
 import { debugLog } from './logger';
 
 /**
@@ -67,6 +67,9 @@ const noteFailure = (errors: string[], label: string, e: any) => {
   errors.push(`${label}: ${reason}`);
 };
 
+/** A refusal: the server answered and said no (anything but a lost connection or an expired login). */
+const isRefusal = (e: any) => !(e instanceof NetworkError) && !(e instanceof AuthError);
+
 /** Collapses repeated reasons so the alert stays readable. */
 export const summariseSyncErrors = (errors: string[], limit = 3): string => {
   const seen = new Map<string, number>();
@@ -88,14 +91,16 @@ export const summariseSyncErrors = (errors: string[], limit = 3): string => {
 export async function pushLeadDrafts(
   drafts: LeadDraft[],
   dispatch: (action: any) => void
-): Promise<SyncResult> {
+): Promise<SyncResult & { ids: Record<string, string> }> {
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const queued of drafts) {
+  // A lead added offline goes by its draft's id until it's on the server.
+  const ids: Record<string, string> = {};
+  for (const queued of oldestFirst(drafts)) {
     const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_LEAD_DRAFT', leadDraft: d }));
     try {
-      await createLead(draft.campaignId, {
+      const lead = await createLead(draft.campaignId, {
         name: draft.name,
         company: draft.company,
         phone: draft.phone,
@@ -105,14 +110,21 @@ export async function pushLeadDrafts(
         notes: draft.notes,
         value: draft.leadValue ? parseFloat(draft.leadValue) || undefined : undefined,
       }, queuedMeta(draft));
+      // Its id on the server replaces the draft's on the phone, so a stage
+      // change made offline goes to the right lead.
+      if (lead.id) {
+        ids[draft.id] = lead.id;
+        dispatch({ type: 'REMAP_LEAD_ID', from: draft.id, to: lead.id });
+      }
       dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id });
       synced++;
-    } catch (e) {
+    } catch (e: any) {
       noteFailure(errors, `Lead "${draft.name}"`, e);
       failed++;
+      if (isRefusal(e)) dispatch({ type: 'SAVE_LEAD_DRAFT', leadDraft: { ...draft, syncError: e?.message || 'The server refused it.' } });
     }
   }
-  return { synced, failed, errors };
+  return { synced, failed, errors, ids };
 }
 
 /**
@@ -128,7 +140,7 @@ export async function pushCartDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const queued of drafts) {
+  for (const queued of oldestFirst(drafts)) {
     const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_DRAFT', draft: d }));
     try {
       const campaignId = draft.campaignId || fallbackCampaignId;
@@ -158,7 +170,7 @@ export async function pushCartDrafts(
       // A refusal (such as INSUFFICIENT_STOCK for a sale the agent can't
       // cover) keeps the draft, with the server's reason on it for the
       // Drafts and Sync pages. A lost connection isn't a refusal.
-      if (!(e instanceof NetworkError) && !(e instanceof AuthError)) {
+      if (isRefusal(e)) {
         dispatch({ type: 'SAVE_DRAFT', draft: { ...draft, syncError: e?.message || 'The server refused it.' } });
       }
     }
@@ -201,7 +213,7 @@ export async function pushSurveyDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const queued of drafts) {
+  for (const queued of oldestFirst(drafts)) {
     const draft = withRef(queued, (d) => dispatch({ type: 'UPDATE_SURVEY', survey: d }));
     if (!draft.surveyConfigId) {
       noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, new Error('saved without a survey id, cannot be resubmitted'));
@@ -237,7 +249,7 @@ export async function pushSurveyDrafts(
       failed++;
       // A refusal (REQUIRED_ANSWERS_MISSING included) keeps the draft with the
       // server's reason; a lost connection isn't a refusal.
-      if (!(e instanceof NetworkError) && !(e instanceof AuthError)) {
+      if (isRefusal(e)) {
         dispatch({ type: 'SET_SURVEY_SYNC_ERROR', surveyId: draft.id, error: surveyRejectionMessage(e) });
       }
     }
@@ -281,39 +293,86 @@ export async function pushSurveyPhotos(
   return { synced, failed, errors };
 }
 
+/** Items recorded at an outlet that's still waiting to reach the server: they can't go before it. */
+const waitingForOutlet = <T>(items: T[], outletOf: (item: T) => string | undefined, label: (item: T) => string, result: SyncResult): T[] =>
+  items.filter((item) => {
+    if (!isOfflineOutletId(outletOf(item))) return true;
+    noteFailure(result.errors, label(item), new Error('waiting for its new outlet to be sent first'));
+    result.failed++;
+    return false;
+  });
+
 /**
- * Pushes every queue. Outlet edits go first: the server has to see an edit
- * before the survey that follows it, or the survey that edit made due stays
- * due. The rest go together.
+ * Pushes every queue. New outlets and outlet edits go first: what was
+ * recorded at an outlet onboarded offline goes with the id the server gave
+ * it (it waits while that outlet hasn't reached the server), and the server
+ * has to see an edit before the survey that follows it, or the survey that
+ * edit made due stays due. New leads go next, for the same reason. The rest
+ * go together.
  */
 export async function pushAllDrafts(
   queues: { leadDrafts: LeadDraft[]; cartDrafts: Draft[]; surveyDrafts: OutletSurvey[]; outletDrafts: OutletDraft[]; surveyPhotos?: PendingSurveyPhoto[] },
   dispatch: (action: any) => void,
   fallbackCampaignId: string
-): Promise<{ leads: SyncResult; carts: SyncResult; surveys: SyncResult; outlets: SyncResult; photos: SyncResult }> {
+): Promise<{ leads: SyncResult; carts: SyncResult; surveys: SyncResult; outlets: SyncResult; photos: SyncResult; notices: string[] }> {
   const outlets = await pushOutletDrafts(queues.outletDrafts, dispatch);
-  const [leads, carts, surveys, photos] = await Promise.all([
-    pushLeadDrafts(queues.leadDrafts, dispatch),
-    pushCartDrafts(queues.cartDrafts, dispatch, fallbackCampaignId),
-    pushSurveyDrafts(queues.surveyDrafts, dispatch),
+  const leads = await pushLeadDrafts(queues.leadDrafts, dispatch);
+
+  // The store swaps the ids too (REMAP_OUTLET_ID); these copies were taken before it did.
+  const outletId = (id?: string) => (id && outlets.ids[id]) || id;
+  const waitingCarts: SyncResult = { synced: 0, failed: 0, errors: [] };
+  const waitingSurveys: SyncResult = { synced: 0, failed: 0, errors: [] };
+  const carts = waitingForOutlet(
+    queues.cartDrafts.map((d) => (outlets.ids[d.outletId] ? { ...d, outletId: outletId(d.outletId) as string, customerId: outletId(d.customerId) } : d)),
+    (d) => d.outletId,
+    (d) => `${d.mode === 'sale' ? 'Sale' : 'Order'} at ${d.outletName}`,
+    waitingCarts,
+  );
+  const surveys = waitingForOutlet(
+    queues.surveyDrafts.map((d) => (outlets.ids[d.outletId] ? { ...d, outletId: outletId(d.outletId) as string } : d)),
+    (d) => d.outletId,
+    (d) => `Survey "${d.surveyName || 'draft'}"`,
+    waitingSurveys,
+  );
+
+  const [cartsSent, surveysSent, photos] = await Promise.all([
+    pushCartDrafts(carts, dispatch, fallbackCampaignId),
+    pushSurveyDrafts(surveys, dispatch),
     pushSurveyPhotos(queues.surveyPhotos || [], dispatch),
   ]);
-  return { leads, carts, surveys, outlets, photos };
+  const merge = (a: SyncResult, b: SyncResult): SyncResult => ({ synced: a.synced + b.synced, failed: a.failed + b.failed, errors: [...b.errors, ...a.errors] });
+  return {
+    leads,
+    carts: merge(cartsSent, waitingCarts),
+    surveys: merge(surveysSent, waitingSurveys),
+    outlets,
+    photos,
+    notices: outlets.notices,
+  };
 }
 
-/** Pushes every queued outlet create/edit draft to the server. */
+/**
+ * Pushes every queued outlet create/edit draft to the server, oldest first.
+ * An outlet onboarded offline goes by a temporary id (od_...) until it's
+ * there: its id on the server then replaces it everywhere on the phone
+ * (REMAP_OUTLET_ID), and returned in `ids` for what's sent after it. A draft's
+ * kept photo is deleted once it's gone up with it.
+ */
 export async function pushOutletDrafts(
   drafts: OutletDraft[],
   dispatch: (action: any) => void
-): Promise<SyncResult> {
+): Promise<SyncResult & { ids: Record<string, string>; notices: string[] }> {
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  for (const queued of drafts) {
+  const ids: Record<string, string> = {};
+  // What to tell the agent beyond sent / not sent.
+  const notices: string[] = [];
+  for (const queued of oldestFirst(drafts)) {
     const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft: d }));
     try {
       if (draft.mode === 'create') {
-        await createOutlet(draft.campaignId, {
+        const { outlet, photoUploaded, photoError, possibleDuplicate } = await createOutlet(draft.campaignId, {
           name: draft.name,
           type: draft.type,
           outletTypeId: draft.outletTypeId,
@@ -330,8 +389,24 @@ export async function pushOutletDrafts(
           longitude: draft.longitude,
           confirmedNew: draft.confirmedNew,
         }, queuedMeta(draft));
+        if (outlet.id) {
+          ids[draft.id] = outlet.id;
+          dispatch({ type: 'REMAP_OUTLET_ID', from: draft.id, to: outlet.id });
+        }
+        if (draft.photoUri) {
+          if (!photoUploaded) notices.push(`${draft.name} was sent, but its photo wasn't${photoError ? ` (${photoError})` : ''}. Add it again from Edit Customer.`);
+          discardKeptPhoto(draft.photoUri);
+        }
+        if (possibleDuplicate) notices.push(`Sent. Your supervisor will check whether ${draft.name} is a duplicate.`);
       } else if (draft.outletId) {
-        await updateOutlet(draft.outletId, {
+        const target = ids[draft.outletId] || draft.outletId;
+        // An edit of an outlet onboarded offline that hasn't reached the server.
+        if (isOfflineOutletId(target)) {
+          noteFailure(errors, `Outlet "${draft.name}"`, new Error('waiting for the new outlet to be sent first'));
+          failed++;
+          continue;
+        }
+        await updateOutlet(target, {
           name: draft.name,
           type: draft.type,
           outletTypeId: draft.outletTypeId,
@@ -353,6 +428,7 @@ export async function pushOutletDrafts(
           // Its campaign's after-edit survey becomes due once it reaches the server.
           campaign: draft.campaignId,
         }, queuedMeta(draft));
+        discardKeptPhoto(draft.photoUri);
       } else {
         noteFailure(errors, `Outlet "${draft.name}"`, new Error('edit draft is missing its outlet id'));
         failed++;
@@ -360,10 +436,11 @@ export async function pushOutletDrafts(
       }
       dispatch({ type: 'DELETE_OUTLET_DRAFT', draftId: draft.id });
       synced++;
-    } catch (e) {
+    } catch (e: any) {
       noteFailure(errors, `Outlet "${draft.name}"`, e);
       failed++;
+      if (isRefusal(e)) dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft: { ...draft, syncError: e?.message || 'The server refused it.' } });
     }
   }
-  return { synced, failed, errors };
+  return { synced, failed, errors, ids, notices };
 }
