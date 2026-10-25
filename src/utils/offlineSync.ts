@@ -1,13 +1,15 @@
 import {
   createLead, createOutlet, updateOutlet, submitFieldSale, submitSalesOrder, submitSurveyResponse, uploadSurveyPhoto,
   skipOutletVisit, updateLeadStage, requestLeadRegression, submitStockRequest,
-  getOutlets, getItems, getMyOrders, getMySales, getMyGeofence,
+  getOutlets, getItems, getMyOrders, getMySales, getMyGeofence, getLeads, getMyStockRequests,
   OrderLinePayload, AuthError, NetworkError, ActionMeta,
 } from '../services/api';
+import type { FieldState } from '../store/useFieldStore';
 import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto, ActionStamp, QueuedAction } from '../types';
 import { discardKeptPhoto, discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
 import { isAnswered, surveyRejectionMessage } from './surveyAnswers';
-import { isOfflineLeadId, isOfflineOutletId, newClientRef, oldestFirst } from './queue';
+import { isMine, isOfflineLeadId, isOfflineOutletId, newClientRef, oldestFirst } from './queue';
+import { localDateStr } from './timestamp';
 import { debugLog } from './logger';
 
 /**
@@ -39,18 +41,23 @@ export async function pullServerData(
   campaignId: string | undefined,
   dispatch: (action: any) => void
 ): Promise<void> {
-  const [outletsRes, productsRes, ordersRes, salesRes, geofenceRes] = await Promise.allSettled([
+  const [outletsRes, productsRes, ordersRes, salesRes, geofenceRes, leadsRes, requestsRes] = await Promise.allSettled([
     campaignId ? getOutlets(campaignId) : Promise.resolve([]),
     getItems(),
     getMyOrders(),
     getMySales(),
     getMyGeofence(),
+    getLeads(campaignId || ''),
+    getMyStockRequests(),
   ]);
-  if (outletsRes.status === 'fulfilled') dispatch({ type: 'SET_OUTLETS', outlets: outletsRes.value });
-  if (productsRes.status === 'fulfilled') dispatch({ type: 'SET_PRODUCTS', products: productsRes.value });
+  if (outletsRes.status === 'fulfilled' && campaignId) dispatch({ type: 'SET_OUTLETS', outlets: outletsRes.value });
+  // get_items answers an empty list when it fails: never put in place of the phone's products.
+  if (productsRes.status === 'fulfilled' && productsRes.value.length > 0) dispatch({ type: 'SET_PRODUCTS', products: productsRes.value });
   if (ordersRes.status === 'fulfilled') dispatch({ type: 'SET_ORDERS', orders: ordersRes.value });
   if (salesRes.status === 'fulfilled') dispatch({ type: 'SET_SALES', sales: salesRes.value });
   if (geofenceRes.status === 'fulfilled') dispatch({ type: 'SET_GEOFENCE', geofence: geofenceRes.value });
+  if (leadsRes.status === 'fulfilled') dispatch({ type: 'SET_LEADS', leads: leadsRes.value });
+  if (requestsRes.status === 'fulfilled') dispatch({ type: 'SET_STOCK_REQUESTS', requests: requestsRes.value });
 }
 
 export interface SyncResult {
@@ -59,6 +66,10 @@ export interface SyncResult {
   /** Why each item failed, so "N still pending" can actually say what's wrong
    *  instead of leaving the agent (and us) with a bare count to guess from. */
   errors: string[];
+  /** Something couldn't be sent for want of a connection (it's tried again). */
+  offline?: boolean;
+  /** The login has expired: nothing more goes until the agent signs in again. */
+  needsSignIn?: boolean;
 }
 
 /** Records a failed push with the real reason, and logs it for a device log trail. */
@@ -66,6 +77,12 @@ const noteFailure = (errors: string[], label: string, e: any) => {
   const reason = e?.message || String(e) || 'Unknown error';
   debugLog('[offlineSync] failed to push', label, '->', reason);
   errors.push(`${label}: ${reason}`);
+};
+
+/** What kind of failure it was, kept on the result: a lost connection, or an expired login. */
+const noteKind = (result: { offline?: boolean; needsSignIn?: boolean }, e: any) => {
+  if (e instanceof AuthError) result.needsSignIn = true;
+  else if (e instanceof NetworkError) result.offline = true;
 };
 
 /** A refusal: the server answered and said no (anything but a lost connection or an expired login). */
@@ -96,6 +113,7 @@ export async function pushLeadDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const kinds: { offline?: boolean; needsSignIn?: boolean } = {};
   // A lead added offline goes by its draft's id until it's on the server.
   const ids: Record<string, string> = {};
   for (const queued of oldestFirst(drafts)) {
@@ -121,11 +139,12 @@ export async function pushLeadDrafts(
       synced++;
     } catch (e: any) {
       noteFailure(errors, `Lead "${draft.name}"`, e);
+      noteKind(kinds, e);
       failed++;
       if (isRefusal(e)) dispatch({ type: 'SAVE_LEAD_DRAFT', leadDraft: { ...draft, syncError: e?.message || 'The server refused it.' } });
     }
   }
-  return { synced, failed, errors, ids };
+  return { synced, failed, errors, ids, ...kinds };
 }
 
 /**
@@ -141,6 +160,7 @@ export async function pushCartDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const kinds: { offline?: boolean; needsSignIn?: boolean } = {};
   for (const queued of oldestFirst(drafts)) {
     const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_DRAFT', draft: d }));
     try {
@@ -167,6 +187,7 @@ export async function pushCartDrafts(
       synced++;
     } catch (e: any) {
       noteFailure(errors, `${draft.mode === 'sale' ? 'Sale' : 'Order'} at ${draft.outletName}`, e);
+      noteKind(kinds, e);
       failed++;
       // A refusal (such as INSUFFICIENT_STOCK for a sale the agent can't
       // cover) keeps the draft, with the server's reason on it for the
@@ -176,7 +197,7 @@ export async function pushCartDrafts(
       }
     }
   }
-  return { synced, failed, errors };
+  return { synced, failed, errors, ...kinds };
 }
 
 /**
@@ -214,6 +235,7 @@ export async function pushSurveyDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const kinds: { offline?: boolean; needsSignIn?: boolean } = {};
   for (const queued of oldestFirst(drafts)) {
     const draft = withRef(queued, (d) => dispatch({ type: 'UPDATE_SURVEY', survey: d }));
     if (!draft.surveyConfigId) {
@@ -247,6 +269,7 @@ export async function pushSurveyDrafts(
       synced++;
     } catch (e: any) {
       noteFailure(errors, `Survey "${draft.surveyName || 'draft'}"`, e);
+      noteKind(kinds, e);
       failed++;
       // A refusal (REQUIRED_ANSWERS_MISSING included) keeps the draft with the
       // server's reason; a lost connection isn't a refusal.
@@ -255,7 +278,7 @@ export async function pushSurveyDrafts(
       }
     }
   }
-  return { synced, failed, errors };
+  return { synced, failed, errors, ...kinds };
 }
 
 /**
@@ -272,6 +295,7 @@ export async function pushSurveyPhotos(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const kinds: { offline?: boolean; needsSignIn?: boolean } = {};
   for (const photo of photos) {
     const label = `Photo for survey "${photo.surveyName || 'survey'}"`;
     if (!photo.responseId || !surveyPhotoExists(photo.photoUri)) {
@@ -288,10 +312,11 @@ export async function pushSurveyPhotos(
       synced++;
     } catch (e) {
       noteFailure(errors, label, e);
+      noteKind(kinds, e);
       failed++;
     }
   }
-  return { synced, failed, errors };
+  return { synced, failed, errors, ...kinds };
 }
 
 /** How a queued action is named on the Drafts and Sync pages. */
@@ -314,6 +339,7 @@ export async function pushQueuedActions(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const kinds: { offline?: boolean; needsSignIn?: boolean } = {};
   for (const queued of oldestFirst(actions)) {
     const action = withRef(queued, (a) => dispatch({ type: 'QUEUE_ACTION', action: a }));
     const label = queuedActionLabel(action);
@@ -341,11 +367,12 @@ export async function pushQueuedActions(
       synced++;
     } catch (e: any) {
       noteFailure(errors, label, e);
+      noteKind(kinds, e);
       failed++;
       if (isRefusal(e)) dispatch({ type: 'QUEUE_ACTION', action: { ...action, syncError: e?.message || 'The server refused it.' } });
     }
   }
-  return { synced, failed, errors };
+  return { synced, failed, errors, ...kinds };
 }
 
 /** Items recorded at an outlet that's still waiting to reach the server: they can't go before it. */
@@ -406,7 +433,13 @@ export async function pushAllDrafts(
     pushQueuedActions(queuedActions, dispatch),
   ]);
   const photos = await pushSurveyPhotos(queues.surveyPhotos || [], dispatch);
-  const merge = (a: SyncResult, b: SyncResult): SyncResult => ({ synced: a.synced + b.synced, failed: a.failed + b.failed, errors: [...b.errors, ...a.errors] });
+  const merge = (a: SyncResult, b: SyncResult): SyncResult => ({
+    synced: a.synced + b.synced,
+    failed: a.failed + b.failed,
+    errors: [...b.errors, ...a.errors],
+    offline: a.offline || b.offline,
+    needsSignIn: a.needsSignIn || b.needsSignIn,
+  });
   return {
     leads,
     carts: merge(cartsSent, waitingCarts),
@@ -432,6 +465,7 @@ export async function pushOutletDrafts(
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const kinds: { offline?: boolean; needsSignIn?: boolean } = {};
   const ids: Record<string, string> = {};
   // What to tell the agent beyond sent / not sent.
   const notices: string[] = [];
@@ -505,9 +539,160 @@ export async function pushOutletDrafts(
       synced++;
     } catch (e: any) {
       noteFailure(errors, `Outlet "${draft.name}"`, e);
+      noteKind(kinds, e);
       failed++;
       if (isRefusal(e)) dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft: { ...draft, syncError: e?.message || 'The server refused it.' } });
     }
   }
-  return { synced, failed, errors, ids, notices };
+  return { synced, failed, errors, ids, notices, ...kinds };
+}
+
+// ─── Sending on its own ────────────────────────────────────────────────────────
+
+/** Every unsent item, by kind, with its one-time ID's owner and whether it can go on its own. */
+interface UnsentItem extends ActionStamp {
+  id: string;
+  syncError?: string;
+  /** False for a cart saved to finish later: it goes only from the Sync page. */
+  automatic: boolean;
+}
+
+const unsentItems = (state: FieldState): UnsentItem[] => [
+  ...state.outletDrafts.map((d) => ({ ...d, automatic: true })),
+  ...state.leadDrafts.map((d) => ({ ...d, automatic: true })),
+  ...state.drafts.map((d) => ({ ...d, automatic: !!d.ready })),
+  ...state.surveys.filter((s) => s.isDraft).map((s) => ({ ...s, automatic: true })),
+  ...state.queuedActions.map((a) => ({ ...a, automatic: true })),
+];
+
+/** Where the signed-in agent's unsent work stands, for Home and the Sync page. */
+export interface QueueState {
+  /** Still to send (saved-for-later carts included). */
+  waiting: number;
+  /** Of those, refused by the server: fixed or deleted on the Drafts page. */
+  refused: number;
+  /** Something unsent from before today. */
+  fromEarlierDay: boolean;
+  /** Unsent items another agent made on this phone: they wait for them. */
+  othersWaiting: number;
+  /** Of `waiting`, the ones a sync on its own sends (not refused, not saved for later). */
+  goesOnItsOwn: number;
+}
+
+export function queueState(state: FieldState): QueueState {
+  const me = state.user.email;
+  const today = localDateStr();
+  const items = unsentItems(state);
+  const mine = items.filter((i) => isMine(i, me));
+  return {
+    waiting: mine.length + state.pendingSurveyPhotos.length,
+    refused: mine.filter((i) => i.syncError).length,
+    fromEarlierDay: mine.some((i) => !!i.happenedAt && i.happenedAt.slice(0, 10) < today),
+    othersWaiting: items.length - mine.length,
+    goesOnItsOwn: mine.filter((i) => i.automatic && !i.syncError).length + state.pendingSurveyPhotos.length,
+  };
+}
+
+export interface SyncOutcome {
+  /** Items that reached the server. */
+  sent: number;
+  /** Items still unsent after it (refused, waiting for a connection or for their outlet). */
+  failed: number;
+  errors: string[];
+  notices: string[];
+  offline: boolean;
+  needsSignIn: boolean;
+}
+
+let syncing: Promise<SyncOutcome> | null = null;
+let lastRefreshAt = 0;
+/** How often a sync with nothing to send still refreshes the downloaded lists. */
+const REFRESH_EVERY_MS = 5 * 60 * 1000;
+
+/**
+ * The one sync routine (Home's, the Sync page's, and the one that runs on its
+ * own), which only ever runs once at a time — a second call joins the one
+ * running. In order: new outlets and edits (with the id swap), then sales,
+ * orders, surveys, leads, skips, stage changes and stock requests, then survey
+ * photos, then a refresh of the downloaded lists.
+ *
+ * Only the signed-in agent's items go. Sent on its own (`manual` false), an
+ * item the server refused isn't tried again — the agent fixes or deletes it on
+ * the Drafts page — and neither is a cart saved to finish later; from the Sync
+ * page (`manual`) both are. An expired login stops it until the agent signs in.
+ */
+export function syncNow(options: {
+  getState: () => FieldState;
+  dispatch: (action: any) => void;
+  manual?: boolean;
+  /** Refresh the downloaded lists even with nothing to send (e.g. the signal just came back). */
+  refresh?: boolean;
+}): Promise<SyncOutcome> {
+  if (syncing) return syncing;
+  const { getState, dispatch, manual = false } = options;
+  syncing = (async () => {
+    const state = getState();
+    const me = state.user.email;
+    const goes = (item: ActionStamp & { syncError?: string }) => isMine(item, me) && (manual || !item.syncError);
+    const queues = {
+      outletDrafts: state.outletDrafts.filter(goes),
+      leadDrafts: state.leadDrafts.filter(goes),
+      cartDrafts: state.drafts.filter((d) => goes(d) && (manual || !!d.ready)),
+      surveyDrafts: state.surveys.filter((s) => s.isDraft && goes(s)),
+      queuedActions: state.queuedActions.filter(goes),
+      surveyPhotos: state.pendingSurveyPhotos,
+    };
+    const toSend = queues.outletDrafts.length + queues.leadDrafts.length + queues.cartDrafts.length
+      + queues.surveyDrafts.length + queues.queuedActions.length + queues.surveyPhotos.length;
+    const outcome: SyncOutcome = { sent: 0, failed: 0, errors: [], notices: [], offline: false, needsSignIn: false };
+    const refreshDue = options.refresh || manual || Date.now() - lastRefreshAt > REFRESH_EVERY_MS;
+    if (toSend === 0 && !refreshDue) return outcome;
+
+    dispatch({ type: 'SET_SYNC_STATUS', status: { running: true } });
+    try {
+      if (toSend > 0) {
+        const result = await pushAllDrafts(queues, dispatch, state.activeCampaign?.id || '');
+        const parts: SyncResult[] = [result.outlets, result.leads, result.carts, result.surveys, result.actions, result.photos];
+        parts.forEach((r) => {
+          outcome.sent += r.synced;
+          outcome.failed += r.failed;
+          outcome.errors.push(...r.errors);
+          outcome.offline = outcome.offline || !!r.offline;
+          outcome.needsSignIn = outcome.needsSignIn || !!r.needsSignIn;
+        });
+        outcome.notices = result.notices;
+        if (result.notices.length > 0) dispatch({ type: 'ADD_SYNC_NOTICES', notices: result.notices });
+      }
+      // The lists, once what was sent is on the server (stock, sales, outlets...).
+      if (!outcome.needsSignIn && !outcome.offline && (outcome.sent > 0 || refreshDue)) {
+        lastRefreshAt = Date.now();
+        await pullServerData(state.activeCampaign?.id, dispatch);
+      }
+    } finally {
+      dispatch({
+        type: 'SET_SYNC_STATUS',
+        status: {
+          running: false,
+          needsSignIn: outcome.needsSignIn,
+          ...(!outcome.offline && !outcome.needsSignIn ? { lastSyncedAt: new Date().toISOString() } : {}),
+        },
+      });
+    }
+    return outcome;
+  })().finally(() => {
+    syncing = null;
+  });
+  return syncing;
+}
+
+/** "3 waiting to send", "Sending…", "All sent · 10:42": where the queue stands, for Home and the Sync page. */
+export function syncStatusText(queue: QueueState, status: FieldState['syncStatus']): string {
+  if (status.running) return 'Sending…';
+  if (status.needsSignIn && queue.waiting > 0) return 'Sign in again to send your work';
+  if (queue.waiting > 0) return `${queue.waiting} waiting to send`;
+  if (!status.lastSyncedAt) return 'All sent';
+  const at = new Date(status.lastSyncedAt);
+  return isNaN(at.getTime())
+    ? 'All sent'
+    : `All sent · ${at.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}`;
 }

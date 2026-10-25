@@ -157,7 +157,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         dispatch({ type: 'ADD_SURVEY', survey: draftSurvey });
         Alert.alert(
           'Saved Locally',
-          'No connection — this survey has been saved on this device and will upload automatically from the Sync page once you\'re back online.',
+          "No connection, so this survey is saved on this phone. It's sent automatically once you're back online.",
         );
         onNavigate('outletDetail', { outletId: outlet.id });
       } else {

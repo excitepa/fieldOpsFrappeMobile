@@ -22,6 +22,7 @@ import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
 import { useDayPack } from '../hooks/useDayPack';
 import { formatLastUpdated } from '../utils/dayPack';
+import { queueState, syncStatusText } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
 import { isToday } from '../utils/outletVisits';
 import { localDateStr } from '../utils/timestamp';
@@ -163,6 +164,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
     .reduce((sum, d) => sum + getCartTotal(d.cart), 0);
   // Today's download hasn't all come in: say how old the phone's data is.
   const dayPack = useDayPack();
+  // Where the agent's unsent work stands (it goes up on its own).
+  const queue = queueState(state);
+  const syncText = syncStatusText(queue, state.syncStatus);
   const todaySalesTotal = state.sales.filter((s) => isToday(s.timestamp)).reduce((sum, s) => sum + s.total, 0) + unsentSalesTotal;
   const myLocation = useCurrentLocation();
   const pendingOutlets = state.outlets.filter((o) => o.status === 'pending');
@@ -242,6 +246,35 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
             <Text style={styles.syncBtnText}>Sync</Text>
           </Pressable>
         </View>
+        <Pressable onPress={() => onNavigate('sync')}>
+          <Text style={[styles.syncStatusText, queue.refused > 0 && styles.syncStatusRefused]}>
+            {syncText}{queue.refused > 0 ? ` · ${queue.refused} couldn't be sent` : ''}
+          </Text>
+        </Pressable>
+
+        {queue.fromEarlierDay && (
+          <Pressable onPress={() => onNavigate('draftsList')} style={styles.unsentBanner}>
+            <Icon name="alert-circle" size={16} color={theme.colors.red} />
+            <View style={styles.flex1}>
+              <Text style={styles.unsentTitle}>Yesterday's work hasn't been sent.</Text>
+              <Text style={styles.dayLockSub}>Connect to send it.</Text>
+            </View>
+          </Pressable>
+        )}
+
+        {state.syncStatus.notices.length > 0 && (
+          <View style={styles.noticeBanner}>
+            <Icon name="check-circle" size={16} color={theme.colors.navy} />
+            <View style={styles.flex1}>
+              {state.syncStatus.notices.map((n, i) => (
+                <Text key={`${i}-${n}`} style={styles.dayLockSub}>{n}</Text>
+              ))}
+            </View>
+            <Pressable onPress={() => dispatch({ type: 'CLEAR_SYNC_NOTICES' })} hitSlop={8} style={styles.staleRetryBtn}>
+              <Text style={styles.staleRetryText}>OK</Text>
+            </Pressable>
+          </View>
+        )}
 
         {dayLocked && (
           <View style={styles.dayLockBanner}>
@@ -440,6 +473,20 @@ const createStyles = (theme: any) => StyleSheet.create({
     backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder,
   },
   syncBtnText: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.navy },
+  syncStatusText: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.textMuted, textAlign: 'right', marginTop: -theme.spacing.sm, marginBottom: theme.spacing.md },
+  syncStatusRefused: { color: theme.colors.red },
+  unsentBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.redLight, borderRadius: theme.radius.md,
+    borderLeftWidth: 3, borderLeftColor: theme.colors.red,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
+  unsentTitle: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.red },
+  noticeBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.fieldFill, borderRadius: theme.radius.md,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
   dayLockBanner: {
     flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm,
     backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.md,

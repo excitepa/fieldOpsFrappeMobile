@@ -16,9 +16,9 @@ import { logout, getAttendanceStats, getCampaigns } from './src/services/api';
 import { getAccessToken } from './src/services/apiConfig';
 import { localDateStr } from './src/utils/timestamp';
 import { isDayLocked } from './src/utils/dayLock';
-import { pullServerData } from './src/utils/offlineSync';
 import { clearOutletDirectory } from './src/utils/outletDirectory';
 import { useDayPack } from './src/hooks/useDayPack';
+import { useAutoSync } from './src/hooks/useAutoSync';
 import NetInfo from '@react-native-community/netinfo';
 import { FieldProvider, useFieldStore } from './src/store/useFieldStore';
 import { BottomTabs } from './src/components/BottomTabs';
@@ -247,14 +247,6 @@ function AppInner() {
     return () => sub.remove();
   }, [appStage, state.attendanceStatus.clockedIn, state.attendanceStatus.clockInDate, state.dayLockedUntil, state.campaignSelected]);
 
-  // Offline-first refresh: everything the server owns (outlets, products/stock,
-  // orders, sales) is already cached locally and persisted, so it stays
-  // readable with no signal. This re-pulls it the moment connectivity actually
-  // comes back, rather than making the agent find the Sync screen — and each
-  // dataset is only replaced if its own request really succeeded, so a partial
-  // failure never blanks out what they already had. Drafts stay deliberately
-  // manual (the Sync button pushes those), since re-submitting real sales/
-  // surveys shouldn't fire itself off the back of a network blip.
   // Today's download is tried again until it has all come in: on getting
   // into the app (a session resumed already clocked in today runs it here)
   // and every few minutes after, while there's a connection.
@@ -276,20 +268,12 @@ function AppInner() {
     return () => clearInterval(timer);
   }, [appStage, clockedInToday]);
 
-  const wasOfflineRef = useRef(false);
-  useEffect(() => {
-    if (appStage !== 'app') return;
-    const sub = NetInfo.addEventListener((netState) => {
-      const online = netState.isConnected !== false && netState.isInternetReachable !== false;
-      if (online && wasOfflineRef.current) {
-        pullServerData(state.activeCampaign?.id, dispatch).catch(() => {
-          // Keeps whatever's already cached locally.
-        });
-      }
-      wasOfflineRef.current = !online;
-    });
-    return () => sub();
-  }, [appStage, state.activeCampaign?.id]);
+  // What's waiting goes up on its own: when the signal comes back (the
+  // downloaded lists are refreshed then too), when the app comes to the
+  // foreground, straight after something is queued, and every couple of
+  // minutes while anything is waiting. Every item carries its one-time ID, so
+  // sending one again after a lost answer can't record it twice.
+  useAutoSync(appStage === 'app');
 
   // Still worth keeping for the case the timer CAN handle — the app genuinely
   // sitting in the foreground as midnight passes (an agent working late).

@@ -323,7 +323,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft });
         Alert.alert(
           'Saved Locally',
-          'No connection — this outlet has been saved on this device and will upload automatically from the Sync page once you\'re back online.',
+          "No connection, so this outlet is saved on this phone. It's sent automatically once you're back online, and you can sell and survey there meanwhile.",
         );
         onNavigate('outlets');
       } else {

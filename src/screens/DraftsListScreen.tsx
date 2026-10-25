@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -7,8 +7,7 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getOutlets } from '../services/api';
-import { pushAllDrafts, pushLeadDrafts, queuedActionLabel, summariseSyncErrors } from '../utils/offlineSync';
+import { pushLeadDrafts, queuedActionLabel, summariseSyncErrors, syncNow } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
 import { discardKeptPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
 import { formatServerDateTime } from '../utils/timestamp';
@@ -22,6 +21,8 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state, dispatch, getDraftsList, getLeadDraftsList, getOutletDraftsList } = useFieldStore();
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const [syncing, setSyncing] = useState(false);
   const [retryingLeadId, setRetryingLeadId] = useState<string | null>(null);
 
@@ -32,40 +33,23 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
   const queuedActions = state.queuedActions;
   const totalCount = cartDrafts.length + leadDrafts.length + surveyDrafts.length + outletDrafts.length + queuedActions.length;
 
+  // Everything waiting, refused items and carts saved for later included, by
+  // the same routine that sends on its own.
   const handleSyncNow = async () => {
     setSyncing(true);
     try {
-      const fallbackCampaignId = state.activeCampaign?.id || '';
-      const { leads, carts, surveys: surveysRes, outlets, actions, notices } = await pushAllDrafts(
-        { leadDrafts, cartDrafts, surveyDrafts, outletDrafts, queuedActions, surveyPhotos: state.pendingSurveyPhotos },
-        dispatch,
-        fallbackCampaignId,
-      );
-      if (outlets.synced > 0) {
-        // Reconciles optimistic local outlet(s) with their real synced
-        // versions rather than leaving temp-id duplicates in the list.
-        // Non-essential: a failure here must not surface as an error, the
-        // drafts themselves already went up fine.
-        try {
-          const campaignId = state.activeCampaign?.id;
-          if (campaignId) {
-            const fetched = await getOutlets(campaignId);
-            dispatch({ type: 'SET_OUTLETS', outlets: fetched });
-          }
-        } catch {
-          // Keeps whatever's already local.
-        }
+      const outcome = await syncNow({ getState: () => stateRef.current, dispatch, manual: true, refresh: true });
+      if (outcome.needsSignIn) {
+        Alert.alert('Sign In Again', 'Your login has expired. Sign in again to send your work: it stays saved on this phone.');
+        return;
       }
-      const syncedCount = leads.synced + carts.synced + surveysRes.synced + outlets.synced + actions.synced;
-      const stillPending = leads.failed + carts.failed + surveysRes.failed + outlets.failed + actions.failed;
-      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outlets.errors, ...actions.errors];
       // A bare "0 synced, N still pending" gives nobody anything to act on —
       // show the actual reason each item was rejected.
-      const lines = [`${syncedCount} item${syncedCount === 1 ? '' : 's'} synced. ${stillPending} item${stillPending === 1 ? '' : 's'} still pending.`];
-      if (notices.length > 0) lines.push('', ...notices);
-      if (errors.length > 0) lines.push('', summariseSyncErrors(errors));
+      const lines = [`${outcome.sent} item${outcome.sent === 1 ? '' : 's'} synced. ${outcome.failed} item${outcome.failed === 1 ? '' : 's'} still pending.`];
+      if (outcome.notices.length > 0) lines.push('', ...outcome.notices);
+      if (outcome.errors.length > 0) lines.push('', summariseSyncErrors(outcome.errors));
       Alert.alert(
-        stillPending > 0 && syncedCount === 0 ? 'Nothing Could Be Synced' : 'Synchronization Complete',
+        outcome.failed > 0 && outcome.sent === 0 ? 'Nothing Could Be Synced' : 'Synchronization Complete',
         lines.join('\n'),
       );
     } finally {

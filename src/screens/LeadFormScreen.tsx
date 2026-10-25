@@ -131,7 +131,7 @@ const theme = useTheme();  const styles = createStyles(theme);
 
       Alert.alert(
         'Saved Locally',
-        `Lead saved on this device. It will appear in the Sync page for later upload.\n\n(${e?.message || 'Network error'})`,
+        "No connection, so this lead is saved on this phone. It's sent automatically once you're back online.",
       );
     } finally {
       setLoading(false);

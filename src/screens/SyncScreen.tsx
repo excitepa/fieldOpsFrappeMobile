@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -9,7 +9,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { getOutlets, getItems, getMyOrders, getMySales } from '../services/api';
 import {
   pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos, pushQueuedActions, pushAllDrafts,
-  pullServerData as pullServerDataShared, summariseSyncErrors,
+  pullServerData as pullServerDataShared, summariseSyncErrors, syncNow, queueState, syncStatusText,
 } from '../utils/offlineSync';
 import { RouteName, LeadDraft } from '../types';
 
@@ -37,6 +37,9 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const queue = queueState(state);
   const [online, setOnline] = useState(true);
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
@@ -74,31 +77,27 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
 
   const pullServerData = () => pullServerDataShared(state.activeCampaign?.id, dispatch);
 
+  // Everything this agent has waiting, refused items and carts saved for
+  // later included (sending on its own leaves those), then the lists refreshed.
+  // The same routine that runs on its own, so the two never overlap.
   const handleSyncAll = async () => {
     if (!online || syncingAll) return;
     setSyncingAll(true);
     try {
-      const fallbackCampaignId = state.activeCampaign?.id || '';
-      const { leads, carts, surveys: surveysRes, outlets: outletsRes2, photos: photosRes, actions, notices } = await pushAllDrafts({
-        leadDrafts: state.leadDrafts,
-        cartDrafts: state.drafts,
-        surveyDrafts: surveyDraftsList,
-        outletDrafts: state.outletDrafts,
-        surveyPhotos: state.pendingSurveyPhotos,
-        queuedActions: state.queuedActions,
-      }, dispatch, fallbackCampaignId);
-      await pullServerData();
-      const synced = leads.synced + carts.synced + surveysRes.synced + outletsRes2.synced + photosRes.synced + actions.synced;
-      const failed = leads.failed + carts.failed + surveysRes.failed + outletsRes2.failed + photosRes.failed + actions.failed;
-      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outletsRes2.errors, ...photosRes.errors, ...actions.errors];
+      const outcome = await syncNow({ getState: () => stateRef.current, dispatch, manual: true, refresh: true });
+      if (outcome.needsSignIn) {
+        Alert.alert('Sign In Again', 'Your login has expired. Sign in again to send your work: it stays saved on this phone.');
+        return;
+      }
       const parts: string[] = [];
-      if (synced > 0) parts.push(`${synced} item${synced === 1 ? '' : 's'} uploaded`);
-      if (failed > 0) parts.push(`${failed} item${failed === 1 ? '' : 's'} still pending`);
-      parts.push('server data refreshed');
-      if (notices.length > 0) parts.push(...notices);
+      if (outcome.sent > 0) parts.push(`${outcome.sent} item${outcome.sent === 1 ? '' : 's'} uploaded`);
+      if (outcome.failed > 0) parts.push(`${outcome.failed} item${outcome.failed === 1 ? '' : 's'} still pending`);
+      if (!outcome.offline) parts.push('server data refreshed');
       // Show why anything was rejected rather than just a count.
-      const body = errors.length > 0 ? `${parts.join(' · ')}\n\n${summariseSyncErrors(errors)}` : parts.join(' · ');
-      Alert.alert(failed > 0 && synced === 0 ? 'Nothing Could Be Synced' : 'Sync Complete', body);
+      const lines = [parts.join(' · ')];
+      if (outcome.notices.length > 0) lines.push('', ...outcome.notices);
+      if (outcome.errors.length > 0) lines.push('', summariseSyncErrors(outcome.errors));
+      Alert.alert(outcome.failed > 0 && outcome.sent === 0 ? 'Nothing Could Be Synced' : 'Sync Complete', lines.join('\n'));
     } catch (e: any) {
       Alert.alert('Sync Failed', e?.message || 'Could not reach the server. Please try again.');
     } finally {
@@ -199,10 +198,8 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const heroText = !online
     ? `Offline · ${pendingTotal} queued`
     : syncingAll
-    ? 'Syncing…'
-    : done
-    ? 'All up to date'
-    : `${pendingTotal} item${pendingTotal === 1 ? '' : 's'} pending upload`;
+    ? 'Sending…'
+    : syncStatusText(queue, state.syncStatus);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -213,6 +210,13 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
             <Icon name={heroIcon} size={30} color={heroTint} />
           </View>
           <Text style={styles.heroText}>{heroText}</Text>
+          {queue.fromEarlierDay && (
+            <Text style={styles.heroWarning}>Yesterday's work hasn't been sent. Connect to send it.</Text>
+          )}
+          {queue.refused > 0 && (
+            <Text style={styles.heroWarning}>{queue.refused} item{queue.refused === 1 ? '' : 's'} couldn't be sent: fix or delete {queue.refused === 1 ? 'it' : 'them'} on the Drafts page.</Text>
+          )}
+          <Text style={styles.heroNote}>Your work is sent on its own whenever there's a connection.</Text>
 
           <View style={styles.progressTrack}>
             <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
@@ -345,6 +349,8 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   heroIconBox: { width: 76, height: 76, borderRadius: 38, alignItems: 'center', justifyContent: 'center' },
   heroText: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark, marginTop: 4 },
+  heroWarning: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.red, textAlign: 'center' },
+  heroNote: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, textAlign: 'center' },
   progressTrack: { width: '100%', height: 8, borderRadius: 4, backgroundColor: theme.colors.fieldFill, overflow: 'hidden', marginTop: theme.spacing.sm },
   progressFill: { height: '100%', backgroundColor: theme.colors.navy, borderRadius: 4 },
   syncAllBtn: {

@@ -404,7 +404,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
         const warning = draftStockWarning(mode, activeCart.cart);
         Alert.alert(
           'Saved Locally',
-          `No connection — this ${mode} has been saved on this device and will upload automatically from the Sync page once you're back online.${warning ? `\n\n${warning}` : ''}`,
+          `No connection, so this ${mode} is saved on this phone. It's sent automatically once you're back online.${warning ? `\n\n${warning}` : ''}`,
         );
         onNavigate('outletDetail', { outletId: outlet.id });
       } else if (mode === 'sale' && e?.code === 'INSUFFICIENT_STOCK') {

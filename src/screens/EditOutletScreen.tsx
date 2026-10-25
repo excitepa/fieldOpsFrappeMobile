@@ -324,7 +324,7 @@ const theme = useTheme();  const styles = createStyles(theme);
         };
         dispatch({ type: 'UPDATE_OUTLET', outlet: updatedOutlet });
         dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft });
-        const savedNote = `No connection — these changes have been saved on this device and will upload automatically from the Sync page once you're back online.${newLocation ? ' The new location will then be sent for a supervisor\'s approval.' : ''}`;
+        const savedNote = `No connection, so these changes are saved on this phone. They're sent automatically once you're back online.${newLocation ? ' The new location will then be sent for a supervisor\'s approval.' : ''}`;
         if (afterEdit) {
           Alert.alert('Saved Locally', `${savedNote}\n\nFill in ${afterEdit.name} to finish editing ${outlet.name}.`);
           onNavigate('outletSurveyForm', { outletId: outlet.id, survey: afterEdit });
