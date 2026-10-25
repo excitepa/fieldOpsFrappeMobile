@@ -11,6 +11,7 @@ import {
   pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos, pushQueuedActions, pushAllDrafts,
   pullServerData as pullServerDataShared, summariseSyncErrors, syncNow, queueState, syncStatusText,
 } from '../utils/offlineSync';
+import { isMine } from '../utils/queue';
 import { RouteName, LeadDraft } from '../types';
 
 interface SyncScreenProps {
@@ -142,15 +143,17 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     setSyncingId(id);
     try {
       const fallbackCampaignId = state.activeCampaign?.id || '';
+      // Only what this agent made: another agent's items wait for them.
+      const mine = <T extends { agentEmail?: string }>(items: T[]) => items.filter((i) => isMine(i, state.user.email));
       // A survey can follow an outlet edit that hasn't synced: the edit goes
       // first, so the survey it made due isn't left due.
-      if (id === 'surveyDrafts' && state.outletDrafts.length > 0) await pushOutletDrafts(state.outletDrafts, dispatch);
-      const result = id === 'leadDrafts' ? await pushLeadDrafts(state.leadDrafts, dispatch)
-        : id === 'cartDrafts' ? await pushCartDrafts(state.drafts, dispatch, fallbackCampaignId)
-        : id === 'surveyDrafts' ? await pushSurveyDrafts(surveyDraftsList, dispatch)
+      if (id === 'surveyDrafts' && state.outletDrafts.length > 0) await pushOutletDrafts(mine(state.outletDrafts), dispatch);
+      const result = id === 'leadDrafts' ? await pushLeadDrafts(mine(state.leadDrafts), dispatch)
+        : id === 'cartDrafts' ? await pushCartDrafts(mine(state.drafts), dispatch, fallbackCampaignId)
+        : id === 'surveyDrafts' ? await pushSurveyDrafts(mine(surveyDraftsList), dispatch)
         : id === 'surveyPhotos' ? await pushSurveyPhotos(state.pendingSurveyPhotos, dispatch)
-        : id === 'queuedActions' ? await pushQueuedActions(state.queuedActions, dispatch)
-        : await pushOutletDrafts(state.outletDrafts, dispatch);
+        : id === 'queuedActions' ? await pushQueuedActions(mine(state.queuedActions), dispatch)
+        : await pushOutletDrafts(mine(state.outletDrafts), dispatch);
       if (result.synced > 0 || result.failed > 0) {
         const lines = [`${result.synced} uploaded${result.failed > 0 ? `, ${result.failed} still pending` : ''}.`];
         if (result.errors.length > 0) lines.push('', summariseSyncErrors(result.errors));
@@ -180,7 +183,8 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   };
 
   const retryLeadDraft = async (draft: LeadDraft) => {
-    if (!online) return;
+    // Another agent's lead goes only when they sign in.
+    if (!online || !isMine(draft, state.user.email)) return;
     setRetryingLeadId(draft.id);
     try {
       // The same send as a full sync: with the draft's one-time ID.
@@ -217,6 +221,9 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
             <Text style={styles.heroWarning}>{queue.refused} item{queue.refused === 1 ? '' : 's'} couldn't be sent: fix or delete {queue.refused === 1 ? 'it' : 'them'} on the Drafts page.</Text>
           )}
           <Text style={styles.heroNote}>Your work is sent on its own whenever there's a connection.</Text>
+          {queue.othersWaiting > 0 && (
+            <Text style={styles.heroNote}>{queue.othersWaiting} item{queue.othersWaiting === 1 ? ' was' : 's were'} made by another agent on this phone. They go when that agent signs in.</Text>
+          )}
 
           <View style={styles.progressTrack}>
             <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
@@ -248,6 +255,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.draftTitle}>{draft.name} · {draft.company}</Text>
                   <Text style={styles.draftSub}>{draft.phone} · Created {draft.createdAt}</Text>
+                  {!isMine(draft, state.user.email) && <Text style={styles.dsError}>Made by {draft.agentEmail}. Sign in as them to send.</Text>}
                 </View>
                 <Pressable
                   onPress={() => retryLeadDraft(draft)}

@@ -11,6 +11,7 @@ import { pushLeadDrafts, queuedActionLabel, summariseSyncErrors, syncNow } from 
 import { getCartTotal } from '../utils/cart';
 import { discardKeptPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
 import { formatServerDateTime } from '../utils/timestamp';
+import { isMine } from '../utils/queue';
 import { RouteName, LeadDraft, OutletSurvey, Draft, OutletDraft, QueuedAction } from '../types';
 
 interface DraftsListScreenProps {
@@ -116,7 +117,13 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
     });
   };
 
+  // Made by another agent on this phone (phones are shared only for testing):
+  // it waits for them, and only they can send it.
+  const madeBy = (item: { agentEmail?: string }) =>
+    isMine(item, state.user.email) ? null : <Text style={styles.draftError}>Made by {item.agentEmail}. Sign in as them to send.</Text>;
+
   const retryLeadDraft = async (draft: LeadDraft) => {
+    if (!isMine(draft, state.user.email)) return;
     setRetryingLeadId(draft.id);
     try {
       // The same send as a full sync: with the draft's one-time ID.
@@ -164,6 +171,7 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                       {draft.cart.length} item{draft.cart.length === 1 ? '' : 's'} · ₦{getCartTotal(draft.cart).toLocaleString()} · {draft.updatedAt}
                     </Text>
                     {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
+                    {madeBy(draft)}
                   </View>
                   <Pressable onPress={() => deleteCartDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
                     <Text style={styles.deleteBtnText}>Delete</Text>
@@ -187,6 +195,7 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                     <Text style={styles.draftTitle}>{draft.name} · {draft.company}</Text>
                     <Text style={styles.draftSub}>{draft.phone} · Created {draft.createdAt}</Text>
                     {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
+                    {madeBy(draft)}
                   </View>
                   {draft.syncError ? (
                     <Pressable onPress={() => deleteLeadDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
@@ -216,6 +225,7 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                     <Text style={styles.draftTitle}>{sur.surveyName || 'Field Survey'} draft</Text>
                     <Text style={styles.draftSub}>{sur.answers.length} responses saved · {sur.timestamp}</Text>
                     {sur.syncError ? <Text style={styles.draftError}>Not sent: {sur.syncError}</Text> : null}
+                    {madeBy(sur)}
                   </View>
                   {sur.syncError ? (
                     <Pressable onPress={() => deleteSurveyDraft(sur)} hitSlop={8} style={styles.deleteBtn}>
@@ -244,6 +254,7 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                   <Text style={styles.draftTitle}>{draft.mode === 'create' ? 'New outlet' : 'Outlet edit'} · {draft.name}</Text>
                   <Text style={styles.draftSub}>{draft.address} · {draft.createdAt}</Text>
                   {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
+                  {madeBy(draft)}
                 </View>
                 <Pressable onPress={() => deleteOutletDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
                   <Text style={styles.deleteBtnText}>Delete</Text>
@@ -265,6 +276,7 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                   <Text style={styles.draftTitle}>{queuedActionLabel(action)}</Text>
                   <Text style={styles.draftSub}>{action.happenedAt ? formatServerDateTime(action.happenedAt) : 'Not sent yet'}</Text>
                   {action.syncError ? <Text style={styles.draftError}>Not sent: {action.syncError}</Text> : null}
+                  {madeBy(action)}
                 </View>
                 <Pressable onPress={() => deleteQueuedAction(action)} hitSlop={8} style={styles.deleteBtn}>
                   <Text style={styles.deleteBtnText}>Delete</Text>
