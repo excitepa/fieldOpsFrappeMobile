@@ -342,24 +342,27 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
               <Text style={styles.modalTitle}>Switch Campaign Drive</Text>
               <Text style={styles.modalSub}>Select active campaign to update assigned target drive:</Text>
 
-              {campaignsList.map((c) => (
-                <Pressable
-                  key={c.id}
-                  onPress={() => handleSelectCampaign(c)}
-                  style={[styles.modalOption, c.id === currentCampaign.id ? styles.activeOption : undefined]}
-                >
-                  <View style={[styles.campaignDot, { backgroundColor: c.color }]} />
-                  <View style={styles.flex1}>
-                    <Text style={styles.optionName}>{c.name}</Text>
-                    <Text style={styles.optionSub}>{c.beat} • {c.type}</Text>
-                  </View>
-                  <Icon
-                    name={c.id === currentCampaign.id ? 'check-circle' : 'circle'}
-                    size={20}
-                    color={c.id === currentCampaign.id ? theme.colors.navy : theme.colors.textMuted}
-                  />
-                </Pressable>
-              ))}
+              {/* Scrolls when there are more campaigns than fit on the sheet. */}
+              <ScrollView style={styles.campaignList} contentContainerStyle={styles.campaignListContent}>
+                {campaignsList.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    onPress={() => handleSelectCampaign(c)}
+                    style={[styles.modalOption, c.id === currentCampaign.id ? styles.activeOption : undefined]}
+                  >
+                    <View style={[styles.campaignDot, { backgroundColor: c.color }]} />
+                    <View style={styles.flex1}>
+                      <Text style={styles.optionName}>{c.name}</Text>
+                      <Text style={styles.optionSub}>{c.beat} • {c.type}</Text>
+                    </View>
+                    <Icon
+                      name={c.id === currentCampaign.id ? 'check-circle' : 'circle'}
+                      size={20}
+                      color={c.id === currentCampaign.id ? theme.colors.navy : theme.colors.textMuted}
+                    />
+                  </Pressable>
+                ))}
+              </ScrollView>
 
               <Button title="Close" onPress={() => setShowSwitchModal(false)} variant="ghost" style={{ marginTop: 8 }} />
             </View>
@@ -454,7 +457,9 @@ const createStyles = (theme: any) => StyleSheet.create({
   quickAccessBadge: { minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: theme.colors.red, alignItems: 'center', justifyContent: 'center' },
   quickAccessBadgeText: { fontFamily: theme.fonts.bold, fontSize: 11, color: '#FFFFFF' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: theme.colors.cardWhite, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, padding: theme.spacing.xl, gap: theme.spacing.md, paddingBottom: 40 },
+  modalCard: { backgroundColor: theme.colors.cardWhite, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, padding: theme.spacing.xl, gap: theme.spacing.md, paddingBottom: 40, maxHeight: '85%' },
+  campaignList: { flexShrink: 1 },
+  campaignListContent: { gap: theme.spacing.md },
   sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.cardBorder, borderRadius: 2, alignSelf: 'center', marginBottom: theme.spacing.sm },
   modalTitle: { fontFamily: theme.fonts.bold, fontSize: 18, color: theme.colors.textDark },
   modalSub: { fontFamily: theme.fonts.regular, fontSize: 13, color: theme.colors.textMuted },
