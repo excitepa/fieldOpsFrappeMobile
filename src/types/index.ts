@@ -477,7 +477,7 @@ export interface SurveyAnswer {
   answer: string | string[] | number | null;
 }
 
-export interface OutletSurvey {
+export interface OutletSurvey extends ActionStamp {
   id: string;
   outletId: string;
   campaignId: string;
@@ -538,7 +538,22 @@ export interface CartLine {
   quantity: number;
 }
 
-export interface Draft {
+/**
+ * What every action the app can send again carries (submit_field_sale,
+ * submit_outlet, skip_outlet_visit...): a one-time ID the server answers a
+ * repeat of exactly as the first time, when the agent did it, and who did it.
+ * Kept on the draft or queued item, unchanged, until it's sent.
+ */
+export interface ActionStamp {
+  /** UUID made when the agent first did it (client_ref). Missing on items saved before it existed. */
+  clientRef?: string;
+  /** When the agent did it, by the phone's clock: "YYYY-MM-DD HH:MM:SS" (happened_at). */
+  happenedAt?: string;
+  /** The signed-in agent's email when it was done: only they can send it. */
+  agentEmail?: string;
+}
+
+export interface Draft extends ActionStamp {
   id: string;
   mode: 'sale' | 'order';
   outletId: string;
@@ -553,6 +568,9 @@ export interface Draft {
   promoCode?: string;
   updatedAt: string;
   pendingSync: true;
+  /** Submitted with no connection, so it goes up on its own once there's one.
+   *  A cart saved to finish later isn't: it goes only from the Sync page. */
+  ready?: boolean;
   /** Why the server refused it at the last sync (e.g. not enough stock for a sale), shown on the Drafts and Sync pages. */
   syncError?: string;
   /** A sale's location when it was submitted (and the agent's reason when it was outside), sent when the draft syncs. */
@@ -560,7 +578,7 @@ export interface Draft {
 }
 
 // ─── Lead Draft (offline queue) ──────────────────────────────────────────────
-export interface LeadDraft {
+export interface LeadDraft extends ActionStamp {
   id: string;
   campaignId: string;
   name: string;
@@ -575,10 +593,12 @@ export interface LeadDraft {
   pipeline?: string;
   createdAt: string;
   pendingSync: true;
+  /** Why the server refused it at the last sync, shown on the Drafts and Sync pages. */
+  syncError?: string;
 }
 
 // ─── Outlet Draft (offline queue) ────────────────────────────────────────────
-export interface OutletDraft {
+export interface OutletDraft extends ActionStamp {
   id: string;
   mode: 'create' | 'edit';
   /** Only set for mode: 'edit' — which existing outlet this update applies to. */
@@ -604,8 +624,67 @@ export interface OutletDraft {
   longitude?: number;
   /** That location fix's accuracy, in meters. */
   gpsAccuracy?: number;
+  /** A new outlet the agent said isn't any of the outlets it looked like (confirmed_new). */
+  confirmedNew?: boolean;
   createdAt: string;
   pendingSync: true;
+  /** Why the server refused it at the last sync, shown on the Drafts and Sync pages. */
+  syncError?: string;
+}
+
+// ─── Queued actions (offline queue) ──────────────────────────────────────────
+/** A stock request line, in stock units (as submit_stock_request takes it). */
+export interface QueuedStockRequestLine {
+  itemCode: string;
+  itemName?: string;
+  qty: number;
+  cases?: number;
+  units?: number;
+}
+
+interface QueuedActionBase extends ActionStamp {
+  id: string;
+  /** Why the server refused it at the last sync, shown on the Drafts and Sync pages. */
+  syncError?: string;
+}
+
+/** A skip, stage change or stock request made with no connection, sent when there's one. */
+export type QueuedAction =
+  | (QueuedActionBase & {
+      kind: 'skip';
+      outletId: string;
+      outletName: string;
+      campaignId: string;
+      /** What skip_outlet_visit takes: the reason, or the agent's note for "Other". */
+      reason: string;
+      latitude?: number;
+      longitude?: number;
+    })
+  | (QueuedActionBase & { kind: 'leadStage'; leadId: string; leadName: string; stage: LeadStage; reason: string; notes?: string })
+  | (QueuedActionBase & { kind: 'leadRegression'; leadId: string; leadName: string; toStage: LeadStage; reason: string })
+  | (QueuedActionBase & { kind: 'stockRequest'; campaignId: string; lines: QueuedStockRequestLine[]; note?: string });
+
+// ─── Morning download / sync status ─────────────────────────────────────────
+/** The day's download (outlets, products, surveys...), as it last went. */
+export interface DayPackStatus {
+  /** Whose data it was. */
+  agentEmail?: string;
+  /** ISO time each part last downloaded fine, by part. */
+  parts: Record<string, string>;
+  /** ISO time the whole download last finished with every part in. */
+  completedAt?: string;
+}
+
+/** Where sending the phone's queue stands. */
+export interface SyncStatus {
+  /** A sync is running now (never saved). */
+  running: boolean;
+  /** ISO time the last sync finished with nothing left that it could send. */
+  lastSyncedAt?: string;
+  /** The last sync stopped on an expired login: the agent has to sign in again. */
+  needsSignIn?: boolean;
+  /** What the last syncs had to say, e.g. "Sent. Your supervisor will check whether Iya Basira is a duplicate." */
+  notices: string[];
 }
 
 // ─── Photo Capture ────────────────────────────────────────────────────────────
