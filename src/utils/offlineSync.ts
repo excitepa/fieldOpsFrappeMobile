@@ -213,7 +213,10 @@ const isPhotoAnswer = (a: SurveyAnswer) =>
  * question must be answered, and every photo must still be on the phone.
  */
 const surveyDraftProblem = (draft: OutletSurvey): string => {
-  const blank = draft.answers.filter((a) => !isAnswered(a.answer, isPhotoAnswer(a) ? 'photo' : a.questionType));
+  // A number answer is only checked for being there: one saved before number
+  // boxes took only numbers goes to the server, which says what's wrong with
+  // it (INVALID_NUMBER_ANSWERS) for the Drafts and Sync pages.
+  const blank = draft.answers.filter((a) => !isAnswered(a.answer, isPhotoAnswer(a) ? 'photo' : a.questionType === 'number' ? undefined : a.questionType));
   if (blank.length > 0) return `Not complete: ${blank.map((a) => `"${a.question}"`).join(', ')} unanswered.`;
   const lost = draft.answers.filter((a) => isPhotoAnswer(a) && !surveyPhotoExists(a.answer as string));
   if (lost.length > 0) return `The photo for ${lost.map((a) => `"${a.question}"`).join(', ')} is no longer on this device.`;

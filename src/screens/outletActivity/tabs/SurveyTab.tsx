@@ -13,7 +13,7 @@ import { blockIfDayLocked } from '../../../utils/dayLock';
 import {
   keepSurveyPhoto, discardSurveyPhoto, discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles,
 } from '../../../utils/surveyPhotos';
-import { cannotBeAnswered, missingQuestionIds, NO_OPTIONS_MESSAGE, requireAllAnswered, surveyRejectionMessage } from '../../../utils/surveyAnswers';
+import { cannotBeAnswered, missingQuestionIds, NO_OPTIONS_MESSAGE, numberInput, requireAllAnswered, surveyRejectionMessage } from '../../../utils/surveyAnswers';
 import { newStamp } from '../../../utils/queue';
 import { CampaignSurveyConfig, DynamicSurveyQuestion, SurveyAnswer, OutletSurvey, ActionStamp } from '../../../types';
 
@@ -350,8 +350,9 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
                 placeholder="Enter numeric quantity"
                 placeholderTextColor={theme.colors.darkMuted}
                 value={answers[q.id]?.toString() || ''}
-                onChangeText={(val) => handleAnswerChange(q.id, val)}
-                keyboardType="numeric"
+                // Digits and one decimal point only, as they're typed.
+                onChangeText={(val) => handleAnswerChange(q.id, numberInput(val))}
+                keyboardType="decimal-pad"
               />
             )}
 
@@ -380,7 +381,7 @@ export const SurveyTab: React.FC<SurveyTabProps> = ({ outletId, campaignId, surv
               </View>
             )}
 
-            {hasError && <Text style={styles.errorText}>Answer this question</Text>}
+            {hasError && <Text style={styles.errorText}>{q.type === 'number' ? 'Answer with a number' : 'Answer this question'}</Text>}
           </Card>
         );
       })}

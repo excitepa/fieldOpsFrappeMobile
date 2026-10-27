@@ -5,7 +5,7 @@ import { Card } from './Card';
 import { Button } from './Button';
 import { Icon } from './Icon';
 import { OptionPickerSheet } from './OptionPickerSheet';
-import { cannotBeAnswered, NO_OPTIONS_MESSAGE } from '../utils/surveyAnswers';
+import { cannotBeAnswered, NO_OPTIONS_MESSAGE, numberInput } from '../utils/surveyAnswers';
 import { LeadSurveySection, DynamicSurveyQuestion } from '../types';
 
 interface DynamicSurveyFormProps {
@@ -167,8 +167,9 @@ export const DynamicSurveyForm: React.FC<DynamicSurveyFormProps> = ({
                     <TextInput
                       style={styles.numberInput}
                       value={answers[q.id]?.toString() || ''}
-                      onChangeText={(t) => onAnswerChange(q.id, t.replace(/[^0-9]/g, ''))}
-                      keyboardType="number-pad"
+                      // Digits and one decimal point only, as they're typed.
+                      onChangeText={(t) => onAnswerChange(q.id, numberInput(t))}
+                      keyboardType="decimal-pad"
                       placeholder="0"
                       placeholderTextColor={theme.colors.textLight}
                     />
@@ -210,7 +211,7 @@ export const DynamicSurveyForm: React.FC<DynamicSurveyFormProps> = ({
                   )
                 )}
 
-                {hasError && <Text style={styles.errorText}>Answer this question</Text>}
+                {hasError && <Text style={styles.errorText}>{q.type === 'number' ? 'Answer with a number' : 'Answer this question'}</Text>}
               </Card>
             );
           })}

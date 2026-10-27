@@ -17,6 +17,7 @@ import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
 import type { OutletDirectory } from '../utils/outletDirectory';
 import { firstStage, normalizeStage, stageScore } from '../utils/leadStages';
+import { cleanNumberAnswer } from '../utils/surveyAnswers';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
 export class AuthError extends Error {}
@@ -1887,7 +1888,7 @@ export const getSurveysForCampaign = async (campaignId: string, options?: { incl
 
 /**
  * The backend sends question_type as a mobile-friendly label (Text/Multiple Choice/
- * Single Choice/Rating/Image) rather than this app's internal QuestionType union.
+ * Single Choice/Rating/Image/Number) rather than this app's internal QuestionType union.
  * "Single Choice" with exactly ["Yes","No"] options already renders as the yes/no
  * toggle in DynamicSurveyForm — that check lives there (q.type === 'choice' + options),
  * so no separate yes/no QuestionType is needed on this side.
@@ -1898,6 +1899,7 @@ const BACKEND_TO_APP_QUESTION_TYPE: Record<string, QuestionType> = {
   'Single Choice': 'choice',
   Rating: 'rating',
   Image: 'photo',
+  Number: 'number',
 };
 const APP_TO_BACKEND_QUESTION_TYPE: Record<QuestionType, string> = {
   text: 'Text',
@@ -1906,7 +1908,7 @@ const APP_TO_BACKEND_QUESTION_TYPE: Record<QuestionType, string> = {
   rating: 'Rating',
   photo: 'Image',
   select: 'Text',
-  number: 'Text',
+  number: 'Number',
   gps: 'Text',
 };
 
@@ -1989,7 +1991,10 @@ export const submitSurveyResponse = async (
     responses: responses.map((r) => ({
       question: r.questionId,
       question_type: APP_TO_BACKEND_QUESTION_TYPE[r.questionType] || 'Text',
-      answer: r.questionType === 'photo' ? '' : Array.isArray(r.answer) ? r.answer.join(', ') : r.answer,
+      // A number goes cleaned ("12." as "12", ".5" as "0.5"); it's kept as typed on the phone.
+      answer: r.questionType === 'photo' ? ''
+        : r.questionType === 'number' ? cleanNumberAnswer(r.answer)
+        : Array.isArray(r.answer) ? r.answer.join(', ') : r.answer,
     })),
   };
   if (coordinates) {
