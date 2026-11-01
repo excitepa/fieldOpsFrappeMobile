@@ -6,10 +6,11 @@ import { Header } from '../components/Header';
 import { Icon, IconName } from '../components/Icon';
 import { Card } from '../components/Card';
 import { useFieldStore } from '../store/useFieldStore';
-import { getOutlets, getItems, getMyOrders, getMySales } from '../services/api';
+import { getOutlets, getItems, getLeads, getMyOrders, getMySales, OUTLETS_CAP } from '../services/api';
 import {
   pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, pushSurveyPhotos, pushQueuedActions, pushAllDrafts,
   pullServerData as pullServerDataShared, summariseSyncErrors, syncNow, queueState, syncStatusText,
+  DownloadList, DownloadProgress,
 } from '../utils/offlineSync';
 import { isMine } from '../utils/queue';
 import { RouteName, LeadDraft } from '../types';
@@ -20,11 +21,14 @@ interface SyncScreenProps {
 
 /** Rows that pull the agent's current server-side data — no "pending" concept, just a refresh. */
 interface ServerDataSet {
-  id: 'outlets' | 'products' | 'orders' | 'sales';
+  id: 'outlets' | 'products' | 'leads' | 'orders' | 'sales';
   label: string;
   icon: IconName;
   total: number;
 }
+
+/** What a list that comes down a page at a time is called while it does ("Outlets: 400…"). */
+const DOWNLOAD_NAMES: Record<DownloadList, string> = { outlets: 'Outlets', products: 'Products', leads: 'Leads' };
 
 /** Rows for data captured on-device that hasn't reached the backend yet. */
 interface PendingUploadSet {
@@ -45,6 +49,12 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [retryingLeadId, setRetryingLeadId] = useState<string | null>(null);
+  // How many of each paged list have come down so far, while they're coming.
+  const [downloaded, setDownloaded] = useState<Partial<Record<DownloadList, number>>>({});
+  const onProgress: DownloadProgress = (list, count) => setDownloaded((d) => ({ ...d, [list]: count }));
+  const downloadText = (Object.keys(downloaded) as DownloadList[])
+    .map((list) => `${DOWNLOAD_NAMES[list]}: ${downloaded[list]!.toLocaleString()}`)
+    .join(' · ');
 
   const cartDraftsPending = state.drafts.length;
   const refusedCartDrafts = state.drafts.filter((d) => d.syncError);
@@ -69,6 +79,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const serverDataSets: ServerDataSet[] = [
     { id: 'outlets', label: 'Outlets / Customers', icon: 'map-pin', total: state.outlets.length },
     { id: 'products', label: 'Products & Inventory', icon: 'package', total: state.products.length },
+    { id: 'leads', label: 'Leads', icon: 'users', total: state.leads.length },
     { id: 'orders', label: 'Orders', icon: 'shopping-bag', total: state.orders.length },
     { id: 'sales', label: 'Sales', icon: 'target', total: state.sales.length },
   ];
@@ -85,7 +96,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
     if (!online || syncingAll) return;
     setSyncingAll(true);
     try {
-      const outcome = await syncNow({ getState: () => stateRef.current, dispatch, manual: true, refresh: true });
+      const outcome = await syncNow({ getState: () => stateRef.current, dispatch, manual: true, refresh: true, onProgress });
       if (outcome.needsSignIn) {
         Alert.alert('Sign In Again', 'Your login has expired. Sign in again to send your work: it stays saved on this phone.');
         return;
@@ -103,6 +114,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
       Alert.alert('Sync Failed', e?.message || 'Could not reach the server. Please try again.');
     } finally {
       setSyncingAll(false);
+      setDownloaded({});
     }
   };
 
@@ -116,12 +128,15 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
       if (id === 'outlets') {
         const campaignId = state.activeCampaign?.id;
         if (campaignId) {
-          const fetched = await getOutlets(campaignId);
+          const fetched = await getOutlets(campaignId, { onProgress: (count) => onProgress('outlets', count) });
           dispatch({ type: 'SET_OUTLETS', outlets: fetched });
         }
       } else if (id === 'products') {
-        const fetched = await getItems();
+        const fetched = await getItems({ onProgress: (count) => onProgress('products', count) });
         dispatch({ type: 'SET_PRODUCTS', products: fetched });
+      } else if (id === 'leads') {
+        const fetched = await getLeads(state.activeCampaign?.id || '', { onProgress: (count) => onProgress('leads', count) });
+        dispatch({ type: 'SET_LEADS', leads: fetched });
       } else if (id === 'orders') {
         const fetched = await getMyOrders();
         dispatch({ type: 'SET_ORDERS', orders: fetched });
@@ -133,6 +148,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
       Alert.alert('Refresh Failed', e?.message || 'Could not refresh this data.');
     } finally {
       setSyncingId(null);
+      setDownloaded({});
     }
   };
 
@@ -202,7 +218,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
   const heroText = !online
     ? `Offline · ${pendingTotal} queued`
     : syncingAll
-    ? 'Sending…'
+    ? (downloadText ? `${downloadText}…` : 'Sending…')
     : syncStatusText(queue, state.syncStatus);
 
   return (
@@ -319,6 +335,12 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
         <View style={styles.list}>
           {serverDataSets.map((ds) => {
             const isSyncing = syncingId === ds.id;
+            const coming = ds.id === 'outlets' || ds.id === 'products' || ds.id === 'leads' ? downloaded[ds.id] : undefined;
+            const meta = coming !== undefined
+              ? `${DOWNLOAD_NAMES[ds.id as DownloadList]}: ${coming.toLocaleString()}…`
+              : ds.id === 'outlets' && state.outletsCapped
+              ? `The first ${OUTLETS_CAP.toLocaleString()} loaded · search finds the others`
+              : `${ds.total} records loaded`;
             return (
               <View key={ds.id} style={styles.dsCard}>
                 <View style={styles.dsRow}>
@@ -327,7 +349,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
                   </View>
                   <View style={styles.flex1}>
                     <Text style={styles.dsLabel}>{ds.label}</Text>
-                    <Text style={styles.dsMeta}>{ds.total} records loaded</Text>
+                    <Text style={styles.dsMeta}>{meta}</Text>
                   </View>
                   <Pressable
                     onPress={() => runServerSync(ds.id)}

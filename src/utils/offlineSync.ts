@@ -26,6 +26,11 @@ const withRef = <T extends ActionStamp>(item: T, keep: (stamped: T) => void): T 
 /** What a queued item is sent with: its one-time ID and when it happened, as sent later from the queue. */
 const queuedMeta = (item: ActionStamp): ActionMeta => ({ clientRef: item.clientRef, happenedAt: item.happenedAt, capturedOffline: true });
 
+/** The lists that come down a page at a time. */
+export type DownloadList = 'outlets' | 'products' | 'leads';
+/** How many of a list have come down so far, after each page. */
+export type DownloadProgress = (list: DownloadList, count: number) => void;
+
 /**
  * Refreshes the core server-owned datasets the app caches locally (outlets,
  * products/stock, orders, sales). Offline-first: each dataset is only replaced
@@ -39,15 +44,17 @@ const queuedMeta = (item: ActionStamp): ActionMeta => ({ clientRef: item.clientR
  */
 export async function pullServerData(
   campaignId: string | undefined,
-  dispatch: (action: any) => void
+  dispatch: (action: any) => void,
+  onProgress?: DownloadProgress,
 ): Promise<void> {
+  const counted = (list: DownloadList) => (onProgress ? { onProgress: (count: number) => onProgress(list, count) } : undefined);
   const [outletsRes, productsRes, ordersRes, salesRes, geofenceRes, leadsRes, requestsRes] = await Promise.allSettled([
-    campaignId ? getOutlets(campaignId) : Promise.resolve([]),
-    getItems(),
+    campaignId ? getOutlets(campaignId, counted('outlets')) : Promise.resolve([]),
+    getItems(counted('products')),
     getMyOrders(),
     getMySales(),
     getMyGeofence(),
-    getLeads(campaignId || ''),
+    getLeads(campaignId || '', counted('leads')),
     getMyStockRequests(),
   ]);
   if (outletsRes.status === 'fulfilled' && campaignId) dispatch({ type: 'SET_OUTLETS', outlets: outletsRes.value });
@@ -630,6 +637,8 @@ export function syncNow(options: {
   manual?: boolean;
   /** Refresh the downloaded lists even with nothing to send (e.g. the signal just came back). */
   refresh?: boolean;
+  /** How the lists that come a page at a time are getting on (when this call starts the sync). */
+  onProgress?: DownloadProgress;
 }): Promise<SyncOutcome> {
   if (syncing) return syncing;
   const { getState, dispatch, manual = false } = options;
@@ -669,7 +678,7 @@ export function syncNow(options: {
       // The lists, once what was sent is on the server (stock, sales, outlets...).
       if (!outcome.needsSignIn && !outcome.offline && (outcome.sent > 0 || refreshDue)) {
         lastRefreshAt = Date.now();
-        await pullServerData(state.activeCampaign?.id, dispatch);
+        await pullServerData(state.activeCampaign?.id, dispatch, options.onProgress);
       }
     } finally {
       dispatch({
