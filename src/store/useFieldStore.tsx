@@ -106,6 +106,10 @@ type Action =
   | { type: 'SET_PRODUCTS'; products: Product[] }
   | { type: 'SET_ORDERS'; orders: OutletOrder[] }
   | { type: 'SET_SALES'; sales: OutletSale[] }
+  /** Older history from "Load more", after what's there. */
+  | { type: 'APPEND_SALES'; sales: OutletSale[] }
+  | { type: 'APPEND_ORDERS'; orders: OutletOrder[] }
+  | { type: 'APPEND_STOCK_REQUESTS'; requests: StockRequestSummary[] }
   | { type: 'ADD_SALE'; sale: OutletSale }
   | { type: 'ADD_ORDER'; order: OutletOrder }
   | { type: 'ADD_SURVEY'; survey: OutletSurvey }
@@ -391,6 +395,21 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_SALES':
       return { ...state, sales: action.sales };
+
+    case 'APPEND_SALES': {
+      const have = new Set(state.sales.map((s) => s.id));
+      return { ...state, sales: [...state.sales, ...action.sales.filter((s) => !have.has(s.id))] };
+    }
+
+    case 'APPEND_ORDERS': {
+      const have = new Set(state.orders.map((o) => o.id));
+      return { ...state, orders: [...state.orders, ...action.orders.filter((o) => !have.has(o.id))] };
+    }
+
+    case 'APPEND_STOCK_REQUESTS': {
+      const have = new Set(state.stockRequests.map((r) => r.id));
+      return { ...state, stockRequests: [...state.stockRequests, ...action.requests.filter((r) => !have.has(r.id))] };
+    }
 
     case 'ADD_SALE':
       return {

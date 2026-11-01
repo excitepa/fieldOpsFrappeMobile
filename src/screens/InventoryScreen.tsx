@@ -6,7 +6,9 @@ import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
+import { LoadMoreButton } from '../components/LoadMoreButton';
 import { useFieldStore } from '../store/useFieldStore';
+import { useLoadMore } from '../hooks/useLoadMore';
 import { getItems, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
 import { mslFirst } from '../utils/msl';
 import { getSellingUnits, getStockUnit } from '../utils/cart';
@@ -53,6 +55,8 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   const [inventoryError, setInventoryError] = useState('');
   // Saved with the rest of the agent's data, so they show offline too.
   const stockRequests: StockRequestSummary[] = state.stockRequests;
+  // Older requests than the first page, a page at a time.
+  const moreRequests = useLoadMore('stockRequests');
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [requestsError, setRequestsError] = useState('');
   const [loadingMyStock, setLoadingMyStock] = useState(false);
@@ -508,6 +512,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               </Card>
             );
           })}
+          <LoadMoreButton {...moreRequests} onPress={moreRequests.loadMore} />
         </ScrollView>
       )}
 

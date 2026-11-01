@@ -1745,21 +1745,38 @@ const mapSaleDoc = (raw: any): OutletSale[] => {
   }));
 };
 
-/** Fetch this agent's orders via the RPC contract (`get_my_orders`). Throws when it can't be loaded, so the copy on the phone is kept. */
-export const getMyOrders = async (): Promise<OutletOrder[]> => {
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_orders');
-  const raw = data?.message ?? data?.data ?? data;
-  const list = Array.isArray(raw) ? raw : [];
-  return list.flatMap(mapOrderDoc);
+/**
+ * A page of the agent's history, newest first: its records (an order or sale is a record
+ * per line), and how many documents came, which tells whether there may be more.
+ */
+export interface HistoryPage<T> {
+  records: T[];
+  docs: number;
+}
+
+/** How much more history "Load more" asks for at a time. */
+export const HISTORY_PAGE = 50;
+
+/** The page from `start` (`size` documents), or the backend's first page when none is asked for. */
+const historyQuery = (start?: number, size?: number) => (start !== undefined && size ? pageQuery(start, size) : '');
+
+/** A page of this agent's orders via `get_my_orders`; without a page, the newest (the backend's first page, 20). Throws when it can't be loaded. */
+export const getMyOrdersPage = async (start?: number, size?: number): Promise<HistoryPage<OutletOrder>> => {
+  const list = listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_orders${historyQuery(start, size)}`));
+  return { records: list.flatMap(mapOrderDoc), docs: list.length };
 };
 
-/** Fetch this agent's field sales via the RPC contract (`get_my_sales`). Throws when it can't be loaded, so the copy on the phone is kept. */
-export const getMySales = async (): Promise<OutletSale[]> => {
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_sales');
-  const raw = data?.message ?? data?.data ?? data;
-  const list = Array.isArray(raw) ? raw : [];
-  return list.flatMap(mapSaleDoc);
+/** This agent's newest orders (`get_my_orders`). Throws when they can't be loaded, so the copy on the phone is kept. */
+export const getMyOrders = async (): Promise<OutletOrder[]> => (await getMyOrdersPage()).records;
+
+/** A page of this agent's field sales via `get_my_sales`; without a page, the newest (the backend's first page, 50). Throws when it can't be loaded. */
+export const getMySalesPage = async (start?: number, size?: number): Promise<HistoryPage<OutletSale>> => {
+  const list = listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_sales${historyQuery(start, size)}`));
+  return { records: list.flatMap(mapSaleDoc), docs: list.length };
 };
+
+/** This agent's newest field sales (`get_my_sales`). Throws when they can't be loaded, so the copy on the phone is kept. */
+export const getMySales = async (): Promise<OutletSale[]> => (await getMySalesPage()).records;
 
 // ─── Morning download ───────────────────────────────────────────────────────────
 
@@ -1913,13 +1930,14 @@ const mapStockRequest = (raw: any): StockRequestSummary => {
   };
 };
 
-/** Fetch this agent's submitted stock requests and their approval status via `get_my_stock_requests`. */
-export const getMyStockRequests = async (): Promise<StockRequestSummary[]> => {
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_stock_requests');
-  const raw = data?.message ?? data?.data ?? data;
-  const list = Array.isArray(raw) ? raw : [];
-  return list.map(mapStockRequest);
+/** A page of this agent's stock requests via `get_my_stock_requests`; without a page, the newest (the backend's first page, 50). Throws when it can't be loaded. */
+export const getMyStockRequestsPage = async (start?: number, size?: number): Promise<HistoryPage<StockRequestSummary>> => {
+  const list = listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_stock_requests${historyQuery(start, size)}`));
+  return { records: list.map(mapStockRequest), docs: list.length };
 };
+
+/** This agent's newest stock requests and their approval status (`get_my_stock_requests`). */
+export const getMyStockRequests = async (): Promise<StockRequestSummary[]> => (await getMyStockRequestsPage()).records;
 
 export interface ReconciliationLine {
   itemCode: string;
