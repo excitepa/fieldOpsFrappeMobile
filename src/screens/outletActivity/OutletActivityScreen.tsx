@@ -113,7 +113,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // The free goods the cart earns, previewed on the phone (the server adds the
   // real ones on submit). Looked up in the full catalog: a reward item doesn't
   // have to be one of this campaign's products.
-  const freeGoods = category === 'merchandising' ? [] : previewFreeGoods(activeCart.cart, state.products);
+  const freeGoods = category === 'merchandising' ? [] : previewFreeGoods(activeCart.cart, state.products).lines;
   // A sale also needs stock for its free goods.
   const stockShortfalls = category === 'sale' ? getStockShortfalls(activeCart.cart, stockProducts, freeGoods) : [];
 
@@ -228,7 +228,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
       // Offline or failing: the stock on this device.
     }
     const sellable = withUnsentSales(products, state.drafts, routeData?.resumeDraftId);
-    return getStockShortfalls(saleCart.cart, sellable, previewFreeGoods(saleCart.cart, products));
+    return getStockShortfalls(saleCart.cart, sellable, previewFreeGoods(saleCart.cart, products).lines);
   };
 
   // The sale's cart as an order: a pre-order doesn't need the agent's stock.
@@ -250,7 +250,7 @@ export const OutletActivityScreen: React.FC<OutletActivityScreenProps> = ({ rout
   // short now means it may be refused when it syncs.
   const draftStockWarning = (mode: 'sale' | 'order', cart: CartLine[]): string => {
     if (mode !== 'sale') return '';
-    const short = getStockShortfalls(cart, stockProducts, previewFreeGoods(cart, state.products));
+    const short = getStockShortfalls(cart, stockProducts, previewFreeGoods(cart, state.products).lines);
     return short.length > 0
       ? `The stock on this device doesn't cover this sale:\n${describeShortfalls(short)}\n\nIt may be refused when it syncs. An order doesn't need stock.`
       : '';

@@ -12,7 +12,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, OutletList, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, SurveyDue, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, OutletList, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, SurveyDue, Product, ProductUnit, ProductPromotion, PromotionChoices, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
 import type { OutletDirectory } from '../utils/outletDirectory';
@@ -1395,6 +1395,11 @@ const mapPromotions = (raw: any): ProductPromotion[] | undefined => {
       freeUom: String(p.free_uom || p.uom),
       requiresCode: Boolean(p.requires_code),
       validTo: p.valid_to || undefined,
+      // Each offer's reward stock and free unit, for a reward that isn't on
+      // the phone; an older backend sends neither.
+      rewardStockQty: p.reward_stock_qty === undefined || p.reward_stock_qty === null ? undefined : Number(p.reward_stock_qty) || 0,
+      freeConversionFactor: Number(p.free_conversion_factor) > 0 ? Number(p.free_conversion_factor) : undefined,
+      rewardStockUom: p.reward_stock_uom || undefined,
     }));
 };
 
@@ -1476,6 +1481,8 @@ export interface SavedOrderLine {
   rate: number;
   amount: number;
   isFree: boolean;
+  /** The promotion a free line came from. */
+  promotionId?: string;
   promotionName?: string;
 }
 
@@ -1499,9 +1506,14 @@ const mapSavedLine = (raw: any): SavedOrderLine => {
     rate,
     amount: Number(raw?.amount) || rate * qty,
     isFree: Boolean(raw?.is_free),
+    promotionId: raw?.promotion ? String(raw.promotion) : undefined,
     promotionName: raw?.promotion_name || undefined,
   };
 };
+
+/** The agent's free-item choices as a sale or order sends them, or nothing when there are none. */
+const choicesField = (choices?: PromotionChoices): Record<string, any> =>
+  choices && Object.keys(choices).length > 0 ? { promotion_choices: choices } : {};
 
 /** The saved lines and total a submit returns — undefined from a backend that doesn't send them. */
 const mapSubmitResult = (result: any): { items?: SavedOrderLine[]; totalAmount?: number } => {
@@ -1567,6 +1579,11 @@ const mapSaleLocationResult = (raw: any): SaleLocationResult | undefined =>
  * the agent's reason when it was away from the outlet or outside their
  * territory, and capturedOffline for a draft synced later. The server checks
  * it again, records it on the sale, and returns its verdict as `location`.
+ *
+ * `promotionChoices`: the free item the agent chose where a product qualifies
+ * for more than one promotion (promotion_choices). The server gives exactly
+ * that one or refuses the sale (PROMOTION_CHOICE_INVALID); an older backend
+ * ignores it and applies its own rule. The same goes for submitSalesOrder.
  */
 export const submitFieldSale = async (
   outletId: string,
@@ -1575,11 +1592,13 @@ export const submitFieldSale = async (
   amountPaid: number,
   location?: SaleLocation & { capturedOffline?: boolean },
   promoCode?: string,
-  meta?: ActionMeta
+  meta?: ActionMeta,
+  promotionChoices?: PromotionChoices
 ): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number; location?: SaleLocationResult }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
     ...stampFields(meta),
+    ...choicesField(promotionChoices),
     outlet: outletId,
     outlet_id: outletId,
     campaign: campaignId,
@@ -1638,11 +1657,13 @@ export const submitSalesOrder = async (
   campaignId: string,
   lines: OrderLinePayload[],
   promoCode?: string,
-  meta?: ActionMeta
+  meta?: ActionMeta,
+  promotionChoices?: PromotionChoices
 ): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
     ...stampFields(meta),
+    ...choicesField(promotionChoices),
     outletId,
     outlet_id: outletId,
     campaignId,

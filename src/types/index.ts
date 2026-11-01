@@ -201,7 +201,18 @@ export interface ProductPromotion {
   requiresCode: boolean;
   /** YYYY-MM-DD, or undefined for no end date. */
   validTo?: string;
+  /** The agent's on-hand of `rewardItem` in stock units when it was downloaded; missing from an older backend. */
+  rewardStockQty?: number;
+  /** Stock units of `rewardItem` in one `freeUom`; missing from an older backend. */
+  freeConversionFactor?: number;
+  rewardStockUom?: string;
 }
+
+/**
+ * The free item the agent chose for each product that qualifies for more than
+ * one promotion: product -> promotion, sent as promotion_choices.
+ */
+export type PromotionChoices = Record<string, string>;
 
 export interface Product {
   id: string;
@@ -574,6 +585,8 @@ export interface Draft extends ActionStamp {
   cart: CartLine[];
   /** Entered on the Summary tab; sent with the order when the draft is submitted. */
   promoCode?: string;
+  /** The free item chosen where a product qualifies for more than one promotion, sent with it. */
+  promotionChoices?: PromotionChoices;
   updatedAt: string;
   pendingSync: true;
   /** Submitted with no connection, so it goes up on its own once there's one.

@@ -6,8 +6,8 @@ import { formatQty, formatUnitQty, unitWord } from './units';
 /**
  * Stock units of each product that sales not yet sent will take: every
  * unsent sale draft's lines, paid and free (free goods worked out as the app
- * shows them). `exceptDraftId`: the draft being resumed, which is checked as
- * the cart itself.
+ * shows them, with the free item chosen on the draft). `exceptDraftId`: the
+ * draft being resumed, which is checked as the cart itself.
  */
 export function unsentSaleStock(drafts: Draft[], products: Product[], exceptDraftId?: string): Map<string, number> {
   const taken = new Map<string, number>();
@@ -15,7 +15,8 @@ export function unsentSaleStock(drafts: Draft[], products: Product[], exceptDraf
     .filter((d) => d.mode === 'sale' && d.id !== exceptDraftId)
     .forEach((d) => {
       getStockQtyByProduct(d.cart).forEach((qty, id) => taken.set(id, (taken.get(id) || 0) + qty));
-      previewFreeGoods(d.cart, products).forEach((f) => taken.set(f.productId, (taken.get(f.productId) || 0) + f.stockQty));
+      previewFreeGoods(d.cart, products, d.promotionChoices, { promoCode: d.promoCode }).lines
+        .forEach((f) => taken.set(f.productId, (taken.get(f.productId) || 0) + f.stockQty));
     });
   return taken;
 }
