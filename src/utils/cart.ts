@@ -83,6 +83,8 @@ export interface ExtraStockNeed {
   productId: string;
   productName: string;
   stockQty: number;
+  /** The product's stock, in stock units, when it isn't on the phone (see freeGoodsStockNeeds). */
+  knownStock?: number;
 }
 
 export interface StockShortfall {
@@ -100,10 +102,12 @@ export interface StockShortfall {
 /**
  * Sale-mode-only check, per product: the stock units of all its lines (cartons,
  * packs and loose units alike) plus the free goods of it the cart earns may not
- * exceed its live stock.
+ * exceed its live stock. A free item that isn't on the phone is checked
+ * against the stock the server sent with its promotion (`knownStock`); without
+ * one, the server checks it.
  */
 export function getStockShortfalls(cart: CartLine[], products: Product[], extra: ExtraStockNeed[] = []): StockShortfall[] {
-  const needs = new Map<string, { productName: string; paid: number; free: number }>();
+  const needs = new Map<string, { productName: string; paid: number; free: number; knownStock?: number }>();
   cart.forEach((l) => {
     const need = needs.get(l.productId) || { productName: l.productName, paid: 0, free: 0 };
     need.paid += lineStockQty(l);
@@ -112,12 +116,14 @@ export function getStockShortfalls(cart: CartLine[], products: Product[], extra:
   extra.forEach((e) => {
     const need = needs.get(e.productId) || { productName: e.productName, paid: 0, free: 0 };
     need.free += e.stockQty;
+    if (e.knownStock !== undefined) need.knownStock = e.knownStock;
     needs.set(e.productId, need);
   });
   const shortfalls: StockShortfall[] = [];
   needs.forEach((need, productId) => {
     const product = products.find((p) => p.id === productId);
-    const available = product?.stock ?? 0;
+    if (!product && need.paid === 0 && need.knownStock === undefined) return;
+    const available = product ? product.stock : need.knownStock ?? 0;
     const requested = need.paid + need.free;
     if (requested > available + 1e-9) {
       shortfalls.push({ productId, productName: product?.name || need.productName, requested, freeQty: need.free, available, product });

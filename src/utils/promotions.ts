@@ -1,5 +1,5 @@
 import { CartLine, Product, ProductPromotion, PromotionChoices } from '../types';
-import { getProductUnits, getStockQtyByProduct, getStockUnit, StockShortfall } from './cart';
+import { ExtraStockNeed, getProductUnits, getStockQtyByProduct, getStockUnit, StockShortfall } from './cart';
 import { formatQty } from './units';
 import { localDateStr } from './timestamp';
 
@@ -193,6 +193,20 @@ export function offerOptions(
     }));
   });
   return options;
+}
+
+/**
+ * The free goods as the stock check counts them (getStockShortfalls): a free
+ * item that isn't on the phone with the stock the server sent with its
+ * promotion, less what unsent sales take of it (`unsentTaken`).
+ */
+export function freeGoodsStockNeeds(lines: FreeGoodsLine[], unsentTaken?: Map<string, number>): ExtraStockNeed[] {
+  return lines.map((l) => ({
+    productId: l.productId,
+    productName: l.productName,
+    stockQty: l.stockQty,
+    knownStock: l.rewardStockQty !== undefined ? Math.max(0, l.rewardStockQty - (unsentTaken?.get(l.productId) || 0)) : undefined,
+  }));
 }
 
 /** The products waiting for the agent's choice that they can make: at least one of the offers is covered. */

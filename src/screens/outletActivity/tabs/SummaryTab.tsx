@@ -1,13 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput } from 'react-native';
 import { useTheme } from '../../../theme/ThemeContext';
 import { Icon } from '../../../components/Icon';
 import { Button } from '../../../components/Button';
-import { CartLine, Product } from '../../../types';
+import { CartLine, Product, PromotionChoices } from '../../../types';
 import { StockShortfall, getStockQtyByProduct, lineKey } from '../../../utils/cart';
 import { formatQty, formatUnitQty } from '../../../utils/units';
 import { describeShortfall } from '../../../utils/stock';
-import { FreeGoodsLine } from '../../../utils/promotions';
+import { FreeGoodsLine, OfferOption } from '../../../utils/promotions';
+import { FreeItemChoice } from '../components/FreeItemChoice';
 
 interface SummaryTabProps {
   mode: 'sale' | 'order';
@@ -18,6 +19,13 @@ interface SummaryTabProps {
   stockShortfalls: StockShortfall[];
   /** The free goods the cart earns, previewed — the server adds the real ones on submit. */
   freeGoods: FreeGoodsLine[];
+  /** Each product's offers, with the stock they'd come from (offerOptions). */
+  offers: Map<string, OfferOption[]>;
+  /** The free item chosen for each product with more than one offer. */
+  choices: PromotionChoices;
+  /** Products that qualify for more than one offer, none chosen yet. */
+  needsChoice: string[];
+  onChoose: (productId: string, promotionId: string) => void;
   promoCode: string;
   onPromoCodeChange: (code: string) => void;
   submitting: boolean;
@@ -31,11 +39,14 @@ interface SummaryTabProps {
 // card, the current cart's line items (editable only by removal — quantity
 // is adjusted back on the Sale/Order tab), then Edit/Save Draft/Submit.
 export const SummaryTab: React.FC<SummaryTabProps> = ({
-  mode, customerName, cart, products, total, stockShortfalls, freeGoods, promoCode, onPromoCodeChange, submitting,
-  onDeleteLine, onEdit, onSaveDraft, onSubmit,
+  mode, customerName, cart, products, total, stockShortfalls, freeGoods, offers, choices, needsChoice, onChoose, promoCode, onPromoCodeChange,
+  submitting, onDeleteLine, onEdit, onSaveDraft, onSubmit,
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+  // The product whose free item is being changed, its offers open under it.
+  const [changing, setChanging] = useState<string | null>(null);
+  const productName = (productId: string) => cart.find((l) => l.productId === productId)?.productName || productId;
   const modeLabel = mode === 'sale' ? 'Sale' : 'Order';
   const hasItems = cart.length > 0;
   const hasShortfall = stockShortfalls.length > 0;
@@ -102,24 +113,58 @@ export const SummaryTab: React.FC<SummaryTabProps> = ({
               const shortfall = cart.some((l) => l.productId === free.productId)
                 ? undefined
                 : stockShortfalls.find((s) => s.productId === free.productId);
+              const alternatives = offers.get(free.qualifyingProductId) || [];
               return (
-                <View key={`free-${free.qualifyingProductId}-${free.promotionId}`} style={[styles.lineRow, styles.freeLineRow, shortfall && styles.lineRowError]}>
-                  <View style={styles.flex1}>
-                    <View style={styles.freeTitleRow}>
-                      <Text style={styles.lineName}>{free.productName}</Text>
-                      <View style={styles.freeBadge}>
-                        <Text style={styles.freeBadgeText}>FREE</Text>
+                <View key={`free-${free.qualifyingProductId}-${free.promotionId}`} style={styles.freeBlock}>
+                  <View style={[styles.lineRow, styles.freeLineRow, shortfall && styles.lineRowError]}>
+                    <View style={styles.flex1}>
+                      <View style={styles.freeTitleRow}>
+                        <Text style={styles.lineName}>{free.productName}</Text>
+                        <View style={styles.freeBadge}>
+                          <Text style={styles.freeBadgeText}>FREE</Text>
+                        </View>
                       </View>
+                      <Text style={styles.lineSub}>
+                        {formatUnitQty(free.quantity, free.uom)} · {free.promotionName}{free.requiresCode ? ' · with promo code' : ''}
+                      </Text>
+                      {shortfall && (
+                        <Text style={styles.shortfallText}>{describeShortfall(shortfall, shortfall.product)}</Text>
+                      )}
                     </View>
-                    <Text style={styles.lineSub}>{formatUnitQty(free.quantity, free.uom)} · {free.promotionName}</Text>
-                    {shortfall && (
-                      <Text style={styles.shortfallText}>{describeShortfall(shortfall, shortfall.product)}</Text>
+                    {alternatives.length > 1 && (
+                      <Pressable onPress={() => setChanging(changing === free.qualifyingProductId ? null : free.qualifyingProductId)} style={styles.changeBtn}>
+                        <Text style={styles.changeBtnText}>{changing === free.qualifyingProductId ? 'Done' : 'Change'}</Text>
+                      </Pressable>
                     )}
                   </View>
+                  {alternatives.length > 1 && changing === free.qualifyingProductId && (
+                    <FreeItemChoice
+                      mode={mode}
+                      options={alternatives}
+                      chosenId={choices[free.qualifyingProductId]}
+                      onChoose={(id) => {
+                        onChoose(free.qualifyingProductId, id);
+                        setChanging(null);
+                      }}
+                    />
+                  )}
                 </View>
               );
             })}
-            {freeGoods.length > 0 && (
+            {needsChoice.map((productId) => {
+              const options = offers.get(productId) || [];
+              const noneInStock = options.every((o) => !o.covered);
+              return (
+                <View key={`choose-${productId}`} style={[styles.chooseCard, noneInStock && styles.lineRowError]}>
+                  <Text style={styles.chooseTitle}>Choose the free item for {productName(productId)}</Text>
+                  <FreeItemChoice mode={mode} options={options} chosenId={choices[productId]} onChoose={(id) => onChoose(productId, id)} />
+                  {noneInStock && (
+                    <Text style={styles.shortfallText}>None of these free items is in stock. Reduce the quantity, or create an order instead.</Text>
+                  )}
+                </View>
+              );
+            })}
+            {(freeGoods.length > 0 || needsChoice.length > 0) && (
               <Text style={styles.freeNote}>Free goods are a preview — they're confirmed when you submit.</Text>
             )}
           </View>
@@ -211,6 +256,17 @@ const createStyles = (theme: any) => StyleSheet.create({
   freeBadge: { backgroundColor: theme.colors.emerald, borderRadius: theme.radius.full, paddingHorizontal: 7, paddingVertical: 2 },
   freeBadgeText: { fontFamily: theme.fonts.bold, fontSize: 9, color: '#FFFFFF', letterSpacing: 0.5 },
   freeNote: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
+  freeBlock: { gap: 6 },
+  changeBtn: {
+    paddingHorizontal: 12, height: 30, borderRadius: theme.radius.full, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder,
+  },
+  changeBtnText: { fontFamily: theme.fonts.bold, fontSize: 12, color: theme.colors.navy },
+  chooseCard: {
+    gap: 6, backgroundColor: theme.colors.amberLight, borderWidth: 1, borderColor: theme.colors.amberLight,
+    borderRadius: theme.radius.md, padding: theme.spacing.md,
+  },
+  chooseTitle: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textDark },
 
   promoCard: {
     backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder,

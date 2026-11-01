@@ -2,19 +2,25 @@ import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { useTheme } from '../../theme/ThemeContext';
 import { Icon } from '../../components/Icon';
-import { CartLine, Product, ProductUnit } from '../../types';
+import { CartLine, Product, ProductUnit, PromotionChoices } from '../../types';
 import { findLine, getSellingUnits, getStockUnit, lineStockQty } from '../../utils/cart';
 import { formatUnitQty, unitWord, formatQty } from '../../utils/units';
-import { currentPromotions, describePromotion } from '../../utils/promotions';
+import { currentPromotions, describePromotion, OfferOption } from '../../utils/promotions';
+import { FreeItemChoice } from './components/FreeItemChoice';
 
 interface OrderWorkspaceProps {
   mode: 'sale' | 'order';
   products: Product[];
   cart: CartLine[];
   onSetQty: (product: Product, unit: ProductUnit, qty: number) => void;
+  /** Each product's offers for its quantity, with the stock they'd come from (offerOptions). */
+  offers: Map<string, OfferOption[]>;
+  /** The free item chosen for each product with more than one offer. */
+  choices: PromotionChoices;
+  onChoose: (productId: string, promotionId: string) => void;
 }
 
-export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, cart, onSetQty }) => {
+export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, cart, onSetQty, offers, choices, onChoose }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
 
@@ -40,6 +46,7 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
           const canPick = mode === 'order' || !outOfStock;
           const meta = [p.brand, p.size, `₦${stockUnit.price.toLocaleString()} / ${unitWord(stockUnit.uom, 1)}`].filter(Boolean).join(' · ');
           const promotions = currentPromotions(p);
+          const productOffers = offers.get(p.id) || [];
 
           return (
             <View key={p.id} style={[styles.productCard, !canPick && styles.productCardDisabled]}>
@@ -69,6 +76,9 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
                   <Text style={styles.promoBadgeText}>{describePromotion(promo, p)}</Text>
                 </View>
               ))}
+              {promotions.length > 1 && (
+                <Text style={styles.promoHint}>One free item per product: you choose which.</Text>
+              )}
 
               {canPick && (
                 <>
@@ -104,6 +114,19 @@ export const OrderWorkspace: React.FC<OrderWorkspaceProps> = ({ mode, products, 
                   {stockQty > 0 && (
                     <Text style={styles.qtyHint}>
                       {formatUnitQty(stockQty, stockUnit.uom)} · ₦{amount.toLocaleString()}
+                    </Text>
+                  )}
+                  {productOffers.length > 1 && (
+                    <View style={styles.choiceBlock}>
+                      <Text style={styles.choiceTitle}>Choose the free item</Text>
+                      <FreeItemChoice mode={mode} options={productOffers} chosenId={choices[p.id]} onChoose={(id) => onChoose(p.id, id)} />
+                    </View>
+                  )}
+                  {productOffers.length === 1 && (
+                    <Text style={[styles.freeHint, !productOffers[0].covered && styles.freeHintShort]}>
+                      Free: {formatQty(productOffers[0].quantity)} × {productOffers[0].productName}
+                      {productOffers[0].requiresCode ? ' (with promo code)' : ''}
+                      {productOffers[0].covered ? '' : ' · not enough in stock'}
                     </Text>
                   )}
                 </>
@@ -167,6 +190,11 @@ const createStyles = (theme: any) => StyleSheet.create({
     backgroundColor: theme.colors.emeraldLight, borderRadius: theme.radius.full, paddingHorizontal: 10, paddingVertical: 4,
   },
   promoBadgeText: { fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.emerald, flexShrink: 1 },
+  promoHint: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted },
+  choiceBlock: { gap: 6 },
+  choiceTitle: { fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.textDark, letterSpacing: 0.3 },
+  freeHint: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.emerald },
+  freeHintShort: { color: theme.colors.red },
 
   stepperRow: { flexDirection: 'row', gap: theme.spacing.sm },
   stepperCard: {
