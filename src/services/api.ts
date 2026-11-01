@@ -12,7 +12,7 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, SurveyDue, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, OutletList, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, SurveyDue, Product, ProductUnit, ProductPromotion, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
 import { debugLog } from '../utils/logger';
 import type { OutletDirectory } from '../utils/outletDirectory';
@@ -652,17 +652,92 @@ export const getLeadStages = async (): Promise<LeadStageInfo[]> => {
     }));
 };
 
+// ─── Paged lists ─────────────────────────────────────────────────────────────────
+
+/** For a list fetched in pages: told how many rows are in so far ("Outlets: 400…"). */
+export interface ListOptions {
+  onProgress?: (count: number) => void;
+}
+
+/** The most pages one list is fetched in, so a backend that keeps answering full pages can't loop for ever. */
+const MAX_PAGES = 200;
+
+/**
+ * A list fetched page by page (limit_start, limit_page_length) until it's all in.
+ * The backend orders each list by its sort and then name, so pages neither skip
+ * nor repeat rows. A page that comes back short is the last; so is one longer
+ * than asked (a backend that doesn't page sends everything at once) and one
+ * with nothing new. Where the backend counts the rows (`total`), that decides.
+ * The next page starts after the rows that came, so a page the backend keeps
+ * smaller than asked doesn't end it early. Every page must arrive: one that
+ * fails throws, so the caller keeps the copy on the phone. `max` stops early,
+ * with `capped` when there's more.
+ */
+export async function fetchAllPages<T>(
+  fetchPage: (start: number, size: number) => Promise<{ rows: T[]; total?: number }>,
+  options: { size: number; idOf: (row: T) => string; max?: number; onProgress?: (count: number) => void },
+): Promise<{ rows: T[]; capped: boolean }> {
+  const { size, idOf, max, onProgress } = options;
+  const rows: T[] = [];
+  const seen = new Set<string>();
+  let start = 0;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { rows: got, total } = await fetchPage(start, size);
+    let added = 0;
+    for (const row of got) {
+      const id = idOf(row);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push(row);
+      added++;
+      // Capped once there's a row past `max`: a list of exactly `max` isn't.
+      if (max && rows.length > max) {
+        rows.length = max;
+        onProgress?.(max);
+        return { rows, capped: true };
+      }
+    }
+    onProgress?.(rows.length);
+    if (got.length === 0 || added === 0 || got.length > size) break;
+    if (total !== undefined ? rows.length >= total : got.length < size) break;
+    start += got.length;
+  }
+  return { rows, capped: false };
+}
+
+/** A page of a list endpoint, as `limit_start`/`limit_page_length` (and any other params) in the query. */
+const pageQuery = (start: number, size: number, extra: Record<string, string | undefined> = {}): string => {
+  const params = new URLSearchParams({ limit_start: String(start), limit_page_length: String(size) });
+  Object.entries(extra).forEach(([key, value]) => { if (value) params.set(key, value); });
+  return `?${params.toString()}`;
+};
+
+const listOf = (data: any): any[] => {
+  const raw = data?.message ?? data?.data ?? data;
+  return Array.isArray(raw) ? raw : [];
+};
+
+/** Supervisors and admins: get_outlets can be the whole tenant for them. */
+const OVERSEER_ROLES = ['Supervisor', 'Field Supervisor', 'System Manager', 'Administrator', 'Company Admin'];
+
+const isOverseer = async (): Promise<boolean> => {
+  const info = await getUserInfo().catch(() => null);
+  return Array.isArray(info?.roles) && info.roles.some((r: any) => OVERSEER_ROLES.includes(String(r)));
+};
+
 /**
  * Fetch leads for the active campaign via the RPC contract (`get_my_leads`). The old
  * campaign-nested REST route (`/agent/campaigns/{id}/leads`) no longer exists — get_my_leads
  * returns leads across all of the agent's campaigns, so results are narrowed to campaignId
- * client-side whenever the response actually carries a campaign field. Throws when it
- * can't be loaded, so the copy on the phone is kept.
+ * client-side whenever the response actually carries a campaign field. Every lead, 200
+ * at a time (the backend's page is 20). Throws when any page can't be loaded, so the
+ * copy on the phone is kept.
  */
-export const getLeads = async (campaignId: string): Promise<Lead[]> => {
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_leads');
-  const raw = data?.message ?? data?.data ?? data;
-  const list = Array.isArray(raw) ? raw : [];
+export const getLeads = async (campaignId: string, options?: ListOptions): Promise<Lead[]> => {
+  const { rows: list } = await fetchAllPages(
+    async (start, size) => ({ rows: listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_leads${pageQuery(start, size)}`)) }),
+    { size: 200, idOf: (l: any) => String(l?.name || l?.id || ''), onProgress: options?.onProgress },
+  );
   const scoped = campaignId
     ? list.filter((l: any) => {
         // An empty string is common on leads whose campaign link didn't save server-side —
@@ -844,16 +919,33 @@ const mapSurveyDue = (raw: any): SurveyDue | undefined =>
     ? { surveyId: String(raw.survey_id), surveyName: String(raw.survey_name || raw.survey_id), since: raw.since ? String(raw.since) : undefined }
     : undefined;
 
-/** Fetch outlets via the RPC contract (`get_outlets`). Throws when it can't be loaded, so the copy on the phone is kept. */
-export const getOutlets = async (campaignId: string): Promise<Outlet[]> => {
-  const [data, tenantId] = await Promise.all([
-    authFetch('/api/method/fieldops.api.mobile_api.get_outlets'),
-    getTenantId(),
-  ]);
-  const raw = data?.message ?? data?.data ?? data;
-  const list = Array.isArray(raw) ? raw : [];
+/** A supervisor's or admin's download stops here: get_outlets can be the whole tenant for them. */
+export const OUTLETS_CAP = 2000;
+
+/**
+ * Fetch outlets via the RPC contract (`get_outlets`): every outlet on the agent's list, 200
+ * at a time (the backend's page is 50). For a supervisor or admin it stops at OUTLETS_CAP,
+ * marked `capped`: the outlets beyond it are found by searching the server (`search`, which
+ * gets the first 200 matches). Throws when any page can't be loaded, so the copy on the
+ * phone is kept.
+ */
+export const getOutlets = async (campaignId: string, options?: ListOptions & { search?: string }): Promise<OutletList> => {
+  const search = options?.search?.trim() || undefined;
+  const [tenantId, overseer] = await Promise.all([getTenantId(), isOverseer()]);
+  const page = async (start: number, size: number) =>
+    ({ rows: listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_outlets${pageQuery(start, size, { search })}`)) });
+  const { rows, capped } = search
+    ? { rows: (await page(0, 200)).rows, capped: false }
+    : await fetchAllPages(page, {
+        size: 200,
+        idOf: (o: any) => String(o?.name || o?.id || ''),
+        max: overseer ? OUTLETS_CAP : undefined,
+        onProgress: options?.onProgress,
+      });
   const baseUrl = getBaseUrl(tenantId || '');
-  return list.map((o: any) => mapOutlet(o, campaignId, baseUrl));
+  const outlets: OutletList = rows.map((o: any) => mapOutlet(o, campaignId, baseUrl));
+  if (capped) outlets.capped = true;
+  return outlets;
 };
 
 /**
@@ -1348,15 +1440,14 @@ const flattenInventoryResponse = (raw: any[], baseUrl: string): Product[] => {
 };
 
 /** Fetch the product catalog via the RPC contract (`get_items`). Throws when it can't be loaded, so the copy on the phone is kept. */
-export const getItems = async (): Promise<Product[]> => {
-  const [data, tenantId] = await Promise.all([
-    // The backend's page is 100 items: a bigger catalog was cut off, offline included.
-    authFetch('/api/method/fieldops.api.mobile_api.get_items?limit_page_length=1000'),
-    getTenantId(),
-  ]);
-  const raw = data?.message ?? data?.data ?? data;
-  const list = Array.isArray(raw) ? raw : [];
-  return list.map((it: any) => mapItem(it, getBaseUrl(tenantId || "")));
+export const getItems = async (options?: ListOptions): Promise<Product[]> => {
+  const tenantId = await getTenantId();
+  // The whole catalog, 500 at a time (the backend's page is 100): a bigger one was cut off, offline included.
+  const { rows } = await fetchAllPages(
+    async (start, size) => ({ rows: listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_items${pageQuery(start, size)}`)) }),
+    { size: 500, idOf: (it: any) => String(it?.item_code || it?.name || it?.id || ''), onProgress: options?.onProgress },
+  );
+  return rows.map((it: any) => mapItem(it, getBaseUrl(tenantId || '')));
 };
 
 export interface OrderLinePayload {
@@ -1677,16 +1768,28 @@ export const getMySales = async (): Promise<OutletSale[]> => {
  * area of an outlet on their list, or on it) via `get_outlet_directory`, for
  * spotting an outlet that's already onboarded offline. Phone numbers come only
  * as lowercase hex sha256(phoneHashSalt + number), with their last 4 digits.
+ * Asked for 1,000 at a time; the backend counts them all (`total`), which
+ * decides when they're all in (it keeps its pages to 500). An older backend
+ * sends them all at once. Throws when any page can't be loaded.
  */
-export const getOutletDirectory = async (): Promise<Omit<OutletDirectory, 'savedAt' | 'agentEmail'>> => {
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_outlet_directory');
-  const body = data?.message ?? data;
+export const getOutletDirectory = async (options?: ListOptions): Promise<Omit<OutletDirectory, 'savedAt' | 'agentEmail'>> => {
+  let body: any = null;
+  const { rows } = await fetchAllPages(
+    async (start, size) => {
+      const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_outlet_directory${pageQuery(start, size)}`);
+      const page = data?.message ?? data;
+      body = body || page;
+      const total = Number(page?.total);
+      return { rows: Array.isArray(page?.outlets) ? page.outlets : [], total: page?.total !== undefined && Number.isFinite(total) ? total : undefined };
+    },
+    { size: 1000, idOf: (o: any) => String(o?.id || ''), onProgress: options?.onProgress },
+  );
   const distance = Number(body?.duplicate_distance_m);
   const number = (value: any) => (value === null || value === undefined || value === '' ? null : Number(value));
   return {
     duplicateDistanceM: Number.isFinite(distance) && distance >= 0 ? distance : 50,
     phoneHashSalt: String(body?.phone_hash_salt || ''),
-    outlets: (Array.isArray(body?.outlets) ? body.outlets : [])
+    outlets: rows
       .filter((o: any) => o?.id)
       .map((o: any) => ({
         id: String(o.id),

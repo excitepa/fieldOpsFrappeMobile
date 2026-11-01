@@ -4,7 +4,7 @@ import {
   Outlet, OutletSale, OutletOrder, OutletSurvey, SkipRecord, Product, Campaign,
   StockMovement, StockMovementType, Draft, LeadDraft, OutletDraft, OutletPhotoCapture, LeadSurveyResponse,
   UserProfile, PendingSurveyPhoto, OutletFormOptions, LeadStageInfo, GeofenceConfig, CampaignSurveyConfig,
-  Lead, RouteAssignment, QueuedAction, DayPackStatus, SyncStatus,
+  Lead, RouteAssignment, QueuedAction, DayPackStatus, SyncStatus, OutletList,
 } from '../types';
 import { mockCampaigns, mockUser } from '../services/mockService';
 import { setLeadStageList } from '../utils/leadStages';
@@ -18,6 +18,8 @@ import { debugLog } from '../utils/logger';
 // ─── State Shape ──────────────────────────────────────────────────────────────
 export interface FieldState {
   outlets: Outlet[];
+  /** The outlets download stopped at its limit (a supervisor's or admin's whole tenant): search the server beyond it. */
+  outletsCapped: boolean;
   sales: OutletSale[];
   orders: OutletOrder[];
   surveys: OutletSurvey[];
@@ -94,7 +96,7 @@ type Action =
   | { type: 'SET_USER'; user: UserProfile }
   | { type: 'SET_ATTENDANCE_STATUS'; clockedIn: boolean; attendanceId?: string; clockInDate?: string }
   | { type: 'SET_CAMPAIGN_SELECTED'; value: boolean }
-  | { type: 'SET_OUTLETS'; outlets: Outlet[] }
+  | { type: 'SET_OUTLETS'; outlets: OutletList }
   | { type: 'RESET_OUTLET_VISIT_STATUS' }
   | { type: 'ADD_OUTLET'; outlet: Outlet }
   | { type: 'UPDATE_OUTLET'; outlet: Outlet }
@@ -283,6 +285,7 @@ function reducer(state: FieldState, action: Action): FieldState {
         // submitted EOD gets blocked from every action by someone else's lock.
         dayLockedUntil: null,
         outlets: [],
+        outletsCapped: false,
         sales: [],
         orders: [],
         // Only the previous agent's real, already-synced survey history is
@@ -344,7 +347,7 @@ function reducer(state: FieldState, action: Action): FieldState {
       // list until its draft syncs, so the agent can keep working there.
       const unsyncedNew = new Set(state.outletDrafts.filter((d) => d.mode === 'create').map((d) => d.id));
       const offlineOutlets = state.outlets.filter((o) => unsyncedNew.has(o.id) && !action.outlets.some((s) => s.id === o.id));
-      return { ...state, outlets: [...offlineOutlets, ...merged] };
+      return { ...state, outlets: [...offlineOutlets, ...merged], outletsCapped: !!action.outlets.capped };
     }
 
     case 'RESET_OUTLET_VISIT_STATUS':
@@ -572,6 +575,7 @@ const initialState: FieldState = {
   // data. Starting empty is honest: a genuinely empty list now looks empty,
   // and real data only ever appears once a real fetch actually returns it.
   outlets: [],
+  outletsCapped: false,
   sales: [],
   orders: [],
   surveys: [],
@@ -624,7 +628,7 @@ const persistence = createPersistence({
         'sessionAgentEmail', 'cachedAttendanceStats', 'dayPack', 'syncStatus',
       ],
     },
-    outlets: { fields: ['outlets'], debounceMs: 1000 },
+    outlets: { fields: ['outlets', 'outletsCapped'], debounceMs: 1000 },
     products: { fields: ['products', 'movements'], debounceMs: 1000 },
     sales: { fields: ['sales'], debounceMs: 1000, prepare: (s) => ({ sales: lastDays(s.sales, HISTORY_DAYS) }) },
     orders: { fields: ['orders'], debounceMs: 1000, prepare: (s) => ({ orders: lastDays(s.orders, HISTORY_DAYS) }) },

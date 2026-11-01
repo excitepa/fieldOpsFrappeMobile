@@ -17,10 +17,10 @@ import { Icon } from '../components/Icon';
 import { Button } from '../components/Button';
 import { DayRouteNav } from '../components/DayRouteNav';
 import { useFieldStore } from '../store/useFieldStore';
-import { getOutlets, getAgentBeats, getMySales, getMyOrders } from '../services/api';
+import { getOutlets, getAgentBeats, getMySales, getMyOrders, OUTLETS_CAP } from '../services/api';
 import { localDateStr } from '../utils/timestamp';
 import { getOutletIdsVisitedToday } from '../utils/outletVisits';
-import { RouteName, OutletStatus, RouteAssignment } from '../types';
+import { RouteName, Outlet, OutletStatus, RouteAssignment } from '../types';
 
 interface OutletsScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -89,6 +89,42 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [activeFilter, setActiveFilter] = useState<'all' | 'today' | 'pending' | 'visited' | 'skipped'>('all');
   const [sortAlpha, setSortAlpha] = useState(true);
 
+  // The download stopped at its limit (a supervisor's or admin's whole tenant):
+  // a search also asks the server, so an outlet beyond the first ones is found.
+  const [serverMatches, setServerMatches] = useState<Outlet[]>([]);
+  const [searchingServer, setSearchingServer] = useState(false);
+  const [serverSearchNote, setServerSearchNote] = useState('');
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!state.outletsCapped || query.length < 2 || !activeCampaign?.id) {
+      setServerMatches([]);
+      setServerSearchNote('');
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setSearchingServer(true);
+      try {
+        const found = await getOutlets(activeCampaign.id, { search: query });
+        if (!cancelled) {
+          setServerMatches(found);
+          setServerSearchNote('');
+        }
+      } catch {
+        if (!cancelled) setServerSearchNote('Showing the outlets on this phone only: searching all of them needs a connection.');
+      } finally {
+        if (!cancelled) setSearchingServer(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, state.outletsCapped, activeCampaign?.id]);
+  const listed = serverMatches.length > 0
+    ? [...outlets, ...serverMatches.filter((m) => !outlets.some((o) => o.id === m.id))]
+    : outlets;
+
   // Real, server-derived visited-today set — see outletVisits.ts for why this
   // replaced the local-only outlet.status flag. Skip has no server equivalent
   // to derive from yet, so that half of `status` is still read as-is.
@@ -104,7 +140,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   const scheduledTodayCount = outlets.filter((o) => o.isScheduledToday).length;
 
   // Filtered outlets
-  let filtered = outlets.filter((o) => {
+  let filtered = listed.filter((o) => {
     const matchesSearch =
       o.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       o.area.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -184,12 +220,18 @@ const theme = useTheme();  const styles = createStyles(theme);
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
+            {searchingServer ? <ActivityIndicator size="small" color={theme.colors.navy} /> : null}
             {searchQuery ? (
               <Pressable onPress={() => setSearchQuery('')}>
                 <Icon name="x" size={16} color={theme.colors.textMuted} />
               </Pressable>
             ) : null}
           </View>
+        )}
+        {state.outletsCapped && (
+          <Text style={styles.cappedNote}>
+            {serverSearchNote || `Showing the first ${OUTLETS_CAP.toLocaleString()} outlets. Search to find the others.`}
+          </Text>
         )}
 
         {/* Filter Pills Row */}
@@ -284,7 +326,11 @@ const theme = useTheme();  const styles = createStyles(theme);
                 <Card
                   key={item.id}
                   style={styles.outletCard}
-                  onPress={() => onNavigate('outletDetail', { outletId: item.id })}
+                  onPress={() => {
+                    // One found on the server isn't on the phone yet: it's kept there to work with.
+                    if (!outlets.some((o) => o.id === item.id)) dispatch({ type: 'ADD_OUTLET', outlet: item });
+                    onNavigate('outletDetail', { outletId: item.id });
+                  }}
                 >
                   <View style={styles.cardContent}>
                     <View style={styles.storeIconCircle}>
@@ -342,6 +388,7 @@ const createStyles = (theme: any) => StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
     height: 46,
   },
+  cappedNote: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted },
   searchInput: {
     flex: 1,
     fontFamily: theme.fonts.regular,

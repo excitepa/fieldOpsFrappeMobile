@@ -353,6 +353,13 @@ export interface Outlet {
   surveyDue?: SurveyDue;
 }
 
+/**
+ * Outlets as get_outlets gave them. `capped`: the download stopped at its limit (a
+ * supervisor's or admin's whole tenant), so outlets beyond it are found by searching the
+ * server. The store keeps the flag with the list (SET_OUTLETS).
+ */
+export type OutletList = Outlet[] & { capped?: boolean };
+
 /** A survey an outlet is waiting for after it was edited. */
 export interface SurveyDue {
   surveyId: string;
