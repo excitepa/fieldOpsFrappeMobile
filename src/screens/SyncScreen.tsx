@@ -165,7 +165,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
       // first, so the survey it made due isn't left due.
       if (id === 'surveyDrafts' && state.outletDrafts.length > 0) await pushOutletDrafts(mine(state.outletDrafts), dispatch);
       const result = id === 'leadDrafts' ? await pushLeadDrafts(mine(state.leadDrafts), dispatch)
-        : id === 'cartDrafts' ? await pushCartDrafts(mine(state.drafts), dispatch, fallbackCampaignId)
+        : id === 'cartDrafts' ? await pushCartDrafts(mine(state.drafts), dispatch, fallbackCampaignId, state.products)
         : id === 'surveyDrafts' ? await pushSurveyDrafts(mine(surveyDraftsList), dispatch)
         : id === 'surveyPhotos' ? await pushSurveyPhotos(state.pendingSurveyPhotos, dispatch)
         : id === 'queuedActions' ? await pushQueuedActions(mine(state.queuedActions), dispatch)
@@ -173,6 +173,9 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ onNavigate }) => {
       if (result.synced > 0 || result.failed > 0) {
         const lines = [`${result.synced} uploaded${result.failed > 0 ? `, ${result.failed} still pending` : ''}.`];
         if (result.errors.length > 0) lines.push('', summariseSyncErrors(result.errors));
+        // A free item the server gave in place of the one chosen.
+        const notices = id === 'cartDrafts' ? (result as { notices?: string[] }).notices || [] : [];
+        if (notices.length > 0) lines.push('', ...notices);
         Alert.alert(
           result.failed > 0 && result.synced === 0 ? 'Nothing Could Be Synced' : 'Synced',
           lines.join('\n'),

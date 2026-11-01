@@ -5,9 +5,10 @@ import {
   OrderLinePayload, AuthError, NetworkError, ActionMeta,
 } from '../services/api';
 import type { FieldState } from '../store/useFieldStore';
-import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto, ActionStamp, QueuedAction } from '../types';
+import { LeadDraft, Draft, OutletDraft, OutletSurvey, SurveyAnswer, PendingSurveyPhoto, ActionStamp, QueuedAction, Product, PromotionChoices } from '../types';
 import { discardKeptPhoto, discardSurveyPhoto, discardSurveyPhotos, surveyPhotoExists } from './surveyPhotos';
 import { isAnswered, surveyRejectionMessage } from './surveyAnswers';
+import { chosenFreeGoodsNotGiven, previewFreeGoods, withoutRefusedChoices } from './promotions';
 import { isMine, isOfflineLeadId, isOfflineOutletId, newClientRef, oldestFirst } from './queue';
 import { localDateStr } from './timestamp';
 import { debugLog } from './logger';
@@ -154,22 +155,47 @@ export async function pushLeadDrafts(
   return { synced, failed, errors, ids, ...kinds };
 }
 
+/** A draft's free-item choices for the products it still has, or nothing. */
+const draftChoices = (draft: Draft): PromotionChoices | undefined => {
+  const kept = Object.entries(draft.promotionChoices || {}).filter(([productId]) => draft.cart.some((l) => l.productId === productId));
+  return kept.length > 0 ? Object.fromEntries(kept) : undefined;
+};
+
 /**
  * Pushes every queued sale/order draft (cart saved offline, or manually via
- * "Save Draft") to the server. Needs a fallback campaign id for drafts saved
- * before Draft.campaignId existed.
+ * "Save Draft") to the server, each with the free item chosen on it
+ * (promotion_choices). Needs a fallback campaign id for drafts saved before
+ * Draft.campaignId existed. With the products on the phone (`products`), a
+ * cart saved to finish later that qualifies for more than one promotion on a
+ * product, none chosen, waits for the agent to choose: sent as it is, the
+ * server would choose for them. A refusal of a choice (PROMOTION_CHOICE_INVALID)
+ * takes it off the draft, so it's chosen again; a free item the server gave
+ * in place of the chosen one (an older backend) is a notice.
  */
 export async function pushCartDrafts(
   drafts: Draft[],
   dispatch: (action: any) => void,
-  fallbackCampaignId: string
-): Promise<SyncResult> {
+  fallbackCampaignId: string,
+  products?: Product[],
+): Promise<SyncResult & { notices: string[] }> {
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const notices: string[] = [];
   const kinds: { offline?: boolean; needsSignIn?: boolean } = {};
   for (const queued of oldestFirst(drafts)) {
     const draft = withRef(queued, (d) => dispatch({ type: 'SAVE_DRAFT', draft: d }));
+    const label = `${draft.mode === 'sale' ? 'Sale' : 'Order'} at ${draft.outletName}`;
+    const choices = draftChoices(draft);
+    const preview = products ? previewFreeGoods(draft.cart, products, choices, { promoCode: draft.promoCode }) : undefined;
+    if (preview && !draft.ready && preview.needsChoice.length > 0) {
+      const names = preview.needsChoice.map((id) => draft.cart.find((l) => l.productId === id)?.productName || id);
+      const problem = `Choose the free item for ${names.join(', ')} first: open the draft to finish it.`;
+      noteFailure(errors, label, new Error(problem));
+      dispatch({ type: 'SAVE_DRAFT', draft: { ...draft, syncError: problem } });
+      failed++;
+      continue;
+    }
     try {
       const campaignId = draft.campaignId || fallbackCampaignId;
       // A line saved before units has no uom: the server reads it as the
@@ -181,30 +207,38 @@ export async function pushCartDrafts(
         uom: l.uom,
         rate: l.unitPrice,
       }));
-      if (draft.mode === 'sale') {
-        const total = draft.cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
-        // Where it was recorded (and the agent's reason when that was away
-        // from the outlet), for the server's check; it's synced later, so
-        // captured offline.
-        await submitFieldSale(draft.outletId, campaignId, lines, total, { ...draft.saleLocation, capturedOffline: true }, draft.promoCode, queuedMeta(draft));
-      } else {
-        await submitSalesOrder(draft.outletId, campaignId, lines, draft.promoCode, queuedMeta(draft));
-      }
+      // Where a sale was recorded (and the agent's reason when that was away
+      // from the outlet), for the server's check; it's synced later, so
+      // captured offline.
+      const result = draft.mode === 'sale'
+        ? await submitFieldSale(draft.outletId, campaignId, lines, draft.cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0),
+          { ...draft.saleLocation, capturedOffline: true }, draft.promoCode, queuedMeta(draft), choices)
+        : await submitSalesOrder(draft.outletId, campaignId, lines, draft.promoCode, queuedMeta(draft), choices);
       dispatch({ type: 'DELETE_DRAFT', draftId: draft.id });
       synced++;
+      if (preview && choices && result.items) {
+        const chosen = preview.lines.filter((l) => preview.chosen[l.qualifyingProductId] === l.promotionId);
+        const notGiven = chosenFreeGoodsNotGiven(chosen, result.items, products || []);
+        if (notGiven) notices.push(`${label}: ${notGiven}`);
+      }
     } catch (e: any) {
-      noteFailure(errors, `${draft.mode === 'sale' ? 'Sale' : 'Order'} at ${draft.outletName}`, e);
+      noteFailure(errors, label, e);
       noteKind(kinds, e);
       failed++;
       // A refusal (such as INSUFFICIENT_STOCK for a sale the agent can't
       // cover) keeps the draft, with the server's reason on it for the
-      // Drafts and Sync pages. A lost connection isn't a refusal.
+      // Drafts and Sync pages. A lost connection isn't a refusal. A free item
+      // the server couldn't give comes off the draft, to be chosen again.
       if (isRefusal(e)) {
-        dispatch({ type: 'SAVE_DRAFT', draft: { ...draft, syncError: e?.message || 'The server refused it.' } });
+        const kept = e?.code === 'PROMOTION_CHOICE_INVALID' ? withoutRefusedChoices(draft.promotionChoices || {}, e) : draft.promotionChoices;
+        dispatch({
+          type: 'SAVE_DRAFT',
+          draft: { ...draft, syncError: e?.message || 'The server refused it.', promotionChoices: kept && Object.keys(kept).length > 0 ? kept : undefined },
+        });
       }
     }
   }
-  return { synced, failed, errors, ...kinds };
+  return { synced, failed, errors, notices, ...kinds };
 }
 
 /**
@@ -408,7 +442,8 @@ export async function pushAllDrafts(
     surveyPhotos?: PendingSurveyPhoto[]; queuedActions?: QueuedAction[];
   },
   dispatch: (action: any) => void,
-  fallbackCampaignId: string
+  fallbackCampaignId: string,
+  products?: Product[],
 ): Promise<{ leads: SyncResult; carts: SyncResult; surveys: SyncResult; outlets: SyncResult; photos: SyncResult; actions: SyncResult; notices: string[] }> {
   const outlets = await pushOutletDrafts(queues.outletDrafts, dispatch);
   const leads = await pushLeadDrafts(queues.leadDrafts, dispatch);
@@ -438,7 +473,7 @@ export async function pushAllDrafts(
   });
 
   const [cartsSent, surveysSent, actions] = await Promise.all([
-    pushCartDrafts(carts, dispatch, fallbackCampaignId),
+    pushCartDrafts(carts, dispatch, fallbackCampaignId, products),
     pushSurveyDrafts(surveys, dispatch),
     pushQueuedActions(queuedActions, dispatch),
   ]);
@@ -457,7 +492,7 @@ export async function pushAllDrafts(
     outlets,
     photos,
     actions,
-    notices: outlets.notices,
+    notices: [...outlets.notices, ...cartsSent.notices],
   };
 }
 
@@ -663,7 +698,7 @@ export function syncNow(options: {
     dispatch({ type: 'SET_SYNC_STATUS', status: { running: true } });
     try {
       if (toSend > 0) {
-        const result = await pushAllDrafts(queues, dispatch, state.activeCampaign?.id || '');
+        const result = await pushAllDrafts(queues, dispatch, state.activeCampaign?.id || '', state.products);
         const parts: SyncResult[] = [result.outlets, result.leads, result.carts, result.surveys, result.actions, result.photos];
         parts.forEach((r) => {
           outcome.sent += r.synced;
