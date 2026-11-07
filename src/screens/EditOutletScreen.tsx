@@ -27,7 +27,9 @@ import { updateOutlet, NetworkError, SoftError } from '../services/api';
 import { afterEditSurvey, dueSurveyConfig, loadCampaignSurveys } from '../utils/afterEditSurvey';
 import { parseGps } from '../utils/geo';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
+import {
+  OutletPicks, classificationChanged, listPlaceholder, missingPick, pickChannel, pickSubChannel, pickedName, subChannelsOf, typePlaceholder, typesOf,
+} from '../utils/outletForm';
 import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, getStampLocation, keepPhotoForDraft } from '../utils/photoStamp';
 import { newStamp } from '../utils/queue';
@@ -54,24 +56,16 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   const [outletName, setOutletName] = useState(outlet?.name || '');
 
-  // Pre-filled from what the backend says the outlet has (an older backend
-  // sends none of these, so they start empty there).
+  // Channel > Sub Channel > Outlet Type, pre-filled from what the backend
+  // says the outlet has, even where that doesn't fit the hierarchy: only a
+  // change is checked. An older backend sends none of these, so they start
+  // empty there. The distributor is shown as it is and never sent.
   const { options, loading: optionsLoading } = useOutletFormOptions();
-  const [outletTypeId, setOutletTypeId] = useState(outlet?.outletTypeId);
-  const [channelId, setChannelId] = useState(outlet?.channelId);
-  const [subChannelId, setSubChannelId] = useState(outlet?.subChannelId);
-  const [distributorId, setDistributorId] = useState(outlet?.distributorId);
+  const saved: OutletPicks = { channelId: outlet?.channelId, subChannelId: outlet?.subChannelId, outletTypeId: outlet?.outletTypeId };
+  const [{ channelId, subChannelId, outletTypeId }, setPicks] = useState<OutletPicks>(saved);
+  const picks = { channelId, subChannelId, outletTypeId };
   const channelSubChannels = subChannelsOf(options, channelId);
-
-  useEffect(() => {
-    if (options.defaultDistributorId) setDistributorId((current) => current || options.defaultDistributorId);
-  }, [options.defaultDistributorId]);
-
-  const handleChannelChange = (id: string) => {
-    setChannelId(id);
-    // A sub-channel belongs to one channel.
-    if (!subChannelsOf(options, id).some((s) => s.id === subChannelId)) setSubChannelId(undefined);
-  };
+  const subChannelTypes = typesOf(options, picks);
   // Saved numbers in another format (+234 801 ..., 0801-234-...) start tidied.
   const [phone, setPhone] = useState(normalizePhone(outlet?.phone || ''));
   const [ownerName, setOwnerName] = useState(outlet?.ownerName || '');
@@ -164,7 +158,7 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
-    const missing = missingPick(options, { outletTypeId, channelId, subChannelId, distributorId });
+    const missing = classificationChanged(saved, picks) ? missingPick(options, picks) : null;
     if (missing) {
       Alert.alert('Required', missing);
       return;
@@ -191,8 +185,6 @@ const theme = useTheme();  const styles = createStyles(theme);
       channelName: pickedName(options.channels, channelId, outlet.channelId, outlet.channelName),
       subChannelId,
       subChannelName,
-      distributorId,
-      distributorName: pickedName(options.distributors, distributorId, outlet.distributorId, outlet.distributorName),
     };
 
     setSubmitting(true);
@@ -208,7 +200,6 @@ const theme = useTheme();  const styles = createStyles(theme);
         outletTypeId,
         channelId,
         subChannelId,
-        distributorId,
         subChannel: subChannelName,
         address: address.trim(),
         phone: outletPhone,
@@ -309,7 +300,6 @@ const theme = useTheme();  const styles = createStyles(theme);
           outletTypeId,
           channelId,
           subChannelId,
-          distributorId,
           address: address.trim(),
           phone: outletPhone,
           ownerName: ownerName.trim() || undefined,
@@ -404,28 +394,18 @@ const theme = useTheme();  const styles = createStyles(theme);
           </View>
 
           <SelectField
-            label="Outlet Type"
-            title="Select outlet type"
-            options={options.types || []}
-            value={outletTypeId}
-            valueName={outletTypeId === outlet.outletTypeId ? outlet.outletTypeName : undefined}
-            placeholder={listPlaceholder(options.types, optionsLoading, 'Select outlet type')}
-            onChange={setOutletTypeId}
-          />
-
-          <SelectField
             label="Outlet Channel"
             title="Select outlet channel"
             options={options.channels || []}
             value={channelId}
             valueName={channelId === outlet.channelId ? outlet.channelName : undefined}
             placeholder={listPlaceholder(options.channels, optionsLoading, 'Select outlet channel')}
-            onChange={handleChannelChange}
+            onChange={(id) => setPicks(pickChannel(options, picks, id))}
           />
 
           <SelectField
-            label="Outlet sub-channel"
-            title="Select outlet sub-channel"
+            label="Outlet Sub Channel"
+            title="Select outlet sub channel"
             options={channelSubChannels}
             value={subChannelId}
             valueName={subChannelId === outlet.subChannelId ? outlet.subChannelName : undefined}
@@ -433,24 +413,31 @@ const theme = useTheme();  const styles = createStyles(theme);
               options.subChannels === undefined ? listPlaceholder(undefined, optionsLoading, '')
                 : !channelId ? 'Select a channel first'
                 : channelSubChannels.length === 0 ? 'None for this channel'
-                : 'Select outlet sub-channel'
+                : 'Select outlet sub channel'
             }
-            onChange={setSubChannelId}
+            onChange={(id) => setPicks(pickSubChannel(options, picks, id))}
           />
 
-          {/* Only when the agent has distributors to choose from — a backend
-              without get_my_distributors leaves this out. */}
-          {!!options.distributors?.length && (
-            <SelectField
-              label="Distributor"
-              title="Select distributor"
-              options={options.distributors}
-              value={distributorId}
-              valueName={distributorId === outlet.distributorId ? outlet.distributorName : undefined}
-              placeholder="Select distributor"
-              onChange={setDistributorId}
-            />
-          )}
+          <SelectField
+            label="Outlet Type"
+            title="Select outlet type"
+            options={subChannelTypes}
+            value={outletTypeId}
+            valueName={outletTypeId === outlet.outletTypeId ? outlet.outletTypeName : undefined}
+            placeholder={typePlaceholder(options, picks, optionsLoading)}
+            onChange={(id) => setPicks({ ...picks, outletTypeId: id })}
+          />
+
+          <SelectField
+            label="Distributor"
+            title="Distributor"
+            options={[]}
+            value={outlet.distributorId}
+            valueName={outlet.distributorName || pickedName(options.distributors, outlet.distributorId)}
+            placeholder="None"
+            onChange={() => {}}
+            disabled
+          />
 
           <Input
             label="Outlet Name"

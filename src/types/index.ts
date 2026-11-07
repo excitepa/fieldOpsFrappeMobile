@@ -382,7 +382,7 @@ export interface SurveyDue {
 export interface MasterOption {
   id: string;
   name: string;
-  /** A sub-channel's channel (its id). */
+  /** A sub channel's channel, or an outlet type's sub channel (its id); none for a type not placed yet. */
   parent?: string;
   /** A distributor's phone number. */
   phone?: string;
@@ -397,7 +397,7 @@ export interface OutletFormOptions {
   channels?: MasterOption[];
   subChannels?: MasterOption[];
   distributors?: MasterOption[];
-  /** The distributor to preselect, when the agent has exactly one. */
+  /** The agent's own distributor (or their only one): the one a new outlet goes with. */
   defaultDistributorId?: string;
 }
 

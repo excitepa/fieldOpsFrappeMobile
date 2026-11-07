@@ -24,7 +24,7 @@ import { useFieldStore } from '../store/useFieldStore';
 import { useOutletFormOptions } from '../hooks/useOutletFormOptions';
 import { createOutlet, NetworkError, OutletMatch, possibleDuplicateMatches } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { listPlaceholder, missingPick, pickedName, subChannelsOf } from '../utils/outletForm';
+import { OutletPicks, listPlaceholder, missingPick, pickChannel, pickSubChannel, pickedName, subChannelsOf, typePlaceholder, typesOf } from '../utils/outletForm';
 import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, keepPhotoForDraft, streetAddressFromPlace } from '../utils/photoStamp';
 import { newStamp } from '../utils/queue';
@@ -41,25 +41,16 @@ const theme = useTheme();  const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
   const activeCampaignId = state.activeCampaign?.id || 'c2';
 
-  // Outlet type, channel, sub-channel and distributor, kept by id. The lists
-  // come from the backend (kept on the device for offline use); nothing is
-  // picked for the agent except their only distributor.
+  // Channel > Sub Channel > Outlet Type, kept by id, each picked from under
+  // the one above. The lists come from the backend (kept on the device for
+  // offline use); nothing is picked for the agent.
   const { options, loading: optionsLoading } = useOutletFormOptions();
-  const [outletTypeId, setOutletTypeId] = useState<string>();
-  const [channelId, setChannelId] = useState<string>();
-  const [subChannelId, setSubChannelId] = useState<string>();
-  const [distributorId, setDistributorId] = useState<string>();
+  const [{ channelId, subChannelId, outletTypeId }, setPicks] = useState<OutletPicks>({});
+  const picks = { channelId, subChannelId, outletTypeId };
   const channelSubChannels = subChannelsOf(options, channelId);
-
-  useEffect(() => {
-    if (options.defaultDistributorId) setDistributorId((current) => current || options.defaultDistributorId);
-  }, [options.defaultDistributorId]);
-
-  const handleChannelChange = (id: string) => {
-    setChannelId(id);
-    // A sub-channel belongs to one channel.
-    if (!subChannelsOf(options, id).some((s) => s.id === subChannelId)) setSubChannelId(undefined);
-  };
+  const subChannelTypes = typesOf(options, picks);
+  // The agent's own distributor, shown and sent as it is: not theirs to choose.
+  const distributorId = options.defaultDistributorId;
   // These previously defaulted to real-looking demo text ('QuickShop Express',
   // etc.) as the actual field VALUE, not just a placeholder — an agent who
   // didn't touch a field would silently submit that fake data as if it were
@@ -189,7 +180,7 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
-    const missing = missingPick(options, { outletTypeId, channelId, subChannelId, distributorId });
+    const missing = missingPick(options, picks);
     if (missing) {
       Alert.alert('Required', missing);
       return;
@@ -410,49 +401,47 @@ const theme = useTheme();  const styles = createStyles(theme);
           </Pressable>
 
           <SelectField
-            label="Outlet Type"
-            title="Select outlet type"
-            options={options.types || []}
-            value={outletTypeId}
-            placeholder={listPlaceholder(options.types, optionsLoading, 'Select outlet type')}
-            onChange={setOutletTypeId}
-          />
-
-          <SelectField
             label="Outlet Channel"
             title="Select outlet channel"
             options={options.channels || []}
             value={channelId}
             placeholder={listPlaceholder(options.channels, optionsLoading, 'Select outlet channel')}
-            onChange={handleChannelChange}
+            onChange={(id) => setPicks(pickChannel(options, picks, id))}
           />
 
           <SelectField
-            label="Outlet sub-channel"
-            title="Select outlet sub-channel"
+            label="Outlet Sub Channel"
+            title="Select outlet sub channel"
             options={channelSubChannels}
             value={subChannelId}
             placeholder={
               options.subChannels === undefined ? listPlaceholder(undefined, optionsLoading, '')
                 : !channelId ? 'Select a channel first'
                 : channelSubChannels.length === 0 ? 'None for this channel'
-                : 'Select outlet sub-channel'
+                : 'Select outlet sub channel'
             }
-            onChange={setSubChannelId}
+            onChange={(id) => setPicks(pickSubChannel(options, picks, id))}
           />
 
-          {/* Only when the agent has distributors to choose from — a backend
-              without get_my_distributors leaves this out. */}
-          {!!options.distributors?.length && (
-            <SelectField
-              label="Distributor"
-              title="Select distributor"
-              options={options.distributors}
-              value={distributorId}
-              placeholder="Select distributor"
-              onChange={setDistributorId}
-            />
-          )}
+          <SelectField
+            label="Outlet Type"
+            title="Select outlet type"
+            options={subChannelTypes}
+            value={outletTypeId}
+            placeholder={typePlaceholder(options, picks, optionsLoading)}
+            onChange={(id) => setPicks({ ...picks, outletTypeId: id })}
+          />
+
+          <SelectField
+            label="Distributor"
+            title="Distributor"
+            options={[]}
+            value={distributorId}
+            valueName={pickedName(options.distributors, distributorId)}
+            placeholder="None"
+            onChange={() => {}}
+            disabled
+          />
 
           <Input
             label="Outlet Name"

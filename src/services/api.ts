@@ -977,6 +977,7 @@ const mapMasterOptions = (rows: any[]): MasterOption[] =>
  * it can't load, so the caller can tell a list that loaded empty from one
  * that didn't load, and fall back to the copy kept on the device.
  */
+/** Each type's `parent` is its sub channel's id; a type made before the hierarchy has none. */
 export const getOutletTypes = async (): Promise<MasterOption[]> =>
   mapMasterOptions(unwrapMasterDataList(await authFetch('/api/method/fieldops.api.master_data.get_outlet_types')));
 
