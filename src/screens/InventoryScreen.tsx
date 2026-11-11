@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert, ActivityIndicator, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -6,10 +6,20 @@ import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
+import { LoadMoreButton } from '../components/LoadMoreButton';
 import { useFieldStore } from '../store/useFieldStore';
-import { getItems, getMyInventory, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
+import { useLoadMore } from '../hooks/useLoadMore';
+import { getItems, submitStockRequest, getMyStockRequests, StockRequestSummary, NetworkError } from '../services/api';
+import { mslFirst } from '../utils/msl';
+import { getSellingUnits, getStockUnit } from '../utils/cart';
+import { formatQty, formatUnitQty, unitWord } from '../utils/units';
+import { formatStockBreakdown, withUnsentSales } from '../utils/stock';
+import { formatLastUpdated } from '../utils/dayPack';
+import { formatServerDateTime } from '../utils/timestamp';
+import { buildBasketLine, toStockRequestLine } from '../utils/stockRequest';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { RouteName, Product } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Product, ActionStamp } from '../types';
 
 interface InventoryScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -17,13 +27,19 @@ interface InventoryScreenProps {
 
 type MainTab = 'request' | 'stock' | 'requests';
 type StockView = 'list' | 'basket' | 'review';
-interface BasketQty { cases: number; units: number }
+/** How many of each unit (by uom) of one product are in the basket. */
+type BasketQty = Record<string, number>;
 
 export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
-  const products = state.products;
+  // Read by the refreshes below without making them change on every update.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // The stock the agent can still sell: as last downloaded, less what their
+  // unsent sales take.
+  const products = withUnsentSales(state.products, state.drafts);
 
   const [mainTab, setMainTab] = useState<MainTab>('request');
   const [searchQuery, setSearchQuery] = useState('');
@@ -32,12 +48,17 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
   const [view, setView] = useState<StockView>('list');
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // The basket's one-time ID and when it was sent, from its first Submit: a
+  // second Submit after one that got no answer is the same request.
+  const requestStampRef = useRef<ActionStamp | null>(null);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
-  const [stockRequests, setStockRequests] = useState<StockRequestSummary[]>([]);
+  // Saved with the rest of the agent's data, so they show offline too.
+  const stockRequests: StockRequestSummary[] = state.stockRequests;
+  // Older requests than the first page, a page at a time.
+  const moreRequests = useLoadMore('stockRequests');
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [requestsError, setRequestsError] = useState('');
-  const [myInventory, setMyInventory] = useState<Product[]>([]);
   const [loadingMyStock, setLoadingMyStock] = useState(false);
   const [myStockError, setMyStockError] = useState('');
 
@@ -46,15 +67,13 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     setInventoryError('');
     try {
       // get_items is the full catalog (including zero-stock items), which is what
-      // Request Stock needs on purpose — you request what you don't have. It does
-      // NOT reflect approved stock request transfers though (confirmed live: after
-      // two stock requests for ITC002 were approved, get_items still showed 0 for
-      // it) — that's what get_my_inventory (fetched separately below) is for.
+      // Request Stock needs on purpose — you request what you don't have — with
+      // the agent's warehouse stock (the figure get_my_inventory shows).
       const fetched = await getItems();
-      // Always reflects exactly what the server just said — including a real
-      // empty result — never leaves a previous (possibly stale, possibly
-      // another agent's) list sitting there looking current.
+      // get_items answers an empty list when it fails: never put in place of products the phone has.
+      if (fetched.length === 0 && stateRef.current.products.length > 0) throw new Error('No products came back.');
       dispatch({ type: 'SET_PRODUCTS', products: fetched });
+      dispatch({ type: 'SET_DAY_PACK', status: { parts: { products: new Date().toISOString() } } });
       if (fetched.length === 0) {
         setInventoryError('No products are currently allocated to your account.');
       }
@@ -65,39 +84,36 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     }
   }, [dispatch]);
 
+  // My Stock shows the stock saved on the phone straight away and brings it up
+  // to date in the background. A refresh that fails leaves the list as it
+  // is: a timeout used to leave the tab empty.
   const fetchMyInventory = useCallback(async () => {
     setLoadingMyStock(true);
     setMyStockError('');
     try {
-      // get_my_inventory is what actually reflects an approved stock request transfer
-      // (confirmed live: after two ITC002 requests were approved, this correctly
-      // returned quantity 2 for it, while get_items stayed at 0) — so "My Stock",
-      // meaning what the agent is holding right now, has to read from here and not
-      // from the shared get_items-backed product catalog used by Request Stock.
-      const fetched = await getMyInventory();
-      setMyInventory(fetched);
-      if (fetched.length === 0) {
-        setMyStockError("You don't have any stock in hand right now.");
-      }
-    } catch (e: any) {
-      setMyStockError(e?.message || 'Could not load your stock.');
+      const fetched = await getItems();
+      if (fetched.length === 0 && stateRef.current.products.length > 0) throw new Error('No products came back.');
+      dispatch({ type: 'SET_PRODUCTS', products: fetched });
+      dispatch({ type: 'SET_DAY_PACK', status: { parts: { products: new Date().toISOString() } } });
+    } catch {
+      setMyStockError(`Couldn't update just now. Showing your stock as of ${formatLastUpdated(stateRef.current.dayPack.parts.products)}.`);
     } finally {
       setLoadingMyStock(false);
     }
-  }, []);
+  }, [dispatch]);
 
   const fetchStockRequests = useCallback(async () => {
     setLoadingRequests(true);
     setRequestsError('');
     try {
       const fetched = await getMyStockRequests();
-      setStockRequests(fetched);
+      dispatch({ type: 'SET_STOCK_REQUESTS', requests: fetched });
     } catch (e: any) {
       setRequestsError(e?.message || 'Could not load your stock requests.');
     } finally {
       setLoadingRequests(false);
     }
-  }, []);
+  }, [dispatch]);
 
   useEffect(() => { fetchInventory(); }, [fetchInventory]);
   useEffect(() => {
@@ -108,29 +124,31 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     if (mainTab === 'stock') fetchMyInventory();
   }, [mainTab, fetchStockRequests, fetchMyInventory]);
 
+  // Stock requests made with no connection, waiting to be sent.
+  const unsentRequests = state.queuedActions.flatMap((a) => (a.kind === 'stockRequest' ? [a] : []));
+
   const categories = ['All', ...Array.from(new Set(products.map((p) => p.category).filter(Boolean) as string[]))];
 
-  const filteredProducts = products.filter((p) => {
+  // MSL (must-stock-list) products first.
+  const filteredProducts = mslFirst(products.filter((p) => {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = category === 'All' || p.category === category;
     return matchesSearch && matchesCategory;
-  });
+  }));
 
-  const setQty = (productId: string, next: Partial<BasketQty>) => {
-    setQuantities((prev) => {
-      const current = prev[productId] || { cases: 0, units: 0 };
-      return { ...prev, [productId]: { ...current, ...next } };
-    });
+  const setUnitQty = (productId: string, uom: string, qty: number) => {
+    setQuantities((prev) => ({ ...prev, [productId]: { ...(prev[productId] || {}), [uom]: Math.max(0, qty) } }));
   };
 
+  // A basket line is a product, how many of each of its units (cartons, packs,
+  // loose units — as set up in Product Management), and the total in stock
+  // units, which is what the request is approved and stocked in.
   const basketLines = Object.entries(quantities)
     .map(([productId, q]) => {
       const product = products.find((p) => p.id === productId);
-      if (!product) return null;
-      const totalUnits = q.cases * product.unitsPerCase + q.units;
-      return { productId, product, cases: q.cases, units: q.units, totalUnits };
+      return product ? buildBasketLine(product, q) : null;
     })
-    .filter((l): l is NonNullable<typeof l> => !!l && l.totalUnits > 0);
+    .filter((l): l is NonNullable<typeof l> => !!l);
 
   const basketTotalUnits = basketLines.reduce((sum, l) => sum + l.totalUnits, 0);
 
@@ -146,37 +164,49 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
     if (blockIfDayLocked(state.dayLockedUntil)) return;
     if (basketLines.length === 0) return;
     setSubmitting(true);
+    const stamp = requestStampRef.current || (requestStampRef.current = newStamp(state.user.email));
+    const lines = basketLines.map(toStockRequestLine);
+    let savedOffline = false;
     try {
       await submitStockRequest(
         state.activeCampaign?.id || '',
-        basketLines.map((l) => ({ itemCode: l.productId, itemName: l.product.name, qty: l.totalUnits, cases: l.cases, units: l.units })),
-        note.trim() || undefined
+        lines,
+        note.trim() || undefined,
+        { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
     } catch (e: any) {
-      setSubmitting(false);
-      if (e instanceof NetworkError) {
-        Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
-      } else {
+      if (!(e instanceof NetworkError)) {
+        setSubmitting(false);
         Alert.alert('Could Not Submit Request', e?.message || 'The server rejected this request. Please try again.');
+        return;
       }
-      return;
+      // No connection: kept on the phone and sent once there is one; My
+      // Requests lists it as not sent yet.
+      dispatch({
+        type: 'QUEUE_ACTION',
+        action: { ...stamp, id: `qa_stock_${Date.now()}`, kind: 'stockRequest', campaignId: state.activeCampaign?.id || '', lines, note: note.trim() || undefined },
+      });
+      savedOffline = true;
     }
 
     setSubmitting(false);
+    requestStampRef.current = null;
     setQuantities({});
     setNote('');
     setView('list');
-    setMainTab('request');
+    setMainTab(savedOffline ? 'requests' : 'request');
+    if (savedOffline) {
+      Alert.alert('Saved on This Phone', "No connection, so the request is saved here. It's sent for approval automatically once you're back online.");
+      return;
+    }
     fetchStockRequests();
     Alert.alert('Request Submitted', 'Your stock request has been sent for approval.');
   };
 
-  // "My Stock" means what the agent is actually holding right now — sourced from
-  // get_my_inventory (see fetchMyInventory above), not the get_items-backed
-  // `products` catalog Request Stock uses, since only get_my_inventory reflects
-  // an approved stock request transfer.
-  const myStockProducts = myInventory.filter((p) => p.stock > 0);
-  const lowStockItems = myStockProducts.filter((p) => p.stock < (p.minStock ?? 0));
+  // "My Stock": what the agent is holding right now, less what unsent sales take.
+  const myStockProducts = products.filter((p) => p.stock > 0);
+  // The server marks low stock per item ("Low Stock"); a minimum, if one is sent, counts too.
+  const lowStockItems = myStockProducts.filter((p) => p.stockStatus === 'Low Stock' || (p.minStock !== undefined && p.stock < p.minStock));
 
   const headerProps = (() => {
     if (view === 'basket') {
@@ -208,7 +238,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
       {(mainTab === 'stock' ? loadingMyStock : loadingInventory) && (
         <View style={styles.loadingRow}>
           <ActivityIndicator size="small" color={theme.colors.navy} />
-          <Text style={styles.loadingText}>{mainTab === 'stock' ? 'Loading your stock…' : 'Loading your inventory…'}</Text>
+          <Text style={styles.loadingText}>{mainTab === 'stock' ? 'Updating your stock…' : 'Loading your inventory…'}</Text>
         </View>
       )}
       {mainTab === 'stock'
@@ -266,8 +296,12 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
             </View>
 
             {filteredProducts.map((p) => {
-              const q = quantities[p.id] || { cases: 0, units: 0 };
-              const totalUnits = q.cases * p.unitsPerCase + q.units;
+              const q = quantities[p.id] || {};
+              const units = getSellingUnits(p);
+              const stockUnit = getStockUnit(p);
+              const totalUnits = units.reduce((sum, u) => sum + (q[u.uom] || 0) * u.conversionFactor, 0);
+              const onHandBreakdown = formatStockBreakdown(p.stock, p);
+              const details = [p.brand, p.size].filter(Boolean).join(' · ');
               return (
                 <View key={p.id} style={styles.productRow}>
                   <View style={styles.productTopRow}>
@@ -279,47 +313,45 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                       )}
                     </View>
                     <View style={styles.flex1}>
-                      {p.focusProduct && (
+                      {p.isMsl && (
                         <View style={styles.focusBadge}>
-                          <Text style={styles.focusBadgeText}>Focus product</Text>
+                          <Text style={styles.focusBadgeText}>MSL</Text>
                         </View>
                       )}
                       <Text style={styles.productName}>{p.name}</Text>
-                      <Text style={styles.productMeta}>{p.unitsPerCase} per case · {p.stock} on hand</Text>
+                      {details ? <Text style={styles.productMeta}>{details}</Text> : null}
+                      <Text style={styles.productMeta}>
+                        {formatUnitQty(p.stock, stockUnit.uom)} on hand{onHandBreakdown ? ` (${onHandBreakdown})` : ''}
+                      </Text>
                     </View>
                   </View>
 
-                  <View style={styles.stepperRow}>
-                    {/* Cases requests aren't live on the web admin yet — dimmed and
-                        locked at 0 so agents only ever request whole units for now. */}
-                    <View style={[styles.stepperCol, styles.stepperColDisabled]}>
-                      <Text style={styles.stepperLabel}>CASES (SOON)</Text>
-                      <View style={styles.stepperControl}>
-                        <View style={[styles.stepperBtn, styles.stepperBtnDisabled]}>
-                          <Icon name="minus" size={16} color={theme.colors.textMuted} />
+                  {/* One stepper per unit the product comes in (as set up in
+                      Product Management), largest-selling unit first. The request
+                      itself is sent in stock units. */}
+                  <View style={styles.unitList}>
+                    {units.map((u) => {
+                      const value = q[u.uom] || 0;
+                      const size = u.conversionFactor !== 1 ? ` · ${formatQty(u.conversionFactor)} ${unitWord(stockUnit.uom, u.conversionFactor)}` : '';
+                      return (
+                        <View key={u.uom} style={styles.unitRow}>
+                          <Text style={styles.unitRowLabel} numberOfLines={1}>{u.uom.toUpperCase()}{size}</Text>
+                          <View style={styles.unitStepper}>
+                            <Pressable onPress={() => setUnitQty(p.id, u.uom, value - 1)} disabled={value <= 0} style={[styles.stepperBtn, value <= 0 && styles.stepperBtnDisabled]}>
+                              <Icon name="minus" size={16} color={theme.colors.textDark} />
+                            </Pressable>
+                            <Text style={styles.stepperValue}>{value}</Text>
+                            <Pressable onPress={() => setUnitQty(p.id, u.uom, value + 1)} style={styles.stepperBtn}>
+                              <Icon name="plus" size={16} color={theme.colors.textDark} />
+                            </Pressable>
+                          </View>
                         </View>
-                        <Text style={[styles.stepperValue, styles.stepperValueDisabled]}>0</Text>
-                        <View style={[styles.stepperBtn, styles.stepperBtnDisabled]}>
-                          <Icon name="plus" size={16} color={theme.colors.textMuted} />
-                        </View>
-                      </View>
-                    </View>
-                    <View style={styles.stepperCol}>
-                      <Text style={styles.stepperLabel}>UNITS</Text>
-                      <View style={styles.stepperControl}>
-                        <Pressable onPress={() => setQty(p.id, { units: Math.max(0, q.units - 1) })} style={styles.stepperBtn}>
-                          <Icon name="minus" size={16} color={theme.colors.textDark} />
-                        </Pressable>
-                        <Text style={styles.stepperValue}>{q.units}</Text>
-                        <Pressable onPress={() => setQty(p.id, { units: q.units + 1 })} style={styles.stepperBtn}>
-                          <Icon name="plus" size={16} color={theme.colors.textDark} />
-                        </Pressable>
-                      </View>
-                    </View>
+                      );
+                    })}
                   </View>
 
                   {totalUnits > 0 && (
-                    <Text style={styles.addedText}>{totalUnits} units added to basket</Text>
+                    <Text style={styles.addedText}>{formatUnitQty(totalUnits, stockUnit.uom)} added to basket</Text>
                   )}
                 </View>
               );
@@ -360,30 +392,47 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               </Text>
             </View>
           )}
-          {myStockProducts.length === 0 && !loadingMyStock && (
+          {myStockProducts.length === 0 && !loadingMyStock && !myStockError && (
             <Text style={styles.emptyStockText}>You don't have any stock in hand right now — request some from the Request Stock tab.</Text>
           )}
-          {myStockProducts.map((p) => (
-            <Card key={p.id} style={styles.myStockCard}>
-              <View style={styles.productTopRow}>
-                <View style={styles.productIcon}>
-                  {p.imageUrl ? (
-                    <Image source={{ uri: p.imageUrl }} style={styles.productImage} resizeMode="cover" />
-                  ) : (
-                    <Icon name="package" size={18} color={theme.colors.navy} />
-                  )}
+          {myStockProducts.map((p, idx) => {
+            const stockUnit = getStockUnit(p);
+            const breakdown = formatStockBreakdown(p.stock, p);
+            const details = [p.brand, p.size].filter(Boolean).join(' · ');
+            const isLow = lowStockItems.includes(p);
+            return (
+              <Card key={`${p.id}-${idx}`} style={styles.myStockCard}>
+                <View style={styles.productTopRow}>
+                  <View style={styles.productIcon}>
+                    {p.imageUrl ? (
+                      <Image source={{ uri: p.imageUrl }} style={styles.productImage} resizeMode="cover" />
+                    ) : (
+                      <Icon name="package" size={18} color={theme.colors.navy} />
+                    )}
+                  </View>
+                  <View style={styles.flex1}>
+                    {p.isMsl && (
+                      <View style={styles.focusBadge}>
+                        <Text style={styles.focusBadgeText}>MSL</Text>
+                      </View>
+                    )}
+                    <Text style={styles.productName}>{p.name}</Text>
+                    <Text style={styles.productMeta}>{details || `SKU ${p.sku}`}</Text>
+                    {breakdown ? <Text style={styles.productMeta}>{breakdown}</Text> : null}
+                  </View>
+                  <View style={styles.myStockQtyCol}>
+                    <Text style={styles.myStockQty}>{formatQty(p.stock)}</Text>
+                    <Text style={styles.myStockQtyLabel}>{unitWord(stockUnit.uom, p.stock).toUpperCase()}</Text>
+                    {isLow && (
+                      <View style={styles.lowChip}>
+                        <Text style={styles.lowChipText}>Low stock</Text>
+                      </View>
+                    )}
+                  </View>
                 </View>
-                <View style={styles.flex1}>
-                  <Text style={styles.productName}>{p.name}</Text>
-                  <Text style={styles.productMeta}>SKU {p.sku}</Text>
-                </View>
-                <View style={styles.myStockQtyCol}>
-                  <Text style={styles.myStockQty}>{p.stock}</Text>
-                  <Text style={styles.myStockQtyLabel}>{(p.unit || 'unit').toUpperCase()}</Text>
-                </View>
-              </View>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </ScrollView>
       )}
 
@@ -402,9 +451,33 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               <Text style={styles.errorText}>{requestsError}</Text>
             </View>
           )}
-          {!loadingRequests && requestsError === '' && stockRequests.length === 0 && (
+          {!loadingRequests && requestsError === '' && stockRequests.length === 0 && unsentRequests.length === 0 && (
             <Text style={styles.emptyText}>You haven't submitted any stock requests yet.</Text>
           )}
+          {unsentRequests.map((r) => (
+            <Card key={r.id} style={styles.requestCard}>
+              <View style={styles.requestTopRow}>
+                <View style={styles.flex1}>
+                  <Text style={styles.requestId}>Saved on this phone</Text>
+                  {r.happenedAt ? <Text style={styles.productMeta}>{formatServerDateTime(r.happenedAt)}</Text> : null}
+                </View>
+                <View style={[styles.statusBadge, { backgroundColor: theme.colors.amberLight }]}>
+                  <Text style={[styles.statusBadgeText, { color: theme.colors.amber }]}>{r.syncError ? 'Not sent' : 'Not sent yet'}</Text>
+                </View>
+              </View>
+              {r.lines.map((it, idx) => {
+                const product = products.find((p) => p.id === it.itemCode);
+                const qtyText = formatUnitQty(it.qty, product ? getStockUnit(product).uom : 'unit');
+                return (
+                  <View key={`${it.itemCode}-${idx}`} style={styles.requestLineRow}>
+                    <Text style={styles.requestLineName}>{it.itemName || it.itemCode}</Text>
+                    <Text style={styles.requestLineQty}>{qtyText}</Text>
+                  </View>
+                );
+              })}
+              {r.syncError ? <Text style={styles.requestNote}>{r.syncError}</Text> : r.note ? <Text style={styles.requestNote}>{r.note}</Text> : null}
+            </Card>
+          ))}
           {stockRequests.map((r) => {
             const statusLower = r.status.toLowerCase();
             const statusStyle = statusLower.includes('approv')
@@ -417,22 +490,29 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                 <View style={styles.requestTopRow}>
                   <View style={styles.flex1}>
                     <Text style={styles.requestId}>{r.id}</Text>
-                    {r.createdAt ? <Text style={styles.productMeta}>{r.createdAt}</Text> : null}
+                    {r.createdAt ? <Text style={styles.productMeta}>{formatServerDateTime(r.createdAt)}</Text> : null}
                   </View>
                   <View style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}>
                     <Text style={[styles.statusBadgeText, { color: statusStyle.text }]}>{r.status}</Text>
                   </View>
                 </View>
-                {r.items.map((it, idx) => (
-                  <View key={`${it.itemCode}-${idx}`} style={styles.requestLineRow}>
-                    <Text style={styles.requestLineName}>{it.itemName}</Text>
-                    <Text style={styles.requestLineQty}>{it.qty}</Text>
-                  </View>
-                ))}
+                {r.items.map((it, idx) => {
+                  // Requests are stored in stock units; shown in the product's own units where it's known.
+                  const product = products.find((p) => p.id === it.itemCode);
+                  const qtyText = formatUnitQty(it.qty, product ? getStockUnit(product).uom : 'unit');
+                  const breakdown = product ? formatStockBreakdown(it.qty, product) : '';
+                  return (
+                    <View key={`${it.itemCode}-${idx}`} style={styles.requestLineRow}>
+                      <Text style={styles.requestLineName}>{it.itemName}</Text>
+                      <Text style={styles.requestLineQty}>{qtyText}{breakdown ? ` (${breakdown})` : ''}</Text>
+                    </View>
+                  );
+                })}
                 {r.note ? <Text style={styles.requestNote}>{r.note}</Text> : null}
               </Card>
             );
           })}
+          <LoadMoreButton {...moreRequests} onPress={moreRequests.loadMore} />
         </ScrollView>
       )}
 
@@ -450,7 +530,7 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.productName}>{l.product.name}</Text>
-                  <Text style={styles.productMeta}>{l.cases} cases · {l.units} units · {l.totalUnits} total</Text>
+                  <Text style={styles.productMeta}>{l.partsText ? `${l.partsText} = ${l.total}` : l.total}</Text>
                 </View>
                 <Pressable onPress={() => removeBasketLine(l.productId)} style={styles.deleteBtn}>
                   <Icon name="x" size={18} color={theme.colors.red} />
@@ -475,9 +555,9 @@ export const InventoryScreen: React.FC<InventoryScreenProps> = ({ onNavigate }) 
               <View key={l.productId} style={styles.reviewLineRow}>
                 <View style={styles.flex1}>
                   <Text style={styles.productName}>{l.product.name}</Text>
-                  <Text style={styles.productMeta}>{l.cases} case · {l.units} unit</Text>
+                  {l.partsText ? <Text style={styles.productMeta}>{l.partsText}</Text> : null}
                 </View>
-                <Text style={styles.reviewLineUnits}>{l.totalUnits} units</Text>
+                <Text style={styles.reviewLineUnits}>{l.total}</Text>
               </View>
             ))}
           </Card>
@@ -542,16 +622,14 @@ const createStyles = (theme: any) => StyleSheet.create({
   focusBadgeText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.tintGoldIcon },
   productName: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },
   productMeta: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
-  stepperRow: { flexDirection: 'row', gap: theme.spacing.sm },
-  stepperCol: { flex: 1, gap: 4 },
-  stepperColDisabled: { opacity: 0.45 },
-  stepperBtnDisabled: { opacity: 0.6 },
-  stepperValueDisabled: { color: theme.colors.textMuted },
-  stepperLabel: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.textMuted, letterSpacing: 0.6, textAlign: 'center' },
-  stepperControl: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  unitList: { gap: 6 },
+  unitRow: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
     backgroundColor: theme.colors.fieldFill, borderRadius: theme.radius.md, height: 48, paddingHorizontal: theme.spacing.sm,
   },
+  unitRowLabel: { flex: 1, fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.textMuted, letterSpacing: 0.6, paddingLeft: 4 },
+  unitStepper: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  stepperBtnDisabled: { opacity: 0.4 },
   stepperBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
   stepperValue: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.textDark },
   addedText: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.navy },
@@ -589,6 +667,8 @@ const createStyles = (theme: any) => StyleSheet.create({
   myStockQtyCol: { alignItems: 'flex-end' },
   myStockQty: { fontFamily: theme.fonts.display, fontSize: 20, color: theme.colors.textDark },
   myStockQtyLabel: { fontFamily: theme.fonts.bold, fontSize: 9, color: theme.colors.textMuted, letterSpacing: 0.5 },
+  lowChip: { marginTop: 4, backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 2 },
+  lowChipText: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.amber },
   basketLineCard: { gap: 0 },
   deleteBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   basketActionsRow: { flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.xs },

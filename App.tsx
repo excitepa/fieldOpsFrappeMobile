@@ -16,7 +16,9 @@ import { logout, getAttendanceStats, getCampaigns } from './src/services/api';
 import { getAccessToken } from './src/services/apiConfig';
 import { localDateStr } from './src/utils/timestamp';
 import { isDayLocked } from './src/utils/dayLock';
-import { pullServerData } from './src/utils/offlineSync';
+import { clearOutletDirectory } from './src/utils/outletDirectory';
+import { useDayPack } from './src/hooks/useDayPack';
+import { useAutoSync } from './src/hooks/useAutoSync';
 import NetInfo from '@react-native-community/netinfo';
 import { FieldProvider, useFieldStore } from './src/store/useFieldStore';
 import { BottomTabs } from './src/components/BottomTabs';
@@ -38,6 +40,7 @@ import { CampaignsScreen } from './src/screens/CampaignsScreen';
 import { CampaignDetailScreen } from './src/screens/CampaignDetailScreen';
 import { AttendanceScreen } from './src/screens/AttendanceScreen';
 import { AttendanceSuccessScreen } from './src/screens/AttendanceSuccessScreen';
+import { DayDownloadScreen } from './src/screens/DayDownloadScreen';
 import { LeadsScreen } from './src/screens/LeadsScreen';
 import { LeadFormScreen } from './src/screens/LeadFormScreen';
 import { LeadDetailScreen } from './src/screens/LeadDetailScreen';
@@ -160,7 +163,8 @@ export default function App() {
 function AppInner() {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const statusBarStyle = theme.mode === 'dark' ? 'light' : 'dark';
+  // Light-only app: dark status-bar text on the light background.
+  const statusBarStyle = 'dark';
 
   // Active campaign lives in the shared store so every screen (Dashboard,
   // Attendance, Outlet Activity's module gating) reads the same value instead
@@ -179,7 +183,8 @@ function AppInner() {
   const [route, setRoute] = useState<RouteName>('home');
 
   const [routeData, setRouteData] = useState<any>(null);
-  const [leadsList, setLeadsList] = useState<Lead[]>([]);
+  // The agent's leads are saved with the rest of their data (offline too).
+  const leadsList = state.leads;
   const [splashDone, setSplashDone] = useState(false);
 
   // Screen-history stack so the device's hardware/gesture back button steps
@@ -242,28 +247,33 @@ function AppInner() {
     return () => sub.remove();
   }, [appStage, state.attendanceStatus.clockedIn, state.attendanceStatus.clockInDate, state.dayLockedUntil, state.campaignSelected]);
 
-  // Offline-first refresh: everything the server owns (outlets, products/stock,
-  // orders, sales) is already cached locally and persisted, so it stays
-  // readable with no signal. This re-pulls it the moment connectivity actually
-  // comes back, rather than making the agent find the Sync screen — and each
-  // dataset is only replaced if its own request really succeeded, so a partial
-  // failure never blanks out what they already had. Drafts stay deliberately
-  // manual (the Sync button pushes those), since re-submitting real sales/
-  // surveys shouldn't fire itself off the back of a network blip.
-  const wasOfflineRef = useRef(false);
+  // Today's download is tried again until it has all come in: on getting
+  // into the app (a session resumed already clocked in today runs it here)
+  // and every few minutes after, while there's a connection.
+  const dayPack = useDayPack();
+  const dayPackRef = useRef(dayPack);
+  dayPackRef.current = dayPack;
+  const clockedInToday = state.attendanceStatus.clockedIn && state.attendanceStatus.clockInDate === localDateStr();
   useEffect(() => {
-    if (appStage !== 'app') return;
-    const sub = NetInfo.addEventListener((netState) => {
-      const online = netState.isConnected !== false && netState.isInternetReachable !== false;
-      if (online && wasOfflineRef.current) {
-        pullServerData(state.activeCampaign?.id, dispatch).catch(() => {
-          // Keeps whatever's already cached locally.
-        });
-      }
-      wasOfflineRef.current = !online;
-    });
-    return () => sub();
-  }, [appStage, state.activeCampaign?.id]);
+    if (appStage !== 'app' || !clockedInToday) return;
+    const attempt = async () => {
+      const pack = dayPackRef.current;
+      if (pack.done || pack.running) return;
+      const net = await NetInfo.fetch().catch(() => null);
+      if (net && (net.isConnected === false || net.isInternetReachable === false)) return;
+      pack.run().catch(() => {});
+    };
+    attempt();
+    const timer = setInterval(attempt, 3 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [appStage, clockedInToday]);
+
+  // What's waiting goes up on its own: when the signal comes back (the
+  // downloaded lists are refreshed then too), when the app comes to the
+  // foreground, straight after something is queued, and every couple of
+  // minutes while anything is waiting. Every item carries its one-time ID, so
+  // sending one again after a lost answer can't record it twice.
+  useAutoSync(appStage === 'app');
 
   // Still worth keeping for the case the timer CAN handle — the app genuinely
   // sitting in the foreground as midnight passes (an agent working late).
@@ -306,11 +316,11 @@ function AppInner() {
   }, [splashDone, state.hydrated]);
 
   const handleAddLead = (newLead: Lead) => {
-    setLeadsList((prev) => [newLead, ...prev]);
+    dispatch({ type: 'ADD_LEAD', lead: newLead });
   };
 
   const handleUpdateLead = (updated: Lead) => {
-    setLeadsList((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
+    dispatch({ type: 'UPDATE_LEAD', lead: updated });
   };
 
   const handleClockInComplete = (selectedCampaign: Campaign) => {
@@ -325,8 +335,10 @@ function AppInner() {
     // never silently resumes into this agent's still-clocked-in state.
     dispatch({ type: 'SET_SESSION_AGENT_EMAIL', email: state.user.email || null });
     historyRef.current = [];
-    setAppStage('app');
-    setRoute('home');
+    // The day's data comes down before Home, for working offline.
+    setRouteData({ campaign: selectedCampaign });
+    setAppStage('campaignSelect');
+    setRoute('dayDownload');
   };
 
   const handleDayComplete = () => {
@@ -383,7 +395,11 @@ function AppInner() {
             // campaign-select and attendance into someone else's session.
             const sameAgent = !!user?.email && !!state.sessionAgentEmail
               && user.email.trim().toLowerCase() === state.sessionAgentEmail.trim().toLowerCase();
-            if (!sameAgent) dispatch({ type: 'RESET_AGENT_SESSION' });
+            if (!sameAgent) {
+              dispatch({ type: 'RESET_AGENT_SESSION' });
+              // The previous agent's territory outlets aren't this one's.
+              clearOutletDirectory();
+            }
 
             // A different agent's local state no longer applies (just reset above,
             // but that won't be reflected in `state` until next render) — pass an
@@ -430,6 +446,22 @@ function AppInner() {
             onNavigate={navigate}
             onClockInSuccess={handleClockInComplete}
             routeData={routeData}
+          />
+          <StatusBar style={statusBarStyle} />
+        </>
+      );
+    }
+
+    if (route === 'dayDownload') {
+      return (
+        <>
+          <DayDownloadScreen
+            campaignId={routeData?.campaign?.id || activeCampaign?.id}
+            onDone={() => {
+              historyRef.current = [];
+              setAppStage('app');
+              setRoute('home');
+            }}
           />
           <StatusBar style={statusBarStyle} />
         </>

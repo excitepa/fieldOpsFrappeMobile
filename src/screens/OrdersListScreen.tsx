@@ -5,7 +5,9 @@ import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Icon, IconName } from '../components/Icon';
+import { LoadMoreButton } from '../components/LoadMoreButton';
 import { useFieldStore } from '../store/useFieldStore';
+import { useLoadMore } from '../hooks/useLoadMore';
 import { groupOrdersByRef, groupSalesByInvoice } from '../utils/transactions';
 import { getMyOrders, getMySales, getMyStockRequests, StockRequestSummary } from '../services/api';
 import { RouteName } from '../types';
@@ -32,7 +34,12 @@ export const OrdersListScreen: React.FC<OrdersListScreenProps> = ({ onNavigate }
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState('');
-  const [stockRequests, setStockRequests] = useState<StockRequestSummary[]>([]);
+  // Saved with the rest of the agent's data, so they're there offline.
+  const stockRequests: StockRequestSummary[] = state.stockRequests;
+  // Older ones than the first page, a page at a time.
+  const moreSales = useLoadMore('sales');
+  const moreOrders = useLoadMore('orders');
+  const moreRequests = useLoadMore('stockRequests');
 
   const fetchAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -44,7 +51,7 @@ export const OrdersListScreen: React.FC<OrdersListScreenProps> = ({ onNavigate }
       const [orders, sales, requests] = await Promise.all([getMyOrders(), getMySales(), getMyStockRequests()]);
       dispatch({ type: 'SET_ORDERS', orders });
       dispatch({ type: 'SET_SALES', sales });
-      setStockRequests(requests);
+      dispatch({ type: 'SET_STOCK_REQUESTS', requests });
     } catch (e: any) {
       if (!silent) setFetchError(e?.message || 'Could not load your activity.');
     } finally {
@@ -124,6 +131,7 @@ export const OrdersListScreen: React.FC<OrdersListScreenProps> = ({ onNavigate }
                 </Pressable>
               );
             })}
+            <LoadMoreButton {...moreSales} onPress={moreSales.loadMore} />
           </>
         )}
 
@@ -158,6 +166,7 @@ export const OrdersListScreen: React.FC<OrdersListScreenProps> = ({ onNavigate }
                 </Pressable>
               );
             })}
+            <LoadMoreButton {...moreOrders} onPress={moreOrders.loadMore} />
           </>
         )}
 
@@ -190,6 +199,7 @@ export const OrdersListScreen: React.FC<OrdersListScreenProps> = ({ onNavigate }
                 </Pressable>
               );
             })}
+            <LoadMoreButton {...moreRequests} onPress={moreRequests.loadMore} />
           </>
         )}
       </ScrollView>

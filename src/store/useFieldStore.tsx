@@ -1,27 +1,25 @@
 import React, { createContext, useContext, useReducer, useEffect, ReactNode } from 'react';
+import { AppState } from 'react-native';
 import {
   Outlet, OutletSale, OutletOrder, OutletSurvey, SkipRecord, Product, Campaign,
   StockMovement, StockMovementType, Draft, LeadDraft, OutletDraft, OutletPhotoCapture, LeadSurveyResponse,
-  UserProfile,
+  UserProfile, PendingSurveyPhoto, OutletFormOptions, LeadStageInfo, GeofenceConfig, CampaignSurveyConfig,
+  Lead, RouteAssignment, QueuedAction, DayPackStatus, SyncStatus, OutletList,
 } from '../types';
 import { mockCampaigns, mockUser } from '../services/mockService';
+import { setLeadStageList } from '../utils/leadStages';
+import { keepUnsyncedEdit } from '../utils/afterEditSurvey';
 import { getUserInfo } from '../services/apiConfig';
-import { mapUserInfoToProfile, fetchUserProfile, AttendanceStats } from '../services/api';
-
-let AsyncStorage: any = null;
-try {
-  AsyncStorage = require('@react-native-async-storage/async-storage').default;
-} catch (e) {
-  const memoryStore = new Map<string, string>();
-  AsyncStorage = {
-    getItem: async (key: string) => memoryStore.get(key) || null,
-    setItem: async (key: string, val: string) => { memoryStore.set(key, val); },
-  };
-}
+import { mapUserInfoToProfile, fetchUserProfile, getMyGeofence, AttendanceStats, StockRequestSummary, MySurveyResponseSummary } from '../services/api';
+import { createPersistence, lastDays } from './persistence';
+import { remapOutletInState, remapLeadInState, newestFirst, withQueuedLeadChanges } from '../utils/queue';
+import { debugLog } from '../utils/logger';
 
 // ─── State Shape ──────────────────────────────────────────────────────────────
-interface FieldState {
+export interface FieldState {
   outlets: Outlet[];
+  /** The outlets download stopped at its limit (a supervisor's or admin's whole tenant): search the server beyond it. */
+  outletsCapped: boolean;
   sales: OutletSale[];
   orders: OutletOrder[];
   surveys: OutletSurvey[];
@@ -33,6 +31,8 @@ interface FieldState {
   photoCaptures: OutletPhotoCapture[];
   leadDrafts: LeadDraft[];
   outletDrafts: OutletDraft[];
+  /** Survey photos still to upload for responses that already reached the server. */
+  pendingSurveyPhotos: PendingSurveyPhoto[];
   leadSurveyResponses: LeadSurveyResponse[];
   user: UserProfile;
   /** `clockInDate` (YYYY-MM-DD, set whenever clockedIn is set true) is what makes a
@@ -64,6 +64,30 @@ interface FieldState {
    *  RESET_AGENT_SESSION so a different agent never sees a stale cached
    *  attendance card that isn't theirs. */
   cachedAttendanceStats: AttendanceStats | null;
+  /** The Add/Edit Outlet pickers' lists as last loaded, so those forms work offline. */
+  outletFormOptions: OutletFormOptions;
+  /** The backend's lead stages (get_lead_stages) as last loaded; null until then, which means the built-in list. */
+  leadStages: LeadStageInfo[] | null;
+  /** The agent's geofence (get_my_geofence) as last loaded, so a sale's location is checked offline too; null means no territory check. */
+  geofence: GeofenceConfig | null;
+  /** Each campaign's surveys with their questions, as last loaded, so a survey opens offline (campaign id -> surveys). */
+  campaignSurveys: Record<string, CampaignSurveyConfig[]>;
+  /** The agent's leads (get_my_leads) as last loaded, plus ones added on this phone that haven't synced. */
+  leads: Lead[];
+  /** The agent's day-by-day routes (get_agent_beats) as last loaded. */
+  routeAssignments: RouteAssignment[];
+  /** The agent's campaigns (/agent/campaigns) as last loaded. */
+  campaigns: Campaign[];
+  /** The agent's stock requests (get_my_stock_requests) as last loaded. */
+  stockRequests: StockRequestSummary[];
+  /** The agent's submitted survey responses (get_my_surveys) as last loaded: which surveys are done where. */
+  surveyResponses: MySurveyResponseSummary[];
+  /** Skips, lead stage changes and stock requests made with no connection, still to send. */
+  queuedActions: QueuedAction[];
+  /** How the morning download last went. */
+  dayPack: DayPackStatus;
+  /** Where sending the queue stands. */
+  syncStatus: SyncStatus;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -72,19 +96,27 @@ type Action =
   | { type: 'SET_USER'; user: UserProfile }
   | { type: 'SET_ATTENDANCE_STATUS'; clockedIn: boolean; attendanceId?: string; clockInDate?: string }
   | { type: 'SET_CAMPAIGN_SELECTED'; value: boolean }
-  | { type: 'SET_OUTLETS'; outlets: Outlet[] }
+  | { type: 'SET_OUTLETS'; outlets: OutletList }
   | { type: 'RESET_OUTLET_VISIT_STATUS' }
   | { type: 'ADD_OUTLET'; outlet: Outlet }
   | { type: 'UPDATE_OUTLET'; outlet: Outlet }
+  | { type: 'REMOVE_OUTLET'; outletId: string }
   | { type: 'MARK_OUTLET_VISITED'; outletId: string }
   | { type: 'SKIP_OUTLET'; outletId: string; skipRecord: SkipRecord }
   | { type: 'SET_PRODUCTS'; products: Product[] }
   | { type: 'SET_ORDERS'; orders: OutletOrder[] }
   | { type: 'SET_SALES'; sales: OutletSale[] }
+  /** Older history from "Load more", after what's there. */
+  | { type: 'APPEND_SALES'; sales: OutletSale[] }
+  | { type: 'APPEND_ORDERS'; orders: OutletOrder[] }
+  | { type: 'APPEND_STOCK_REQUESTS'; requests: StockRequestSummary[] }
   | { type: 'ADD_SALE'; sale: OutletSale }
   | { type: 'ADD_ORDER'; order: OutletOrder }
   | { type: 'ADD_SURVEY'; survey: OutletSurvey }
+  | { type: 'UPDATE_SURVEY'; survey: OutletSurvey }
   | { type: 'MARK_SURVEY_SYNCED'; surveyId: string }
+  | { type: 'SET_SURVEY_SYNC_ERROR'; surveyId: string; error: string }
+  | { type: 'DELETE_SURVEY'; surveyId: string }
   | { type: 'DECREMENT_STOCK'; productId: string; qty: number; outletId?: string }
   | { type: 'ADJUST_STOCK'; productId: string; qtyChange: number; reason: string; movementType: Extract<StockMovementType, 'adjustment' | 'reconciliation'> }
   | { type: 'SAVE_DRAFT'; draft: Draft }
@@ -94,10 +126,33 @@ type Action =
   | { type: 'DELETE_LEAD_DRAFT'; draftId: string }
   | { type: 'SAVE_OUTLET_DRAFT'; outletDraft: OutletDraft }
   | { type: 'DELETE_OUTLET_DRAFT'; draftId: string }
+  | { type: 'QUEUE_SURVEY_PHOTOS'; photos: PendingSurveyPhoto[] }
+  | { type: 'DELETE_SURVEY_PHOTO'; photoId: string }
   | { type: 'ADD_LEAD_SURVEY_RESPONSE'; response: LeadSurveyResponse }
   | { type: 'SET_DAY_LOCK'; until: string | null }
   | { type: 'SET_SESSION_AGENT_EMAIL'; email: string | null }
   | { type: 'SET_CACHED_ATTENDANCE_STATS'; stats: AttendanceStats | null }
+  | { type: 'SET_OUTLET_FORM_OPTIONS'; options: Partial<OutletFormOptions> }
+  | { type: 'SET_LEAD_STAGES'; stages: LeadStageInfo[] }
+  | { type: 'SET_GEOFENCE'; geofence: GeofenceConfig }
+  | { type: 'SET_CAMPAIGN_SURVEYS'; campaignId: string; surveys: CampaignSurveyConfig[] }
+  | { type: 'SET_LEADS'; leads: Lead[] }
+  | { type: 'ADD_LEAD'; lead: Lead }
+  | { type: 'UPDATE_LEAD'; lead: Lead }
+  | { type: 'SET_ROUTE_ASSIGNMENTS'; assignments: RouteAssignment[] }
+  | { type: 'SET_CAMPAIGNS'; campaigns: Campaign[] }
+  | { type: 'SET_STOCK_REQUESTS'; requests: StockRequestSummary[] }
+  | { type: 'SET_SURVEY_RESPONSES'; responses: MySurveyResponseSummary[] }
+  | { type: 'QUEUE_ACTION'; action: QueuedAction }
+  | { type: 'DELETE_QUEUED_ACTION'; actionId: string }
+  | { type: 'SET_DAY_PACK'; status: Partial<DayPackStatus> }
+  | { type: 'SET_SYNC_STATUS'; status: Partial<SyncStatus> }
+  | { type: 'ADD_SYNC_NOTICES'; notices: string[] }
+  | { type: 'CLEAR_SYNC_NOTICES' }
+  /** An outlet made offline reached the server: its id there replaces the temporary one everywhere. */
+  | { type: 'REMAP_OUTLET_ID'; from: string; to: string }
+  /** A lead made offline reached the server: its id there replaces the temporary one everywhere. */
+  | { type: 'REMAP_LEAD_ID'; from: string; to: string; lead?: Lead }
   | { type: 'RESET_AGENT_SESSION' }
   | { type: 'HYDRATE'; state: Partial<FieldState> };
 
@@ -105,7 +160,76 @@ type Action =
 function reducer(state: FieldState, action: Action): FieldState {
   switch (action.type) {
     case 'HYDRATE':
-      return { ...state, ...action.state, hydrated: true };
+      return {
+        ...state,
+        ...action.state,
+        // A sync can't still be running after a restart.
+        syncStatus: { ...state.syncStatus, ...action.state.syncStatus, running: false },
+        dayPack: { ...state.dayPack, ...action.state.dayPack },
+        hydrated: true,
+      };
+
+    case 'SET_LEADS': {
+      // A lead added on this phone stays until its draft reaches the server,
+      // and a stage change made offline stays until it's sent.
+      const unsynced = new Set(state.leadDrafts.map((d) => d.id));
+      const local = state.leads.filter((l) => unsynced.has(l.id) && !action.leads.some((s) => s.id === l.id));
+      return { ...state, leads: withQueuedLeadChanges([...local, ...action.leads], state.queuedActions) };
+    }
+
+    case 'ADD_LEAD':
+      return { ...state, leads: [action.lead, ...state.leads.filter((l) => l.id !== action.lead.id)] };
+
+    case 'UPDATE_LEAD':
+      return { ...state, leads: state.leads.map((l) => (l.id === action.lead.id ? action.lead : l)) };
+
+    case 'SET_ROUTE_ASSIGNMENTS':
+      return { ...state, routeAssignments: action.assignments };
+
+    case 'SET_CAMPAIGNS':
+      return { ...state, campaigns: action.campaigns };
+
+    case 'SET_STOCK_REQUESTS':
+      return { ...state, stockRequests: action.requests };
+
+    case 'SET_SURVEY_RESPONSES':
+      return { ...state, surveyResponses: action.responses };
+
+    case 'QUEUE_ACTION': {
+      const exists = state.queuedActions.some((a) => a.id === action.action.id);
+      return {
+        ...state,
+        queuedActions: exists
+          ? state.queuedActions.map((a) => (a.id === action.action.id ? action.action : a))
+          : [action.action, ...state.queuedActions],
+      };
+    }
+
+    case 'DELETE_QUEUED_ACTION':
+      return { ...state, queuedActions: state.queuedActions.filter((a) => a.id !== action.actionId) };
+
+    case 'SET_DAY_PACK':
+      return {
+        ...state,
+        dayPack: { ...state.dayPack, ...action.status, parts: { ...state.dayPack.parts, ...action.status.parts } },
+      };
+
+    case 'SET_SYNC_STATUS':
+      return { ...state, syncStatus: { ...state.syncStatus, ...action.status } };
+
+    case 'ADD_SYNC_NOTICES':
+      return action.notices.length > 0
+        ? { ...state, syncStatus: { ...state.syncStatus, notices: [...state.syncStatus.notices, ...action.notices].slice(-10) } }
+        : state;
+
+    case 'CLEAR_SYNC_NOTICES':
+      return { ...state, syncStatus: { ...state.syncStatus, notices: [] } };
+
+    case 'REMAP_OUTLET_ID':
+      return remapOutletInState(state, action.from, action.to);
+
+    case 'REMAP_LEAD_ID':
+      return remapLeadInState(state, action.from, action.to, action.lead);
 
     case 'SET_USER':
       return { ...state, user: action.user };
@@ -127,6 +251,18 @@ function reducer(state: FieldState, action: Action): FieldState {
 
     case 'SET_CACHED_ATTENDANCE_STATS':
       return { ...state, cachedAttendanceStats: action.stats };
+
+    case 'SET_OUTLET_FORM_OPTIONS':
+      return { ...state, outletFormOptions: { ...state.outletFormOptions, ...action.options } };
+
+    case 'SET_LEAD_STAGES':
+      return { ...state, leadStages: action.stages.length > 0 ? action.stages : null };
+
+    case 'SET_GEOFENCE':
+      return { ...state, geofence: action.geofence };
+
+    case 'SET_CAMPAIGN_SURVEYS':
+      return { ...state, campaignSurveys: { ...state.campaignSurveys, [action.campaignId]: action.surveys } };
 
     // A different agent just logged in than whoever this device's clocked-in/
     // campaign state belongs to (App.tsx compares emails before resuming) —
@@ -153,6 +289,7 @@ function reducer(state: FieldState, action: Action): FieldState {
         // submitted EOD gets blocked from every action by someone else's lock.
         dayLockedUntil: null,
         outlets: [],
+        outletsCapped: false,
         sales: [],
         orders: [],
         // Only the previous agent's real, already-synced survey history is
@@ -172,6 +309,20 @@ function reducer(state: FieldState, action: Action): FieldState {
         // not a privacy/isolation concern worth that cost.
         photoCaptures: [],
         leadSurveyResponses: [],
+        // Distributors depend on the agent's warehouse; the outlet types and
+        // channels are the same for everyone.
+        outletFormOptions: { ...state.outletFormOptions, distributors: undefined, defaultDistributorId: undefined },
+        // Territories are the agent's own.
+        geofence: null,
+        // The previous agent's lists and download. Their queued actions stay,
+        // like their drafts: only they can send them.
+        leads: [],
+        routeAssignments: [],
+        campaigns: [],
+        stockRequests: [],
+        surveyResponses: [],
+        dayPack: { parts: {} },
+        syncStatus: { running: false, notices: [] },
       };
 
     case 'SET_OUTLETS': {
@@ -185,11 +336,22 @@ function reducer(state: FieldState, action: Action): FieldState {
       // any locally-tracked non-pending status across a refetch fixes that; it gets
       // cleared for real on the next clock-in via RESET_OUTLET_VISIT_STATUS.
       const localStatusById = new Map(state.outlets.map((o) => [o.id, o.status]));
+      // An edit saved offline hasn't reached the server yet, so the server
+      // knows nothing of the survey it made due or the location it sent for
+      // approval: the device's record stands until the edit syncs.
+      const localById = new Map(state.outlets.map((o) => [o.id, o]));
+      const unsyncedEdits = new Set(state.outletDrafts.filter((d) => d.mode === 'edit' && d.outletId).map((d) => d.outletId));
       const merged = action.outlets.map((o) => {
         const localStatus = localStatusById.get(o.id);
-        return localStatus && localStatus !== 'pending' ? { ...o, status: localStatus } : o;
+        const next = localStatus && localStatus !== 'pending' ? { ...o, status: localStatus } : o;
+        const local = localById.get(o.id);
+        return local && unsyncedEdits.has(o.id) ? keepUnsyncedEdit(next, local) : next;
       });
-      return { ...state, outlets: merged };
+      // An outlet onboarded offline isn't on the server yet: it stays on the
+      // list until its draft syncs, so the agent can keep working there.
+      const unsyncedNew = new Set(state.outletDrafts.filter((d) => d.mode === 'create').map((d) => d.id));
+      const offlineOutlets = state.outlets.filter((o) => unsyncedNew.has(o.id) && !action.outlets.some((s) => s.id === o.id));
+      return { ...state, outlets: [...offlineOutlets, ...merged], outletsCapped: !!action.outlets.capped };
     }
 
     case 'RESET_OUTLET_VISIT_STATUS':
@@ -203,6 +365,10 @@ function reducer(state: FieldState, action: Action): FieldState {
         ...state,
         outlets: state.outlets.map((o: Outlet) => (o.id === action.outlet.id ? action.outlet : o)),
       };
+
+    // Only for an outlet onboarded offline whose draft the agent deletes.
+    case 'REMOVE_OUTLET':
+      return { ...state, outlets: state.outlets.filter((o) => o.id !== action.outletId) };
 
     case 'MARK_OUTLET_VISITED':
       return {
@@ -230,6 +396,21 @@ function reducer(state: FieldState, action: Action): FieldState {
     case 'SET_SALES':
       return { ...state, sales: action.sales };
 
+    case 'APPEND_SALES': {
+      const have = new Set(state.sales.map((s) => s.id));
+      return { ...state, sales: [...state.sales, ...action.sales.filter((s) => !have.has(s.id))] };
+    }
+
+    case 'APPEND_ORDERS': {
+      const have = new Set(state.orders.map((o) => o.id));
+      return { ...state, orders: [...state.orders, ...action.orders.filter((o) => !have.has(o.id))] };
+    }
+
+    case 'APPEND_STOCK_REQUESTS': {
+      const have = new Set(state.stockRequests.map((r) => r.id));
+      return { ...state, stockRequests: [...state.stockRequests, ...action.requests.filter((r) => !have.has(r.id))] };
+    }
+
     case 'ADD_SALE':
       return {
         ...state,
@@ -248,14 +429,28 @@ function reducer(state: FieldState, action: Action): FieldState {
         surveys: [action.survey, ...state.surveys],
       };
 
+    case 'UPDATE_SURVEY':
+      return { ...state, surveys: state.surveys.map((s) => (s.id === action.survey.id ? action.survey : s)) };
+
     // Flips a locally-queued draft survey to synced once it's actually been
     // pushed to the server (see offlineSync.ts) — the record itself already
     // has real answers, only its isDraft flag needs to change.
     case 'MARK_SURVEY_SYNCED':
       return {
         ...state,
-        surveys: state.surveys.map((s) => (s.id === action.surveyId ? { ...s, isDraft: false } : s)),
+        surveys: state.surveys.map((s) => (s.id === action.surveyId ? { ...s, isDraft: false, syncError: undefined } : s)),
       };
+
+    // A draft the last sync didn't send stays, with the reason.
+    case 'SET_SURVEY_SYNC_ERROR':
+      return {
+        ...state,
+        surveys: state.surveys.map((s) => (s.id === action.surveyId ? { ...s, syncError: action.error } : s)),
+      };
+
+    // Only for a draft the agent deletes from the Drafts page; its photos are deleted by the caller.
+    case 'DELETE_SURVEY':
+      return { ...state, surveys: state.surveys.filter((s) => s.id !== action.surveyId) };
 
     case 'DECREMENT_STOCK': {
       const product = state.products.find((p: Product) => p.id === action.productId);
@@ -368,6 +563,18 @@ function reducer(state: FieldState, action: Action): FieldState {
         outletDrafts: state.outletDrafts.filter((d) => d.id !== action.draftId),
       };
 
+    case 'QUEUE_SURVEY_PHOTOS':
+      return {
+        ...state,
+        pendingSurveyPhotos: [...action.photos, ...state.pendingSurveyPhotos],
+      };
+
+    case 'DELETE_SURVEY_PHOTO':
+      return {
+        ...state,
+        pendingSurveyPhotos: state.pendingSurveyPhotos.filter((p) => p.id !== action.photoId),
+      };
+
     case 'ADD_LEAD_SURVEY_RESPONSE':
       return {
         ...state,
@@ -387,6 +594,7 @@ const initialState: FieldState = {
   // data. Starting empty is honest: a genuinely empty list now looks empty,
   // and real data only ever appears once a real fetch actually returns it.
   outlets: [],
+  outletsCapped: false,
   sales: [],
   orders: [],
   surveys: [],
@@ -402,6 +610,7 @@ const initialState: FieldState = {
   drafts: [],
   leadDrafts: [],
   outletDrafts: [],
+  pendingSurveyPhotos: [],
   photoCaptures: [],
   leadSurveyResponses: [],
   user: mockUser,
@@ -411,7 +620,64 @@ const initialState: FieldState = {
   dayLockedUntil: null,
   sessionAgentEmail: null,
   cachedAttendanceStats: null,
+  outletFormOptions: {},
+  leadStages: null,
+  geofence: null,
+  campaignSurveys: {},
+  leads: [],
+  routeAssignments: [],
+  campaigns: [],
+  stockRequests: [],
+  surveyResponses: [],
+  queuedActions: [],
+  dayPack: { parts: {} },
+  syncStatus: { running: false, notices: [] },
 };
+
+// ─── Saved on the phone ───────────────────────────────────────────────────────
+/** Sales, orders and surveys older than this aren't kept on the phone. */
+const HISTORY_DAYS = 30;
+
+const persistence = createPersistence({
+  defaults: initialState,
+  parts: {
+    session: {
+      fields: [
+        'user', 'attendanceStatus', 'campaignSelected', 'activeCampaign', 'dayLockedUntil',
+        'sessionAgentEmail', 'cachedAttendanceStats', 'dayPack', 'syncStatus',
+      ],
+    },
+    outlets: { fields: ['outlets', 'outletsCapped'], debounceMs: 1000 },
+    products: { fields: ['products', 'movements'], debounceMs: 1000 },
+    sales: { fields: ['sales'], debounceMs: 1000, prepare: (s) => ({ sales: lastDays(s.sales, HISTORY_DAYS) }) },
+    orders: { fields: ['orders'], debounceMs: 1000, prepare: (s) => ({ orders: lastDays(s.orders, HISTORY_DAYS) }) },
+    surveys: {
+      fields: ['surveys', 'leadSurveyResponses', 'surveyResponses'],
+      debounceMs: 1000,
+      // The unsent ones are saved with the rest of the unsent work.
+      prepare: (s) => ({
+        surveys: lastDays((s.surveys || []).filter((x: OutletSurvey) => !x.isDraft), HISTORY_DAYS),
+        leadSurveyResponses: s.leadSurveyResponses,
+        surveyResponses: s.surveyResponses,
+      }),
+    },
+    leads: { fields: ['leads'], debounceMs: 1000 },
+    route: { fields: ['routeAssignments'], debounceMs: 1000 },
+    campaigns: { fields: ['campaigns'], debounceMs: 1000 },
+    stockRequests: { fields: ['stockRequests'], debounceMs: 1000 },
+    forms: { fields: ['outletFormOptions', 'leadStages', 'geofence', 'campaignSurveys'], debounceMs: 1000 },
+    visits: { fields: ['skipRecords', 'photoCaptures'], debounceMs: 1000 },
+  },
+  // Everything not yet sent, one value per item.
+  queue: [
+    { kind: 'draft', field: 'drafts', items: (s) => s.drafts || [] },
+    { kind: 'lead', field: 'leadDrafts', items: (s) => s.leadDrafts || [] },
+    { kind: 'outlet', field: 'outletDrafts', items: (s) => s.outletDrafts || [] },
+    { kind: 'survey', field: 'surveys', items: (s) => (s.surveys || []).filter((x: OutletSurvey) => x.isDraft) },
+    { kind: 'photo', field: 'pendingSurveyPhotos', items: (s) => s.pendingSurveyPhotos || [] },
+    { kind: 'action', field: 'queuedActions', items: (s) => s.queuedActions || [] },
+  ],
+});
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 interface FieldContextValue {
@@ -432,11 +698,10 @@ interface FieldContextValue {
 
 const FieldContext = createContext<FieldContextValue | null>(null);
 
-const STORAGE_KEY = '@fieldops:state';
 // Bump this whenever the seed/mock data in mockService.ts changes shape or
-// content in a way that should override a device's previously persisted
-// state — otherwise HYDRATE below silently shadows the new seed data with
-// whatever was saved during an earlier session/build.
+// content in a way that should override a device's previously saved lists —
+// otherwise HYDRATE below silently shadows the new seed data with whatever was
+// saved during an earlier session/build. Unsent work is always kept.
 const SEED_VERSION = 2;
 const SEED_VERSION_KEY = '@fieldops:seedVersion';
 
@@ -444,10 +709,8 @@ const SEED_VERSION_KEY = '@fieldops:seedVersion';
 export const FieldProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
 
-  // Hydrate from AsyncStorage on mount — but only if the saved data was
-  // written by this same seed version. A mismatch (or first run) means the
-  // on-device snapshot predates the current mock data, so it's discarded in
-  // favor of the fresh initialState built from mockService.ts.
+  // Restore what's saved on the phone (see persistence.ts): the lists only if
+  // they were saved by this same seed version, the unsent work always.
   useEffect(() => {
     // Load logged-in user profile from storage
     getUserInfo().then((info) => {
@@ -465,41 +728,58 @@ export const FieldProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     // Always dispatch HYDRATE exactly once, even when there is nothing to
     // restore — callers (e.g. App.tsx resuming a session on launch) wait on
-    // `state.hydrated` and would otherwise hang forever on a first run or a
-    // seed-version bump.
+    // `state.hydrated` and would otherwise hang forever on a first run.
     (async () => {
       let toRestore: Partial<FieldState> = {};
       try {
-        const savedVersion = await AsyncStorage.getItem(SEED_VERSION_KEY);
-        if (Number(savedVersion) !== SEED_VERSION) {
-          await AsyncStorage.setItem(SEED_VERSION_KEY, String(SEED_VERSION)).catch(() => {});
-        } else {
-          const raw = await AsyncStorage.getItem(STORAGE_KEY);
-          if (raw) {
-            try {
-              toRestore = JSON.parse(raw);
-            } catch (_) {
-              // ignore parse errors — fall through with an empty restore
-            }
-          }
-        }
-      } catch (_) {
-        // ignore storage errors — fall through with an empty restore
+        const { restored, queued, unreadable } = await persistence.load(SEED_VERSION_KEY, SEED_VERSION);
+        if (unreadable.length > 0) debugLog('[store] left as they are, unreadable:', unreadable);
+        const syncedSurveys: OutletSurvey[] = (restored.surveys || []).filter((s: OutletSurvey) => !s.isDraft);
+        const draftSurveys: OutletSurvey[] = newestFirst(queued.survey);
+        toRestore = {
+          ...restored,
+          drafts: newestFirst(queued.draft),
+          leadDrafts: newestFirst(queued.lead),
+          outletDrafts: newestFirst(queued.outlet),
+          pendingSurveyPhotos: newestFirst(queued.photo),
+          queuedActions: newestFirst(queued.action),
+          surveys: [...draftSurveys, ...syncedSurveys.filter((s) => !draftSurveys.some((d) => d.id === s.id))],
+        };
+      } catch (e) {
+        debugLog('[store] could not restore saved data', e);
       }
       dispatch({ type: 'HYDRATE', state: toRestore });
     })();
   }, []);
 
-  // Persist on state change — gated on `hydrated` so this doesn't fire on the
-  // very first render (still holding default initialState) and clobber the
-  // real saved data with defaults before the hydration read above ever gets
-  // to it. That race silently wiped clockedIn/activeCampaign/etc. on every
-  // launch.
+  // Anything still waiting to be written goes before the app is backgrounded.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') persistence.flush();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // The agent's geofence, refreshed once the saved state is back (so the
+  // restore can't overwrite it); the sale screen and the Sync page refresh it
+  // too. Kept from last time when this fails, offline included.
   useEffect(() => {
     if (!state.hydrated) return;
-    if (AsyncStorage?.setItem) {
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
-    }
+    getMyGeofence().then((geofence) => dispatch({ type: 'SET_GEOFENCE', geofence })).catch(() => {});
+  }, [state.hydrated]);
+
+  // Lead stages are read by plain functions too (mapLead, the pipeline
+  // metrics), so the list they use follows the store's.
+  useEffect(() => {
+    setLeadStageList(state.leadStages);
+  }, [state.leadStages]);
+
+  // Saves what changed — gated on `hydrated` so the very first render (still
+  // holding the default initialState) never writes defaults over the real
+  // saved data before the restore above has read it.
+  useEffect(() => {
+    if (!state.hydrated) return;
+    persistence.save(state);
   }, [state]);
 
   const getSalesForOutlet = (outletId: string) =>

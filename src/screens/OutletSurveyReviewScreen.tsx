@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -10,7 +10,10 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey } from '../types';
+import { discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles } from '../utils/surveyPhotos';
+import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
+import { newStamp } from '../utils/queue';
+import { RouteName, CampaignSurveyConfig, SurveyAnswer, OutletSurvey, ActionStamp } from '../types';
 
 interface OutletSurveyReviewScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -38,13 +41,45 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
   const answers = routeData?.answers || {};
   const photoUris = routeData?.photoUris || {};
   const [submitting, setSubmitting] = useState(false);
+  // This survey's one-time ID and when it was filled in, from the first
+  // Submit: a second Submit after one that got no answer is the same survey.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
+
+  // Back to the form with the answers and photos as they are; missingIds are
+  // the questions to mark there, and retakeIds photos to take again.
+  const editAnswers = (missingIds?: string[], retakeIds: string[] = []) => {
+    const keep = ([id]: [string, unknown]) => !retakeIds.includes(id);
+    onNavigate('outletSurveyForm', {
+      outletId: outlet?.id,
+      survey,
+      answers: Object.fromEntries(Object.entries(answers).filter(keep)),
+      photoUris: Object.fromEntries(Object.entries(photoUris).filter(keep)),
+      missingIds,
+    });
+  };
 
   const handleSubmit = async () => {
     if (!outlet || !survey) return;
     if (blockIfDayLocked(state.dayLockedUntil)) return;
+    // Only a complete survey reaches review; checked again, since nothing
+    // incomplete may be sent.
+    const left = requireAllAnswered(allQuestions, answers);
+    if (left.length > 0) {
+      editAnswers(left.map((q) => q.id));
+      return;
+    }
+    // The photos go up with the survey, so each must still be on the phone.
+    const photos = surveyPhotoFiles(allQuestions, photoUris);
+    const lost = lostSurveyPhotos(allQuestions, photos);
+    if (lost.length > 0) {
+      Alert.alert('Take the Photo Again', lostPhotosMessage(lost));
+      editAnswers(lost.map((q) => q.id), lost.map((q) => q.id));
+      return;
+    }
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
 
     // Built up-front (not just on success) so a genuine offline failure below
     // can still save a real, resubmittable local copy instead of losing the
@@ -72,7 +107,9 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
         coordinates,
         undefined,
-        outlet.id
+        outlet.id,
+        photos,
+        { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
 
       const newSurvey: OutletSurvey = {
@@ -88,6 +125,14 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
 
       dispatch({ type: 'ADD_SURVEY', survey: newSurvey });
       dispatch({ type: 'MARK_OUTLET_VISITED', outletId: outlet.id });
+      // The survey the outlet was waiting for since its last edit: filled, so
+      // it can be edited again (the server clears it too).
+      if (outlet.surveyDue?.surveyId === survey.id) {
+        dispatch({ type: 'UPDATE_OUTLET', outlet: { ...outlet, surveyDue: undefined } });
+      }
+      // Accepted with its photos, so the phone's copies can go.
+      discardSurveyPhotos(photos);
+
       setSubmitting(false);
       onNavigate('surveySuccess', { survey: newSurvey, outletId: outlet.id });
     } catch (e: any) {
@@ -96,8 +141,10 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         // Genuine connectivity failure, not a rejection — save a real local
         // copy (isDraft: true, same record shape a synced survey would have)
         // so the agent's answers aren't lost, and it can be pushed for real
-        // from the Sync page once back online.
+        // from the Sync page once back online. It's complete, and its photo
+        // answers point at the kept photos, which go up with it.
         const draftSurvey: OutletSurvey = {
+          ...stamp,
           id: `surv-${Date.now()}`,
           outletId: outlet.id,
           campaignId: state.activeCampaign?.id || 'c2',
@@ -110,13 +157,19 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         dispatch({ type: 'ADD_SURVEY', survey: draftSurvey });
         Alert.alert(
           'Saved Locally',
-          'No connection — this survey has been saved on this device and will upload automatically from the Sync page once you\'re back online.',
+          "No connection, so this survey is saved on this phone. It's sent automatically once you're back online.",
         );
         onNavigate('outletDetail', { outletId: outlet.id });
       } else {
-        // The request reached the server and was rejected — this will never
-        // succeed on retry, so don't disguise it as an offline save.
-        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+        // The request reached the server and was refused — don't disguise
+        // that as an offline save. Its message says what to do (fix the
+        // answers it names, or submit again after PHOTO_SAVE_FAILED).
+        const missing = missingQuestionIds(e);
+        Alert.alert(
+          'Could Not Submit',
+          surveyRejectionMessage(e),
+          missing.length > 0 ? [{ text: 'Fix answers', onPress: () => editAnswers(missing) }] : undefined,
+        );
       }
     }
   };
@@ -139,7 +192,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         title="Review Answers"
         subtitle={survey.name}
         onNavigate={onNavigate}
-        onBackPress={() => onNavigate('outletSurveyForm', { outletId: outlet.id, survey })}
+        onBackPress={() => editAnswers()}
       />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {allQuestions.map((q, idx) => (
@@ -154,7 +207,7 @@ export const OutletSurveyReviewScreen: React.FC<OutletSurveyReviewScreenProps> =
         ))}
 
         <View style={styles.actionsRow}>
-          <Button title="Edit Answers" onPress={() => onNavigate('outletSurveyForm', { outletId: outlet.id, survey })} variant="outline" style={styles.editBtn} />
+          <Button title="Edit Answers" onPress={() => editAnswers()} variant="outline" style={styles.editBtn} />
           <Button
             title={submitting ? 'Submitting...' : 'Submit Survey'}
             onPress={handleSubmit}

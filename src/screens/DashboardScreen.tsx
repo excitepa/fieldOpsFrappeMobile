@@ -20,6 +20,12 @@ import { getMtdRingPct, DashboardContext } from '../utils/dashboardMetrics';
 import { isDayLocked } from '../utils/dayLock';
 import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
+import { useDayPack } from '../hooks/useDayPack';
+import { formatLastUpdated } from '../utils/dayPack';
+import { queueState, syncStatusText } from '../utils/offlineSync';
+import { getCartTotal } from '../utils/cart';
+import { isToday } from '../utils/outletVisits';
+import { localDateStr } from '../utils/timestamp';
 import { RouteName, Campaign, Lead } from '../types';
 
 interface DashboardScreenProps {
@@ -39,9 +45,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
   const [showSwitchModal, setShowSwitchModal] = useState(false);
   const [pendingCampaign, setPendingCampaign] = useState<Campaign | null>(null);
 
-  // The switcher lists the agent's real assigned campaigns — starts with just the
-  // current one so the modal is never empty, then fills in from the backend.
-  const [campaignsList, setCampaignsList] = useState<Campaign[]>([currentCampaign]);
+  // The switcher lists the agent's real assigned campaigns, saved on the phone
+  // (offline too) — just the current one until they've loaded once.
+  const campaignsList: Campaign[] = state.campaigns.length > 0 ? state.campaigns : [currentCampaign];
   // Shows the last real fetch immediately (this call is slow, 2s+) while a
   // fresh one quietly refines it below — same idea as useCurrentLocation's
   // last-known-fix. Cache is agent-scoped (RESET_AGENT_SESSION wipes it), so
@@ -62,7 +68,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
     (async () => {
       try {
         const data = await getCampaigns();
-        if (!cancelled && data.length > 0) setCampaignsList(data);
+        if (!cancelled && data.length > 0) dispatch({ type: 'SET_CAMPAIGNS', campaigns: data });
       } catch (e) {
         // Non-fatal — the switcher just keeps showing the current campaign only.
       }
@@ -151,7 +157,17 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
     setPendingCampaign(null);
   };
 
-  const todaySalesTotal = state.sales.reduce((sum, s) => sum + s.total, 0);
+  // Today's sales, those recorded with no connection included (marked below).
+  const todayIso = localDateStr();
+  const unsentSalesTotal = state.drafts
+    .filter((d) => d.mode === 'sale' && d.ready && d.happenedAt?.startsWith(todayIso))
+    .reduce((sum, d) => sum + getCartTotal(d.cart), 0);
+  // Today's download hasn't all come in: say how old the phone's data is.
+  const dayPack = useDayPack();
+  // Where the agent's unsent work stands (it goes up on its own).
+  const queue = queueState(state);
+  const syncText = syncStatusText(queue, state.syncStatus);
+  const todaySalesTotal = state.sales.filter((s) => isToday(s.timestamp)).reduce((sum, s) => sum + s.total, 0) + unsentSalesTotal;
   const myLocation = useCurrentLocation();
   const pendingOutlets = state.outlets.filter((o) => o.status === 'pending');
   // Nearest un-visited outlet by real distance when GPS is available — falls back to
@@ -230,6 +246,35 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
             <Text style={styles.syncBtnText}>Sync</Text>
           </Pressable>
         </View>
+        <Pressable onPress={() => onNavigate('sync')}>
+          <Text style={[styles.syncStatusText, queue.refused > 0 && styles.syncStatusRefused]}>
+            {syncText}{queue.refused > 0 ? ` · ${queue.refused} couldn't be sent` : ''}
+          </Text>
+        </Pressable>
+
+        {queue.fromEarlierDay && (
+          <Pressable onPress={() => onNavigate('draftsList')} style={styles.unsentBanner}>
+            <Icon name="alert-circle" size={16} color={theme.colors.red} />
+            <View style={styles.flex1}>
+              <Text style={styles.unsentTitle}>Yesterday's work hasn't been sent.</Text>
+              <Text style={styles.dayLockSub}>Connect to send it.</Text>
+            </View>
+          </Pressable>
+        )}
+
+        {state.syncStatus.notices.length > 0 && (
+          <View style={styles.noticeBanner}>
+            <Icon name="check-circle" size={16} color={theme.colors.navy} />
+            <View style={styles.flex1}>
+              {state.syncStatus.notices.map((n, i) => (
+                <Text key={`${i}-${n}`} style={styles.dayLockSub}>{n}</Text>
+              ))}
+            </View>
+            <Pressable onPress={() => dispatch({ type: 'CLEAR_SYNC_NOTICES' })} hitSlop={8} style={styles.staleRetryBtn}>
+              <Text style={styles.staleRetryText}>OK</Text>
+            </Pressable>
+          </View>
+        )}
 
         {dayLocked && (
           <View style={styles.dayLockBanner}>
@@ -238,6 +283,21 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
               <Text style={styles.dayLockTitle}>You're done for today</Text>
               <Text style={styles.dayLockSub}>New activity is locked until 12:00 AM. You can still look around, or log out.</Text>
             </View>
+          </View>
+        )}
+
+        {!dayPack.done && (
+          <View style={styles.staleBanner}>
+            <Icon name="refresh" size={16} color={theme.colors.amber} />
+            <View style={styles.flex1}>
+              <Text style={styles.dayLockTitle}>Last updated: {formatLastUpdated(dayPack.lastUpdated)}</Text>
+              <Text style={styles.dayLockSub}>
+                {dayPack.running ? "Getting today's data…" : "Some of today's data hasn't downloaded yet. It keeps trying while you're online."}
+              </Text>
+            </View>
+            <Pressable onPress={() => { dayPack.run().catch(() => {}); }} disabled={dayPack.running} style={styles.staleRetryBtn}>
+              <Text style={styles.staleRetryText}>{dayPack.running ? 'Wait' : 'Retry'}</Text>
+            </Pressable>
           </View>
         )}
 
@@ -277,6 +337,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
               <View style={styles.nextStopSalesCol}>
                 <Text style={styles.nextStopSalesValue}>₦{todaySalesTotal.toLocaleString()}</Text>
                 <Text style={styles.nextStopSalesLabel}>sales today</Text>
+                {unsentSalesTotal > 0 ? (
+                  <Text style={styles.nextStopSalesLabel}>₦{unsentSalesTotal.toLocaleString()} not sent yet</Text>
+                ) : null}
               </View>
             </View>
           </Card>
@@ -342,24 +405,27 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ onNavigate, le
               <Text style={styles.modalTitle}>Switch Campaign Drive</Text>
               <Text style={styles.modalSub}>Select active campaign to update assigned target drive:</Text>
 
-              {campaignsList.map((c) => (
-                <Pressable
-                  key={c.id}
-                  onPress={() => handleSelectCampaign(c)}
-                  style={[styles.modalOption, c.id === currentCampaign.id ? styles.activeOption : undefined]}
-                >
-                  <View style={[styles.campaignDot, { backgroundColor: c.color }]} />
-                  <View style={styles.flex1}>
-                    <Text style={styles.optionName}>{c.name}</Text>
-                    <Text style={styles.optionSub}>{c.beat} • {c.type}</Text>
-                  </View>
-                  <Icon
-                    name={c.id === currentCampaign.id ? 'check-circle' : 'circle'}
-                    size={20}
-                    color={c.id === currentCampaign.id ? theme.colors.navy : theme.colors.textMuted}
-                  />
-                </Pressable>
-              ))}
+              {/* Scrolls when there are more campaigns than fit on the sheet. */}
+              <ScrollView style={styles.campaignList} contentContainerStyle={styles.campaignListContent}>
+                {campaignsList.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    onPress={() => handleSelectCampaign(c)}
+                    style={[styles.modalOption, c.id === currentCampaign.id ? styles.activeOption : undefined]}
+                  >
+                    <View style={[styles.campaignDot, { backgroundColor: c.color }]} />
+                    <View style={styles.flex1}>
+                      <Text style={styles.optionName}>{c.name}</Text>
+                      <Text style={styles.optionSub}>{c.beat} • {c.type}</Text>
+                    </View>
+                    <Icon
+                      name={c.id === currentCampaign.id ? 'check-circle' : 'circle'}
+                      size={20}
+                      color={c.id === currentCampaign.id ? theme.colors.navy : theme.colors.textMuted}
+                    />
+                  </Pressable>
+                ))}
+              </ScrollView>
 
               <Button title="Close" onPress={() => setShowSwitchModal(false)} variant="ghost" style={{ marginTop: 8 }} />
             </View>
@@ -407,6 +473,20 @@ const createStyles = (theme: any) => StyleSheet.create({
     backgroundColor: theme.colors.cardWhite, borderWidth: 1, borderColor: theme.colors.cardBorder,
   },
   syncBtnText: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.navy },
+  syncStatusText: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.textMuted, textAlign: 'right', marginTop: -theme.spacing.sm, marginBottom: theme.spacing.md },
+  syncStatusRefused: { color: theme.colors.red },
+  unsentBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.redLight, borderRadius: theme.radius.md,
+    borderLeftWidth: 3, borderLeftColor: theme.colors.red,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
+  unsentTitle: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.red },
+  noticeBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.fieldFill, borderRadius: theme.radius.md,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
   dayLockBanner: {
     flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm,
     backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.md,
@@ -414,6 +494,14 @@ const createStyles = (theme: any) => StyleSheet.create({
     padding: theme.spacing.md, marginBottom: theme.spacing.md,
   },
   dayLockTitle: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textDark },
+  staleBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.md,
+    borderLeftWidth: 3, borderLeftColor: theme.colors.amber,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
+  staleRetryBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: theme.radius.full, backgroundColor: theme.colors.cardWhite },
+  staleRetryText: { fontFamily: theme.fonts.bold, fontSize: 12, color: theme.colors.navy },
   dayLockSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 2, lineHeight: 16 },
   campaignSwitchCard: { backgroundColor: theme.colors.campaignCardBg, borderColor: theme.colors.campaignCardBorder, marginBottom: theme.spacing.md, padding: theme.spacing.md },
   campaignSwitchRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
@@ -454,7 +542,9 @@ const createStyles = (theme: any) => StyleSheet.create({
   quickAccessBadge: { minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: theme.colors.red, alignItems: 'center', justifyContent: 'center' },
   quickAccessBadgeText: { fontFamily: theme.fonts.bold, fontSize: 11, color: '#FFFFFF' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: theme.colors.cardWhite, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, padding: theme.spacing.xl, gap: theme.spacing.md, paddingBottom: 40 },
+  modalCard: { backgroundColor: theme.colors.cardWhite, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, padding: theme.spacing.xl, gap: theme.spacing.md, paddingBottom: 40, maxHeight: '85%' },
+  campaignList: { flexShrink: 1 },
+  campaignListContent: { gap: theme.spacing.md },
   sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.cardBorder, borderRadius: 2, alignSelf: 'center', marginBottom: theme.spacing.sm },
   modalTitle: { fontFamily: theme.fonts.bold, fontSize: 18, color: theme.colors.textDark },
   modalSub: { fontFamily: theme.fonts.regular, fontSize: 13, color: theme.colors.textMuted },

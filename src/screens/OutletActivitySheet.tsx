@@ -17,8 +17,10 @@ interface OutletActivitySheetProps {
   outletName: string;
   enabledModules: CampaignModule[];
   onClose: () => void;
-  onSelectAction: (action: 'editCustomer' | 'sale' | 'order' | 'survey' | 'merchandising') => void;
+  onSelectAction: (action: 'editCustomer' | 'sale' | 'order' | 'survey' | 'merchandising' | 'dueSurvey') => void;
   onSkipOutlet: () => void;
+  /** The after-edit survey the outlet is waiting for: it comes first, and editing waits for it. */
+  dueSurveyName?: string;
 }
 
 export const OutletActivitySheet: React.FC<OutletActivitySheetProps> = ({
@@ -28,6 +30,7 @@ export const OutletActivitySheet: React.FC<OutletActivitySheetProps> = ({
   onClose,
   onSelectAction,
   onSkipOutlet,
+  dueSurveyName,
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
@@ -54,17 +57,38 @@ export const OutletActivitySheet: React.FC<OutletActivitySheetProps> = ({
               <Text style={styles.title}>Quick actions</Text>
 
               <View style={styles.actionsList}>
+                {dueSurveyName ? (
+                  <Pressable
+                    onPress={() => {
+                      onClose();
+                      onSelectAction('dueSurvey');
+                    }}
+                    style={styles.actionRow}
+                  >
+                    <View style={[styles.iconBox, { backgroundColor: theme.colors.amberLight }]}>
+                      <Icon name="clipboard-list" size={18} color={theme.colors.amber} />
+                    </View>
+                    <Text style={styles.actionTitle}>Fill in {dueSurveyName}</Text>
+                  </Pressable>
+                ) : null}
+
                 <Pressable
                   onPress={() => {
                     onClose();
                     onSelectAction('editCustomer');
                   }}
-                  style={styles.actionRow}
+                  disabled={!!dueSurveyName}
+                  style={[styles.actionRow, !!dueSurveyName && styles.actionRowDisabled]}
                 >
                   <View style={[styles.iconBox, { backgroundColor: theme.colors.tintGray }]}>
                     <Icon name="store" size={18} color={theme.colors.tintGrayIcon} />
                   </View>
-                  <Text style={styles.actionTitle}>Edit Customer</Text>
+                  <View style={styles.actionTextCol}>
+                    <Text style={styles.actionTitle}>Edit Customer</Text>
+                    {dueSurveyName ? (
+                      <Text style={styles.actionNote}>Fill in {dueSurveyName} before editing this outlet again.</Text>
+                    ) : null}
+                  </View>
                 </Pressable>
 
                 {showSale && (
@@ -169,4 +193,7 @@ const createStyles = (theme: any) => StyleSheet.create({
     justifyContent: 'center',
   },
   actionTitle: { fontFamily: theme.fonts.semibold, fontSize: 15, color: theme.colors.textDark },
+  actionRowDisabled: { opacity: 0.55 },
+  actionTextCol: { flex: 1, gap: 2 },
+  actionNote: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted },
 });

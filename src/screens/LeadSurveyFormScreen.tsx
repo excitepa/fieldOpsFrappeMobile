@@ -7,11 +7,20 @@ import { Header } from '../components/Header';
 import { Icon } from '../components/Icon';
 import { Button } from '../components/Button';
 import { DynamicSurveyForm } from '../components/DynamicSurveyForm';
+import { keepSurveyPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
+import { isAnswered, requireAllAnswered } from '../utils/surveyAnswers';
 import { RouteName, Lead, CampaignSurveyConfig } from '../types';
 
 interface LeadSurveyFormScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
-  routeData?: { lead?: Lead; survey?: CampaignSurveyConfig };
+  routeData?: {
+    lead?: Lead;
+    survey?: CampaignSurveyConfig;
+    /** Coming back from review: the answers and photos so far, and the questions to mark. */
+    answers?: Record<string, any>;
+    photoUris?: Record<string, string>;
+    missingIds?: string[];
+  };
 }
 
 export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNavigate, routeData }) => {
@@ -23,14 +32,15 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
   const sections = survey?.sections || [];
   const allQuestions = sections.flatMap((s) => s.questions);
 
-  const [answers, setAnswers] = useState<Record<string, any>>({});
-  const [photoUris, setPhotoUris] = useState<Record<string, string>>({});
-  const [errors, setErrors] = useState<Record<string, boolean>>({});
+  // Back from review (Edit Answers, or a refusal to fix) the form starts from
+  // the answers and photos it had, with any questions the server named marked.
+  const [answers, setAnswers] = useState<Record<string, any>>(routeData?.answers || {});
+  const [photoUris, setPhotoUris] = useState<Record<string, string>>(routeData?.photoUris || {});
+  const [errors, setErrors] = useState<Record<string, boolean>>(
+    () => Object.fromEntries((routeData?.missingIds || []).map((id) => [id, true]))
+  );
 
-  const answeredCount = allQuestions.filter((q) => {
-    const v = answers[q.id];
-    return v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
-  }).length;
+  const answeredCount = allQuestions.filter((q) => isAnswered(answers[q.id], q.type)).length;
 
   const setAnswer = (qId: string, val: any) => {
     setAnswers((prev) => ({ ...prev, [qId]: val }));
@@ -46,7 +56,10 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
       }
       const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
       if (!result.canceled && result.assets?.[0]?.uri) {
-        const uri = result.assets[0].uri;
+        // Shrunk and kept in the app's documents folder until it's uploaded
+        // after submit — see keepSurveyPhoto. A retake replaces the old copy.
+        const uri = await keepSurveyPhoto(result.assets[0].uri, result.assets[0].width);
+        discardSurveyPhoto(photoUris[qId]);
         setPhotoUris((prev) => ({ ...prev, [qId]: uri }));
         setAnswer(qId, uri);
       }
@@ -55,24 +68,12 @@ export const LeadSurveyFormScreen: React.FC<LeadSurveyFormScreenProps> = ({ onNa
     }
   };
 
+  // Every question must be answered, whatever the survey marks as required:
+  // the unanswered ones are marked and the agent stays on the form.
   const handleReview = () => {
-    const nextErrors: Record<string, boolean> = {};
-    let valid = true;
-    allQuestions.forEach((q) => {
-      if (q.required) {
-        const v = answers[q.id];
-        const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
-        if (empty) {
-          nextErrors[q.id] = true;
-          valid = false;
-        }
-      }
-    });
-    setErrors(nextErrors);
-    if (!valid) {
-      Alert.alert('Incomplete Survey', 'Please answer all required questions highlighted in red before continuing.');
-      return;
-    }
+    const left = requireAllAnswered(allQuestions, answers);
+    setErrors(Object.fromEntries(left.map((q) => [q.id, true])));
+    if (left.length > 0) return;
     onNavigate('leadSurveyReview', { lead, survey, answers, photoUris });
   };
 

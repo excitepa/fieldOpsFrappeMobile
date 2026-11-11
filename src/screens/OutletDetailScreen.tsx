@@ -22,7 +22,9 @@ import { groupSalesByInvoice, groupOrdersByRef } from '../utils/transactions';
 import { parseGps, distanceMeters, formatDistance } from '../utils/geo';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
 import { isOutletVisitedToday } from '../utils/outletVisits';
+import { getCartTotal } from '../utils/cart';
 import { getMySales, getMyOrders } from '../services/api';
+import { dueSurveyConfig, dueSurveyFor } from '../utils/afterEditSurvey';
 
 interface OutletDetailScreenProps {
   outletData?: { outletId: string };
@@ -82,9 +84,12 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
   const groupedOrders = groupOrdersByRef(ordersList);
   // Real, server-derived — see outletVisits.ts for why this replaced the local
   // outlet.status flag.
-  const visitedToday = isOutletVisitedToday(outlet.id, salesList, ordersList);
+  const visitedToday = isOutletVisitedToday(outlet.id, salesList, ordersList, state.drafts);
+  // Sales and orders recorded here that haven't reached the server yet.
+  const unsentHere = state.drafts.filter((d) => d.outletId === outlet.id);
 
   const outletCoords = parseGps(outlet.gps);
+  const dueSurvey = dueSurveyFor(outlet, state.surveys);
   const outletDistanceM = myLocation && outletCoords ? distanceMeters(myLocation, outletCoords) : null;
 
   const handlePhoneCall = () => {
@@ -112,9 +117,32 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
     dispatch({ type: 'SKIP_OUTLET', outletId: outlet.id, skipRecord: record });
   };
 
-  const handleSelectActivityAction = (action: 'editCustomer' | 'sale' | 'order' | 'survey' | 'merchandising') => {
+  // The after-edit survey this outlet is waiting for, opened from the device
+  // (offline too) or loaded.
+  const openDueSurvey = async () => {
+    if (!dueSurvey) return;
+    const survey = await dueSurveyConfig(dueSurvey, state.campaignSurveys[activeCampaign?.id || '']);
+    if (!survey) {
+      Alert.alert('Survey Not Available', "This survey isn't on this device yet. Connect to the internet to open it.");
+      return;
+    }
+    onNavigate('outletSurveyForm', { outletId: outlet.id, survey });
+  };
+
+  const handleSelectActivityAction = (action: 'editCustomer' | 'sale' | 'order' | 'survey' | 'merchandising' | 'dueSurvey') => {
     switch (action) {
+      case 'dueSurvey':
+        openDueSurvey();
+        break;
       case 'editCustomer':
+        // Until the survey from the last edit is filled, the outlet can't be edited again.
+        if (dueSurvey) {
+          Alert.alert('Survey Required', `Fill in ${dueSurvey.surveyName} before editing this outlet again.`, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Fill in survey', onPress: () => { openDueSurvey(); } },
+          ]);
+          break;
+        }
         onNavigate('editOutlet', { outletId: outlet.id });
         break;
       case 'sale':
@@ -213,6 +241,29 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
           </View>
         )}
 
+        {/* The survey from the last edit, until it's filled: the outlet can't be edited again before then. */}
+        {dueSurvey && (
+          <Pressable onPress={openDueSurvey} style={styles.farAwayBanner}>
+            <Icon name="clipboard-list" size={18} color={theme.colors.amber} />
+            <View style={styles.flex1}>
+              <Text style={styles.farAwayTitle}>Survey required: {dueSurvey.surveyName}</Text>
+              <Text style={styles.farAwaySub}>Fill it in before editing this outlet again. Tap to fill it in.</Text>
+            </View>
+            <Icon name="chevron-right" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        )}
+
+        {/* A new location the agent sent, until a supervisor decides on it. */}
+        {outlet.pendingLocationRequest && (
+          <View style={styles.farAwayBanner}>
+            <Icon name="map-pin" size={18} color={theme.colors.amber} />
+            <View style={styles.flex1}>
+              <Text style={styles.farAwayTitle}>Location change waiting for approval</Text>
+              <Text style={styles.farAwaySub}>The outlet keeps its saved location until a supervisor approves the new one.</Text>
+            </View>
+          </View>
+        )}
+
         {/* DETAIL ROWS */}
         <Card style={styles.detailCard}>
           {detailRows.map((row, i) => (
@@ -271,6 +322,27 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
               <Text style={styles.skippedSummaryTime}>{skipRecord.timestamp}</Text>
             ) : null}
           </Card>
+        )}
+
+        {/* Not sent yet: recorded here, waiting for a connection (or saved to finish later) */}
+        {unsentHere.length > 0 && (
+          <View style={styles.historySection}>
+            <Text style={styles.sectionTitle}>NOT SENT YET ({unsentHere.length})</Text>
+            {unsentHere.map((d) => (
+              <Pressable key={d.id} onPress={() => onNavigate('draftsList')}>
+                <Card style={styles.historyItemCard}>
+                  <View style={styles.historyRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.historyTitle}>{d.mode === 'sale' ? 'Sale' : 'Order'} · {d.cart.length} item{d.cart.length === 1 ? '' : 's'}</Text>
+                      <Text style={styles.historySub}>{d.syncError ? `Not sent: ${d.syncError}` : d.ready ? 'Not sent yet' : 'Saved to finish later'}</Text>
+                    </View>
+                    <Text style={styles.historyAmount}>₦{getCartTotal(d.cart).toLocaleString()}</Text>
+                    <Icon name="chevron-right" size={16} color={theme.colors.textMuted} />
+                  </View>
+                </Card>
+              </Pressable>
+            ))}
+          </View>
         )}
 
         {/* Sales History */}
@@ -347,6 +419,7 @@ export const OutletDetailScreen: React.FC<OutletDetailScreenProps> = ({
         visible={showActivitySheet}
         outletName={outlet.name}
         enabledModules={campaignModules}
+        dueSurveyName={dueSurvey?.surveyName}
         onClose={() => setShowActivitySheet(false)}
         onSelectAction={handleSelectActivityAction}
         onSkipOutlet={() => setShowSkipModal(true)}

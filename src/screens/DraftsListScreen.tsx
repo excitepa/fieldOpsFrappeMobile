@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -7,10 +7,12 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { createLead, getOutlets } from '../services/api';
-import { pushLeadDrafts, pushCartDrafts, pushSurveyDrafts, pushOutletDrafts, summariseSyncErrors } from '../utils/offlineSync';
+import { pushLeadDrafts, queuedActionLabel, summariseSyncErrors, syncNow } from '../utils/offlineSync';
 import { getCartTotal } from '../utils/cart';
-import { RouteName, LeadDraft } from '../types';
+import { discardKeptPhoto, discardSurveyPhoto } from '../utils/surveyPhotos';
+import { formatServerDateTime } from '../utils/timestamp';
+import { isMine } from '../utils/queue';
+import { RouteName, LeadDraft, OutletSurvey, Draft, OutletDraft, QueuedAction } from '../types';
 
 interface DraftsListScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -20,6 +22,8 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state, dispatch, getDraftsList, getLeadDraftsList, getOutletDraftsList } = useFieldStore();
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const [syncing, setSyncing] = useState(false);
   const [retryingLeadId, setRetryingLeadId] = useState<string | null>(null);
 
@@ -27,42 +31,26 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
   const leadDrafts = getLeadDraftsList();
   const surveyDrafts = state.surveys.filter((s) => s.isDraft);
   const outletDrafts = getOutletDraftsList();
-  const totalCount = cartDrafts.length + leadDrafts.length + surveyDrafts.length + outletDrafts.length;
+  const queuedActions = state.queuedActions;
+  const totalCount = cartDrafts.length + leadDrafts.length + surveyDrafts.length + outletDrafts.length + queuedActions.length;
 
+  // Everything waiting, refused items and carts saved for later included, by
+  // the same routine that sends on its own.
   const handleSyncNow = async () => {
     setSyncing(true);
     try {
-      const fallbackCampaignId = state.activeCampaign?.id || '';
-      const [leads, carts, surveysRes, outlets] = await Promise.all([
-        pushLeadDrafts(leadDrafts, dispatch),
-        pushCartDrafts(cartDrafts, dispatch, fallbackCampaignId),
-        pushSurveyDrafts(surveyDrafts, dispatch),
-        pushOutletDrafts(outletDrafts, dispatch),
-      ]);
-      if (outlets.synced > 0) {
-        // Reconciles optimistic local outlet(s) with their real synced
-        // versions rather than leaving temp-id duplicates in the list.
-        // Non-essential: a failure here must not surface as an error, the
-        // drafts themselves already went up fine.
-        try {
-          const campaignId = state.activeCampaign?.id;
-          if (campaignId) {
-            const fetched = await getOutlets(campaignId);
-            dispatch({ type: 'SET_OUTLETS', outlets: fetched });
-          }
-        } catch {
-          // Keeps whatever's already local.
-        }
+      const outcome = await syncNow({ getState: () => stateRef.current, dispatch, manual: true, refresh: true });
+      if (outcome.needsSignIn) {
+        Alert.alert('Sign In Again', 'Your login has expired. Sign in again to send your work: it stays saved on this phone.');
+        return;
       }
-      const syncedCount = leads.synced + carts.synced + surveysRes.synced + outlets.synced;
-      const stillPending = leads.failed + carts.failed + surveysRes.failed + outlets.failed;
-      const errors = [...leads.errors, ...carts.errors, ...surveysRes.errors, ...outlets.errors];
       // A bare "0 synced, N still pending" gives nobody anything to act on —
       // show the actual reason each item was rejected.
-      const lines = [`${syncedCount} item${syncedCount === 1 ? '' : 's'} synced. ${stillPending} item${stillPending === 1 ? '' : 's'} still pending.`];
-      if (errors.length > 0) lines.push('', summariseSyncErrors(errors));
+      const lines = [`${outcome.sent} item${outcome.sent === 1 ? '' : 's'} synced. ${outcome.failed} item${outcome.failed === 1 ? '' : 's'} still pending.`];
+      if (outcome.notices.length > 0) lines.push('', ...outcome.notices);
+      if (outcome.errors.length > 0) lines.push('', summariseSyncErrors(outcome.errors));
       Alert.alert(
-        stillPending > 0 && syncedCount === 0 ? 'Nothing Could Be Synced' : 'Synchronization Complete',
+        outcome.failed > 0 && outcome.sent === 0 ? 'Nothing Could Be Synced' : 'Synchronization Complete',
         lines.join('\n'),
       );
     } finally {
@@ -70,22 +58,78 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
     }
   };
 
+  // A survey draft that can't be sent (not complete, a photo gone, or refused)
+  // can only be dropped: it can't be reopened to finish.
+  const deleteSurveyDraft = (sur: OutletSurvey) => {
+    Alert.alert('Delete Survey Draft?', `${sur.surveyName || 'This survey'} and its photos will be removed from this device. This can't be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          // A photo answer holds the kept photo's path (drafts from older builds have no questionType).
+          sur.answers.forEach((a) => {
+            if (typeof a.answer === 'string' && (a.questionType === 'photo' || a.answer.startsWith('file://'))) discardSurveyPhoto(a.answer);
+          });
+          dispatch({ type: 'DELETE_SURVEY', surveyId: sur.id });
+        },
+      },
+    ]);
+  };
+
+  // Any unsent item can be deleted: one the server refused has to be fixed or
+  // deleted before the day can be closed.
+  const confirmDelete = (title: string, body: string, onDelete: () => void) => {
+    Alert.alert(title, `${body} This can't be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: onDelete },
+    ]);
+  };
+
+  const deleteCartDraft = (draft: Draft) =>
+    confirmDelete(`Delete ${draft.mode === 'sale' ? 'Sale' : 'Order'}?`, `The ${draft.mode} at ${draft.outletName} will be removed from this device.`, () =>
+      dispatch({ type: 'DELETE_DRAFT', draftId: draft.id }));
+
+  const deleteLeadDraft = (draft: LeadDraft) =>
+    confirmDelete('Delete Lead?', `${draft.name} will be removed from this device.`, () =>
+      dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id }));
+
+  const deleteQueuedAction = (action: QueuedAction) =>
+    confirmDelete('Delete?', `"${queuedActionLabel(action)}" will be removed from this device.`, () =>
+      dispatch({ type: 'DELETE_QUEUED_ACTION', actionId: action.id }));
+
+  // A new outlet that's deleted takes what was recorded there with it: it
+  // could never be sent without the outlet.
+  const deleteOutletDraft = (draft: OutletDraft) => {
+    const recordedThere = draft.mode === 'create'
+      ? [
+          ...cartDrafts.filter((d) => d.outletId === draft.id).map((d) => () => dispatch({ type: 'DELETE_DRAFT', draftId: d.id })),
+          ...surveyDrafts.filter((d) => d.outletId === draft.id).map((d) => () => dispatch({ type: 'DELETE_SURVEY', surveyId: d.id })),
+          ...queuedActions.filter((a) => a.kind === 'skip' && a.outletId === draft.id).map((a) => () => dispatch({ type: 'DELETE_QUEUED_ACTION', actionId: a.id })),
+        ]
+      : [];
+    const also = recordedThere.length > 0 ? ` So will the ${recordedThere.length} item${recordedThere.length === 1 ? '' : 's'} recorded there.` : '';
+    confirmDelete(draft.mode === 'create' ? 'Delete New Outlet?' : 'Delete Outlet Edit?', `${draft.name} will be removed from this device.${also}`, () => {
+      recordedThere.forEach((remove) => remove());
+      discardKeptPhoto(draft.photoUri);
+      dispatch({ type: 'DELETE_OUTLET_DRAFT', draftId: draft.id });
+      if (draft.mode === 'create') dispatch({ type: 'REMOVE_OUTLET', outletId: draft.id });
+    });
+  };
+
+  // Made by another agent on this phone (phones are shared only for testing):
+  // it waits for them, and only they can send it.
+  const madeBy = (item: { agentEmail?: string }) =>
+    isMine(item, state.user.email) ? null : <Text style={styles.draftError}>Made by {item.agentEmail}. Sign in as them to send.</Text>;
+
   const retryLeadDraft = async (draft: LeadDraft) => {
+    if (!isMine(draft, state.user.email)) return;
     setRetryingLeadId(draft.id);
     try {
-      await createLead(draft.campaignId, {
-        name: draft.name,
-        company: draft.company,
-        phone: draft.phone,
-        email: draft.email,
-        address: draft.address,
-        source: draft.source,
-        notes: draft.notes,
-      });
-      dispatch({ type: 'DELETE_LEAD_DRAFT', draftId: draft.id });
-      Alert.alert('Synced', `Lead "${draft.name}" uploaded successfully.`);
-    } catch (e: any) {
-      Alert.alert('Retry Failed', e?.message || 'Could not sync this lead. Will try again later.');
+      // The same send as a full sync: with the draft's one-time ID.
+      const result = await pushLeadDrafts([draft], dispatch);
+      if (result.synced > 0) Alert.alert('Synced', `Lead "${draft.name}" uploaded successfully.`);
+      else Alert.alert('Retry Failed', summariseSyncErrors(result.errors) || 'Could not sync this lead. Will try again later.');
     } finally {
       setRetryingLeadId(null);
     }
@@ -126,10 +170,12 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                     <Text style={styles.draftSub}>
                       {draft.cart.length} item{draft.cart.length === 1 ? '' : 's'} · ₦{getCartTotal(draft.cart).toLocaleString()} · {draft.updatedAt}
                     </Text>
+                    {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
+                    {madeBy(draft)}
                   </View>
-                  <View style={styles.pendingBadge}>
-                    <Text style={styles.pendingBadgeText}>Pending Sync</Text>
-                  </View>
+                  <Pressable onPress={() => deleteCartDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
+                    <Text style={styles.deleteBtnText}>Delete</Text>
+                  </Pressable>
                 </Card>
               </Pressable>
             ))}
@@ -148,10 +194,18 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                   <View style={{ flex: 1 }}>
                     <Text style={styles.draftTitle}>{draft.name} · {draft.company}</Text>
                     <Text style={styles.draftSub}>{draft.phone} · Created {draft.createdAt}</Text>
+                    {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
+                    {madeBy(draft)}
                   </View>
-                  <View style={styles.pendingBadge}>
-                    <Text style={styles.pendingBadgeText}>Tap to Retry</Text>
-                  </View>
+                  {draft.syncError ? (
+                    <Pressable onPress={() => deleteLeadDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
+                      <Text style={styles.deleteBtnText}>Delete</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={styles.pendingBadge}>
+                      <Text style={styles.pendingBadgeText}>{retryingLeadId === draft.id ? 'Sending…' : 'Tap to Retry'}</Text>
+                    </View>
+                  )}
                 </Card>
               </Pressable>
             ))}
@@ -170,10 +224,18 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                   <View style={{ flex: 1 }}>
                     <Text style={styles.draftTitle}>{sur.surveyName || 'Field Survey'} draft</Text>
                     <Text style={styles.draftSub}>{sur.answers.length} responses saved · {sur.timestamp}</Text>
+                    {sur.syncError ? <Text style={styles.draftError}>Not sent: {sur.syncError}</Text> : null}
+                    {madeBy(sur)}
                   </View>
-                  <View style={styles.pendingBadge}>
-                    <Text style={styles.pendingBadgeText}>Pending Sync</Text>
-                  </View>
+                  {sur.syncError ? (
+                    <Pressable onPress={() => deleteSurveyDraft(sur)} hitSlop={8} style={styles.deleteBtn}>
+                      <Text style={styles.deleteBtnText}>Delete</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={styles.pendingBadge}>
+                      <Text style={styles.pendingBadgeText}>Pending Sync</Text>
+                    </View>
+                  )}
                 </Card>
               </Pressable>
             ))}
@@ -191,10 +253,34 @@ export const DraftsListScreen: React.FC<DraftsListScreenProps> = ({ onNavigate }
                 <View style={{ flex: 1 }}>
                   <Text style={styles.draftTitle}>{draft.mode === 'create' ? 'New outlet' : 'Outlet edit'} · {draft.name}</Text>
                   <Text style={styles.draftSub}>{draft.address} · {draft.createdAt}</Text>
+                  {draft.syncError ? <Text style={styles.draftError}>Not sent: {draft.syncError}</Text> : null}
+                  {madeBy(draft)}
                 </View>
-                <View style={styles.pendingBadge}>
-                  <Text style={styles.pendingBadgeText}>Pending Sync</Text>
+                <Pressable onPress={() => deleteOutletDraft(draft)} hitSlop={8} style={styles.deleteBtn}>
+                  <Text style={styles.deleteBtnText}>Delete</Text>
+                </Pressable>
+              </Card>
+            ))}
+          </View>
+        )}
+
+        {queuedActions.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>SKIPS, STAGE CHANGES AND STOCK REQUESTS ({queuedActions.length})</Text>
+            {queuedActions.map((action) => (
+              <Card key={action.id} style={styles.draftCard}>
+                <View style={[styles.modeIcon, { backgroundColor: theme.colors.tintPeach }]}>
+                  <Icon name={action.kind === 'skip' ? 'x' : action.kind === 'stockRequest' ? 'package' : 'trending-up'} size={18} color={theme.colors.tintPeachIcon} />
                 </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.draftTitle}>{queuedActionLabel(action)}</Text>
+                  <Text style={styles.draftSub}>{action.happenedAt ? formatServerDateTime(action.happenedAt) : 'Not sent yet'}</Text>
+                  {action.syncError ? <Text style={styles.draftError}>Not sent: {action.syncError}</Text> : null}
+                  {madeBy(action)}
+                </View>
+                <Pressable onPress={() => deleteQueuedAction(action)} hitSlop={8} style={styles.deleteBtn}>
+                  <Text style={styles.deleteBtnText}>Delete</Text>
+                </Pressable>
               </Card>
             ))}
           </View>
@@ -214,6 +300,9 @@ const createStyles = (theme: any) => StyleSheet.create({
   modeIcon: { width: 40, height: 40, borderRadius: theme.radius.md, alignItems: 'center', justifyContent: 'center' },
   draftTitle: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.darkText },
   draftSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.darkMuted, marginTop: 2 },
+  draftError: { fontFamily: theme.fonts.semibold, fontSize: 12, color: theme.colors.red, marginTop: 4 },
   pendingBadge: { backgroundColor: theme.colors.amberLight, borderRadius: theme.radius.full, paddingHorizontal: 8, paddingVertical: 4 },
   pendingBadgeText: { fontFamily: theme.fonts.bold, fontSize: 9, color: theme.colors.amber },
+  deleteBtn: { backgroundColor: theme.colors.redLight, borderRadius: theme.radius.full, paddingHorizontal: 10, paddingVertical: 5 },
+  deleteBtnText: { fontFamily: theme.fonts.bold, fontSize: 11, color: theme.colors.red },
 });

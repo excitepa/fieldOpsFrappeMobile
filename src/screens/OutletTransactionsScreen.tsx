@@ -1,11 +1,13 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
+import { LoadMoreButton } from '../components/LoadMoreButton';
 import { useFieldStore } from '../store/useFieldStore';
+import { useLoadMore } from '../hooks/useLoadMore';
 import { groupSalesByInvoice, groupOrdersByRef } from '../utils/transactions';
 import { getMyOrders, getMySales } from '../services/api';
 import { RouteName } from '../types';
@@ -37,6 +39,21 @@ export const OutletTransactionsScreen: React.FC<OutletTransactionsScreenProps> =
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Older sales and orders, the next page of each. The server's lists are all
+  // the agent's outlets, so a page may hold nothing for this one.
+  const moreSales = useLoadMore('sales');
+  const moreOrders = useLoadMore('orders');
+  const [noneHere, setNoneHere] = useState(false);
+  const loadMore = async () => {
+    setNoneHere(false);
+    const pages = await Promise.all([
+      moreSales.canLoadMore ? moreSales.loadMore() : [],
+      moreOrders.canLoadMore ? moreOrders.loadMore() : [],
+    ]);
+    if (pages.some((page) => page === null)) return;
+    setNoneHere(!pages.flatMap((page) => page || []).some((r) => 'outletId' in r && r.outletId === outletId));
+  };
 
   const groupedSales = groupSalesByInvoice(getSalesForOutlet(outletId));
   const groupedOrders = groupOrdersByRef(getOrdersForOutlet(outletId));
@@ -73,6 +90,15 @@ export const OutletTransactionsScreen: React.FC<OutletTransactionsScreenProps> =
             </Pressable>
           ))
         )}
+        <LoadMoreButton
+          canLoadMore={moreSales.canLoadMore || moreOrders.canLoadMore}
+          loading={moreSales.loading || moreOrders.loading}
+          error={moreSales.error || moreOrders.error}
+          onPress={loadMore}
+        />
+        {noneHere && (moreSales.canLoadMore || moreOrders.canLoadMore) && (
+          <Text style={styles.noneHereText}>None of those were for this outlet. Load more looks further back.</Text>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -84,6 +110,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   flex1: { flex: 1 },
   outletName: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.textMuted, marginBottom: 4 },
   emptyText: { fontFamily: theme.fonts.regular, fontSize: 14, color: theme.colors.textMuted },
+  noneHereText: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, textAlign: 'center' },
   rowCard: { gap: 0 },
   row: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   rowTitle: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.textDark },

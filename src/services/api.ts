@@ -12,8 +12,12 @@ import {
   getUserInfo,
   clearUserInfo,
 } from './apiConfig';
-import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, LeadStage, Outlet, OutletStatus, Product, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
+import { Campaign, CampaignCategory, CampaignModule, UserProfile, Lead, OutletList, LeadStage, LeadStageInfo, PendingStageRequest, MasterOption, Outlet, OutletStatus, GeofenceConfig, SaleLocation, SurveyDue, Product, ProductUnit, ProductPromotion, PromotionChoices, OutletOrder, OutletSale, RouteAssignment, NotificationItem, CampaignSurveyConfig, DynamicSurveyQuestion, QuestionType } from '../types';
 import { localDateStr } from '../utils/timestamp';
+import { debugLog } from '../utils/logger';
+import type { OutletDirectory } from '../utils/outletDirectory';
+import { firstStage, normalizeStage, stageScore } from '../utils/leadStages';
+import { cleanNumberAnswer } from '../utils/surveyAnswers';
 
 /** Thrown by authFetch when the stored session is missing or the server rejects the token (401). */
 export class AuthError extends Error {}
@@ -49,6 +53,27 @@ export class SoftError extends Error {
   }
 }
 
+/**
+ * What an action the app may send again carries (see ActionStamp): its
+ * one-time ID, which the server answers a repeat of exactly as the first time
+ * ("idempotent": true), when the agent did it, which the server dates the
+ * record by, and whether it's being sent later from the phone's queue. A
+ * backend without them ignores them.
+ */
+export interface ActionMeta {
+  clientRef?: string;
+  happenedAt?: string;
+  capturedOffline?: boolean;
+}
+
+const stampFields = (meta?: ActionMeta): Record<string, any> => {
+  const fields: Record<string, any> = {};
+  if (meta?.clientRef) fields.client_ref = meta.clientRef;
+  if (meta?.happenedAt) fields.happened_at = meta.happenedAt;
+  if (meta?.capturedOffline) fields.captured_offline = 1;
+  return fields;
+};
+
 export interface LoginResult {
   success: boolean;
   message?: string;
@@ -66,6 +91,43 @@ export interface LoginResult {
 // "it says no network when there is network." Image uploads legitimately take
 // longer on a real mobile connection than a plain JSON call, so they get a
 // longer budget before being treated as stuck rather than just slow.
+/**
+ * The message for the agent in an error response. Endpoints that answer with
+ * `message: "..."` say it there; Frappe's own errors (frappe.throw, permission
+ * errors) put it in `_server_messages` — a JSON list of JSON-encoded messages —
+ * or in `exception` ("frappe.exceptions.ValidationError: ..."). Without this,
+ * every such refusal showed only "Request failed (HTTP 417)". Any HTML in the
+ * message is dropped.
+ */
+const serverErrorMessage = (data: any): string | undefined => {
+  const clean = (text: string) => text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (typeof data?.message === 'string' && data.message.trim()) return clean(data.message);
+  if (typeof data?._server_messages === 'string') {
+    try {
+      const messages = (JSON.parse(data._server_messages) as unknown[])
+        .map((m) => {
+          if (typeof m !== 'string') return '';
+          try {
+            const parsed = JSON.parse(m);
+            return typeof parsed === 'string' ? parsed : parsed?.message || '';
+          } catch {
+            return m;
+          }
+        })
+        .map((m) => clean(String(m)))
+        .filter(Boolean);
+      if (messages.length > 0) return messages.join('\n');
+    } catch {
+      // Not the usual shape — fall through to `exception`.
+    }
+  }
+  if (typeof data?.exception === 'string') {
+    const text = clean(data.exception.replace(/^[\w.]+?(?:Error|Exception):\s*/, ''));
+    if (text) return text;
+  }
+  return undefined;
+};
+
 const JSON_TIMEOUT_MS = 25000;
 const UPLOAD_TIMEOUT_MS = 60000;
 
@@ -78,7 +140,7 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
   const url = `${getBaseUrl(tenantId)}${path}`;
   const method = options.method || 'GET';
   const isUpload = options.body instanceof FormData;
-  console.log('[FieldOps API]', method, url, isUpload ? '(form-data)' : options.body ?? '');
+  debugLog('[FieldOps API]', method, url, isUpload ? '(form-data)' : options.body ?? '');
 
   let response: Response;
   const controller = new AbortController();
@@ -112,7 +174,7 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
       isTimeout ||
       String(err?.message ?? '').startsWith('fetch failed') ||
       (err instanceof TypeError && err.message === 'Network request failed');
-    console.log(
+    debugLog(
       '[FieldOps API]', method, url,
       isTimeout ? '-> TIMEOUT' : isConnectionFailure ? '-> NETWORK ERROR' : '-> REQUEST NOT SENT',
       err?.message || err,
@@ -142,7 +204,7 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
   }
 
   const rawText = await response.text();
-  console.log('[FieldOps API]', method, url, '->', response.status, rawText);
+  debugLog('[FieldOps API]', method, url, '->', response.status, rawText);
 
   let data: any;
   try {
@@ -152,10 +214,12 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
   }
 
   if (response.status === 401) {
-    throw new AuthError(data?.message || 'Your session has expired. Please sign in again.');
+    throw new AuthError(serverErrorMessage(data) || 'Your session has expired. Please sign in again.');
   }
   if (!response.ok || data?.status === 'error') {
-    throw new Error(data?.message || `Request failed (HTTP ${response.status}).`);
+    const failure: Error & { status?: number } = new Error(serverErrorMessage(data) || `Request failed (HTTP ${response.status}).`);
+    failure.status = response.status;
+    throw failure;
   }
 
   // A real HTTP 200 can still carry a soft failure nested inside `message` —
@@ -173,6 +237,15 @@ const authFetch = async (path: string, options: RequestInit = {}): Promise<any> 
 
   return data;
 };
+
+/**
+ * Whether a request failed because the backend doesn't have the endpoint
+ * (an older backend): Frappe answers "Failed to get method for command ..."
+ * or 404. The app then carries on without what it gives.
+ */
+export const isMissingEndpoint = (e: any): boolean =>
+  !(e instanceof NetworkError) && !(e instanceof AuthError)
+  && (e?.status === 404 || /failed to get method|has no attribute|not found: .*fieldops\.api/i.test(String(e?.message || '')));
 
 export const mapUserInfoToProfile = (info: any, fallbackEmail?: string): UserProfile => {
   const email = info?.email || (typeof info?.user === 'string' && info.user.includes('@') ? info.user : fallbackEmail || '');
@@ -246,11 +319,8 @@ export const login = async (email: string, password: string, tenantId: string): 
   const url = `${getBaseUrl(tenantId)}/auth/login`;
   const body = { email, password, tenantID: tenantId };
 
-  console.log('[FieldOps API] POST', url, {
-    ...body,
-    email: JSON.stringify(email),
-    password: `<${password.length} chars, starts "${password[0] ?? ''}", ends "${password[password.length - 1] ?? ''}">`,
-  });
+  // Never the credentials or the response body (it carries the access token).
+  debugLog('[FieldOps API] POST', url);
 
   const response = await fetch(url, {
     method: 'POST',
@@ -262,13 +332,13 @@ export const login = async (email: string, password: string, tenantId: string): 
   });
 
   const rawText = await response.text();
-  console.log('[FieldOps API] login response', response.status, rawText);
+  debugLog('[FieldOps API] login response', response.status);
 
   let data: any;
   try {
     data = JSON.parse(rawText);
   } catch (err) {
-    console.log('[FieldOps API] login response was not valid JSON', err);
+    debugLog('[FieldOps API] login response was not valid JSON', err);
     return { success: false, message: `Server returned an unexpected response (HTTP ${response.status}).` };
   }
 
@@ -276,7 +346,7 @@ export const login = async (email: string, password: string, tenantId: string): 
   const token = data?.access_token || data?.data?.access_token || data?.message?.access_token;
 
   if (!token) {
-    const message = typeof data?.message === 'string' ? data.message : data?.error || 'Login failed. Please check your credentials.';
+    const message = serverErrorMessage(data) || data?.error || 'Login failed. Please check your credentials.';
     return { success: false, message };
   }
 
@@ -526,22 +596,16 @@ export const getAttendanceStats = async (): Promise<AttendanceStats | null> => {
 
 // ─── Leads API ─────────────────────────────────────────────────────────────────
 
-const STAGE_SCORE: Record<string, number> = {
-  New: 20,
-  Contacted: 40,
-  Qualified: 60,
-  'Proposal Sent': 70,
-  Negotiation: 80,
-  Converted: 100,
-  Lost: 0,
-};
-
-const VALID_STAGES: LeadStage[] = [
-  'New', 'Contacted', 'Qualified', 'Proposal Sent', 'Negotiation', 'Converted', 'Lost',
-];
+/** `pending_stage_request` ({id, to_stage, requested_on} or null) from get_my_leads. */
+const mapPendingStageRequest = (raw: any): PendingStageRequest | undefined =>
+  raw?.id && raw?.to_stage
+    ? { id: String(raw.id), toStage: normalizeStage(raw.to_stage), requestedOn: raw?.requested_on ? String(raw.requested_on) : undefined }
+    : undefined;
 
 const mapLead = (raw: any): Lead => {
-  const stage: LeadStage = VALID_STAGES.includes(raw?.funnel_stage) ? raw.funnel_stage : 'New';
+  // The server's stage, with the app's old names converted — an unknown
+  // stage is kept as it is rather than shown as the first one.
+  const stage = normalizeStage(raw?.funnel_stage);
   return {
     id: raw?.name || String(raw?.id || ''),
     name: raw?.lead_name || raw?.name || 'Unknown',
@@ -551,7 +615,7 @@ const mapLead = (raw: any): Lead => {
     position: raw?.position || undefined,
     address: raw?.address || undefined,
     stage,
-    score: STAGE_SCORE[stage] ?? 20,
+    score: stageScore(stage),
     next: raw?.next_contact || '',
     nextActionDate: raw?.next_action_date || undefined,
     createdAt: raw?.creation ? raw.creation.slice(0, 10) : undefined,
@@ -565,35 +629,125 @@ const mapLead = (raw: any): Lead => {
     source: raw?.source || undefined,
     notes: raw?.notes || undefined,
     gps: raw?.latitude && raw?.longitude ? `${raw.latitude}, ${raw.longitude}` : undefined,
+    pendingStageRequest: mapPendingStageRequest(raw?.pending_stage_request),
   };
+};
+
+/**
+ * The backend's stage list via `get_lead_stages` ({data: [{name, order,
+ * is_final, agent_can_set}]}). Throws when it can't be loaded (a backend
+ * without it), so the caller keeps the list it has.
+ */
+export const getLeadStages = async (): Promise<LeadStageInfo[]> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_lead_stages');
+  const body = data?.message ?? data;
+  const rows = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
+  return rows
+    .filter((r: any) => typeof r?.name === 'string' && r.name.trim())
+    .map((r: any, index: number) => ({
+      name: r.name.trim(),
+      order: Number.isFinite(Number(r?.order)) ? Number(r.order) : index + 1,
+      isFinal: !!Number(r?.is_final),
+      agentCanSet: r?.agent_can_set === undefined ? true : !!Number(r.agent_can_set),
+    }));
+};
+
+// ─── Paged lists ─────────────────────────────────────────────────────────────────
+
+/** For a list fetched in pages: told how many rows are in so far ("Outlets: 400…"). */
+export interface ListOptions {
+  onProgress?: (count: number) => void;
+}
+
+/** The most pages one list is fetched in, so a backend that keeps answering full pages can't loop for ever. */
+const MAX_PAGES = 200;
+
+/**
+ * A list fetched page by page (limit_start, limit_page_length) until it's all in.
+ * The backend orders each list by its sort and then name, so pages neither skip
+ * nor repeat rows. A page that comes back short is the last; so is one longer
+ * than asked (a backend that doesn't page sends everything at once) and one
+ * with nothing new. Where the backend counts the rows (`total`), that decides.
+ * The next page starts after the rows that came, so a page the backend keeps
+ * smaller than asked doesn't end it early. Every page must arrive: one that
+ * fails throws, so the caller keeps the copy on the phone. `max` stops early,
+ * with `capped` when there's more.
+ */
+export async function fetchAllPages<T>(
+  fetchPage: (start: number, size: number) => Promise<{ rows: T[]; total?: number }>,
+  options: { size: number; idOf: (row: T) => string; max?: number; onProgress?: (count: number) => void },
+): Promise<{ rows: T[]; capped: boolean }> {
+  const { size, idOf, max, onProgress } = options;
+  const rows: T[] = [];
+  const seen = new Set<string>();
+  let start = 0;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { rows: got, total } = await fetchPage(start, size);
+    let added = 0;
+    for (const row of got) {
+      const id = idOf(row);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push(row);
+      added++;
+      // Capped once there's a row past `max`: a list of exactly `max` isn't.
+      if (max && rows.length > max) {
+        rows.length = max;
+        onProgress?.(max);
+        return { rows, capped: true };
+      }
+    }
+    onProgress?.(rows.length);
+    if (got.length === 0 || added === 0 || got.length > size) break;
+    if (total !== undefined ? rows.length >= total : got.length < size) break;
+    start += got.length;
+  }
+  return { rows, capped: false };
+}
+
+/** A page of a list endpoint, as `limit_start`/`limit_page_length` (and any other params) in the query. */
+const pageQuery = (start: number, size: number, extra: Record<string, string | undefined> = {}): string => {
+  const params = new URLSearchParams({ limit_start: String(start), limit_page_length: String(size) });
+  Object.entries(extra).forEach(([key, value]) => { if (value) params.set(key, value); });
+  return `?${params.toString()}`;
+};
+
+const listOf = (data: any): any[] => {
+  const raw = data?.message ?? data?.data ?? data;
+  return Array.isArray(raw) ? raw : [];
+};
+
+/** Supervisors and admins: get_outlets can be the whole tenant for them. */
+const OVERSEER_ROLES = ['Supervisor', 'Field Supervisor', 'System Manager', 'Administrator', 'Company Admin'];
+
+const isOverseer = async (): Promise<boolean> => {
+  const info = await getUserInfo().catch(() => null);
+  return Array.isArray(info?.roles) && info.roles.some((r: any) => OVERSEER_ROLES.includes(String(r)));
 };
 
 /**
  * Fetch leads for the active campaign via the RPC contract (`get_my_leads`). The old
  * campaign-nested REST route (`/agent/campaigns/{id}/leads`) no longer exists — get_my_leads
  * returns leads across all of the agent's campaigns, so results are narrowed to campaignId
- * client-side whenever the response actually carries a campaign field. Falls back to an
- * empty array on error.
+ * client-side whenever the response actually carries a campaign field. Every lead, 200
+ * at a time (the backend's page is 20). Throws when any page can't be loaded, so the
+ * copy on the phone is kept.
  */
-export const getLeads = async (campaignId: string): Promise<Lead[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_leads');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    const scoped = campaignId
-      ? list.filter((l: any) => {
-          // An empty string is common on leads whose campaign link didn't save server-side —
-          // treat it the same as "unknown" rather than a real mismatch, or the lead vanishes
-          // from every campaign's list.
-          const c = l?.campaign || l?.campaign_id;
-          return !c || String(c) === String(campaignId);
-        })
-      : list;
-    return scoped.map(mapLead);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+export const getLeads = async (campaignId: string, options?: ListOptions): Promise<Lead[]> => {
+  const { rows: list } = await fetchAllPages(
+    async (start, size) => ({ rows: listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_leads${pageQuery(start, size)}`)) }),
+    { size: 200, idOf: (l: any) => String(l?.name || l?.id || ''), onProgress: options?.onProgress },
+  );
+  const scoped = campaignId
+    ? list.filter((l: any) => {
+        // An empty string is common on leads whose campaign link didn't save server-side —
+        // treat it the same as "unknown" rather than a real mismatch, or the lead vanishes
+        // from every campaign's list.
+        const c = l?.campaign || l?.campaign_id;
+        return !c || String(c) === String(campaignId);
+      })
+    : list;
+  return scoped.map(mapLead);
 };
 
 export interface CreateLeadPayload {
@@ -607,25 +761,27 @@ export interface CreateLeadPayload {
   value?: number;         // stored server-side as Lead.annual_revenue
 }
 
+/** A lead's fields as submit_lead (and update_lead) take them. */
+const leadFields = (payload: CreateLeadPayload): Record<string, any> => ({
+  lead_name: payload.name,
+  contact_person: payload.name,
+  phone_number: payload.phone,
+  email_address: payload.email,
+  outlet: payload.company,
+  address: payload.address,
+  source: payload.source,
+  notes: payload.notes,
+  value: payload.value,
+});
+
 /**
  * Submit a new lead via the RPC contract (`submit_lead`). The v3 contract added outlet/
  * address/source/notes fields, so the values collected on the lead form are sent again.
  * `outlet_id` (a real linked Outlet record) and `latitude`/`longitude` are left out — the
  * app has no outlet-picker or GPS capture on this form yet, so there's no real value to send.
  */
-export const createLead = async (campaignId: string, payload: CreateLeadPayload): Promise<Lead> => {
-  const body: Record<string, any> = {
-    lead_name: payload.name,
-    contact_person: payload.name,
-    phone_number: payload.phone,
-    email_address: payload.email,
-    campaign: campaignId,
-    outlet: payload.company,
-    address: payload.address,
-    source: payload.source,
-    notes: payload.notes,
-    value: payload.value,
-  };
+export const createLead = async (campaignId: string, payload: CreateLeadPayload, meta?: ActionMeta): Promise<Lead> => {
+  const body: Record<string, any> = { ...leadFields(payload), campaign: campaignId, ...stampFields(meta) };
 
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_lead', {
     method: 'POST',
@@ -643,7 +799,7 @@ export const createLead = async (campaignId: string, payload: CreateLeadPayload)
     company_name: payload.company,
     phone: payload.phone,
     email: payload.email,
-    funnel_stage: 'New',
+    funnel_stage: firstStage(),
     source: payload.source,
     address: payload.address,
     notes: payload.notes,
@@ -653,14 +809,45 @@ export const createLead = async (campaignId: string, payload: CreateLeadPayload)
 };
 
 /**
- * Update the funnel stage of a lead via the RPC contract (`update_lead_stage`). The old
- * campaign-nested REST route (`/agent/campaigns/{id}/leads/{id}/stage`) no longer exists.
+ * Moves a lead to another stage via `update_lead_stage`, with the agent's
+ * reason and optional notes. A move the backend won't make throws a
+ * SoftError: code STAGE_REGRESSION_NEEDS_APPROVAL for a move back (or out of
+ * Won or Lost), STAGE_CHANGE_NOT_ALLOWED otherwise.
  */
-export const updateLeadStage = async (leadId: string, stage: LeadStage, remarks?: string): Promise<void> => {
+export const updateLeadStage = async (leadId: string, stage: LeadStage, reason: string, notes?: string, meta?: ActionMeta): Promise<void> => {
   await authFetch('/api/method/fieldops.api.mobile_api.update_lead_stage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead_id: leadId, stage, remarks }),
+    body: JSON.stringify({ lead_id: leadId, funnel_stage: stage, reason, notes, ...stampFields(meta) }),
+  });
+};
+
+/**
+ * Asks a supervisor to move a lead back to an earlier stage, via
+ * `request_lead_regression`. Returns the request (the lead's existing
+ * pending one, if it already had one).
+ */
+export const requestLeadRegression = async (leadId: string, toStage: LeadStage, reason: string, meta?: ActionMeta): Promise<PendingStageRequest> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.request_lead_regression', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead_id: leadId, to_stage: toStage, reason, ...stampFields(meta) }),
+  });
+  const result = data?.message ?? data;
+  const request = result?.request ?? result;
+  return {
+    id: String(request?.id || request?.request_id || request?.name || ''),
+    toStage: normalizeStage(request?.to_stage || toStage),
+    requestedOn: request?.requested_on ? String(request.requested_on) : localDateStr(),
+  };
+};
+
+/** Saves an edited lead via `update_lead`, which takes submit_lead's fields. */
+export const updateLead = async (leadId: string, payload: CreateLeadPayload): Promise<void> => {
+  await authFetch('/api/method/fieldops.api.mobile_api.update_lead', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead_id: leadId, ...leadFields(payload) }),
   });
 };
 
@@ -680,11 +867,15 @@ const mapOutlet = (raw: any, campaignId: string, baseUrl: string): Outlet => {
 
   const images = Array.isArray(raw?.images) ? raw.images : Array.isArray(raw?.image_urls) ? raw.image_urls : [];
 
+  const text = (value: any): string | undefined => (value ? String(value) : undefined);
+
   return {
     id: raw?.name || String(raw?.id || ''),
     name: raw?.outlet_name || raw?.name || 'Unknown Outlet',
-    type: raw?.outlet_type || '',
-    category: raw?.sub_channel || raw?.category || undefined,
+    // The Outlet Type's own name where the backend sends it; older backends
+    // only have outlet_type, forced into Retail/Wholesale/Distributor/Other.
+    type: raw?.outlet_type_name || raw?.outlet_type || '',
+    category: raw?.outlet_sub_channel_name || raw?.sub_channel || raw?.category || undefined,
     area: raw?.area || raw?.territory || '',
     address: raw?.address || raw?.location || '',
     phone: raw?.phone_number || raw?.phone || '',
@@ -702,24 +893,59 @@ const mapOutlet = (raw: any, campaignId: string, baseUrl: string): Outlet => {
     scheduledDate: raw?.scheduled_date || undefined,
     beatName: raw?.beat_name || undefined,
     sequence: raw?.sequence !== undefined && raw?.sequence !== null ? Number(raw.sequence) : undefined,
+    outletTypeId: text(raw?.outlet_type_id),
+    outletTypeName: text(raw?.outlet_type_name),
+    channelId: text(raw?.outlet_channel_id),
+    channelName: text(raw?.outlet_channel_name),
+    subChannelId: text(raw?.outlet_sub_channel_id),
+    subChannelName: text(raw?.outlet_sub_channel_name),
+    distributorId: text(raw?.distributor_id),
+    distributorName: text(raw?.distributor_name),
+    pendingLocationRequest: raw?.pending_location_request?.id
+      ? {
+          id: String(raw.pending_location_request.id),
+          latitude: Number(raw.pending_location_request.latitude),
+          longitude: Number(raw.pending_location_request.longitude),
+          requestedOn: text(raw.pending_location_request.requested_on),
+        }
+      : undefined,
+    surveyDue: mapSurveyDue(raw?.survey_due),
   };
 };
 
-/** Fetch outlets via the RPC contract (`get_outlets`). Falls back to an empty array on error. */
-export const getOutlets = async (campaignId: string): Promise<Outlet[]> => {
-  try {
-    const [data, tenantId] = await Promise.all([
-      authFetch('/api/method/fieldops.api.mobile_api.get_outlets'),
-      getTenantId(),
-    ]);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    const baseUrl = getBaseUrl(tenantId || '');
-    return list.map((o: any) => mapOutlet(o, campaignId, baseUrl));
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** `survey_due` ({survey_id, survey_name, since} or null): the after-edit survey an outlet is waiting for. */
+const mapSurveyDue = (raw: any): SurveyDue | undefined =>
+  raw?.survey_id
+    ? { surveyId: String(raw.survey_id), surveyName: String(raw.survey_name || raw.survey_id), since: raw.since ? String(raw.since) : undefined }
+    : undefined;
+
+/** A supervisor's or admin's download stops here: get_outlets can be the whole tenant for them. */
+export const OUTLETS_CAP = 2000;
+
+/**
+ * Fetch outlets via the RPC contract (`get_outlets`): every outlet on the agent's list, 200
+ * at a time (the backend's page is 50). For a supervisor or admin it stops at OUTLETS_CAP,
+ * marked `capped`: the outlets beyond it are found by searching the server (`search`, which
+ * gets the first 200 matches). Throws when any page can't be loaded, so the copy on the
+ * phone is kept.
+ */
+export const getOutlets = async (campaignId: string, options?: ListOptions & { search?: string }): Promise<OutletList> => {
+  const search = options?.search?.trim() || undefined;
+  const [tenantId, overseer] = await Promise.all([getTenantId(), isOverseer()]);
+  const page = async (start: number, size: number) =>
+    ({ rows: listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_outlets${pageQuery(start, size, { search })}`)) });
+  const { rows, capped } = search
+    ? { rows: (await page(0, 200)).rows, capped: false }
+    : await fetchAllPages(page, {
+        size: 200,
+        idOf: (o: any) => String(o?.name || o?.id || ''),
+        max: overseer ? OUTLETS_CAP : undefined,
+        onProgress: options?.onProgress,
+      });
+  const baseUrl = getBaseUrl(tenantId || '');
+  const outlets: OutletList = rows.map((o: any) => mapOutlet(o, campaignId, baseUrl));
+  if (capped) outlets.capped = true;
+  return outlets;
 };
 
 /**
@@ -735,38 +961,82 @@ const unwrapMasterDataList = (data: any): any[] => {
   return Array.isArray(inner) ? inner : [];
 };
 
-/** Fetch the master list of outlet channels via `get_outlet_channels`. */
-export const getOutletChannels = async (): Promise<string[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_channels');
-    return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** A master-data row as a choice: id and name kept; inactive rows and rows without an id are left out. */
+const mapMasterOptions = (rows: any[]): MasterOption[] =>
+  rows
+    .filter((r) => r?.id && r?.isActive !== false)
+    .map((r) => ({
+      id: String(r.id),
+      name: String(r?.name || r.id),
+      parent: r?.parent ? String(r.parent) : undefined,
+      phone: r?.phone ? String(r.phone) : undefined,
+    }));
+
+/**
+ * The outlet master lists for the Add/Edit Outlet pickers. Each throws when
+ * it can't load, so the caller can tell a list that loaded empty from one
+ * that didn't load, and fall back to the copy kept on the device.
+ */
+/** Each type's `parent` is its sub channel's id; a type made before the hierarchy has none. */
+export const getOutletTypes = async (): Promise<MasterOption[]> =>
+  mapMasterOptions(unwrapMasterDataList(await authFetch('/api/method/fieldops.api.master_data.get_outlet_types')));
+
+export const getOutletChannels = async (): Promise<MasterOption[]> =>
+  mapMasterOptions(unwrapMasterDataList(await authFetch('/api/method/fieldops.api.master_data.get_outlet_channels')));
+
+/** Each sub-channel's `parent` is its channel's id. */
+export const getOutletSubChannels = async (): Promise<MasterOption[]> =>
+  mapMasterOptions(unwrapMasterDataList(await authFetch('/api/method/fieldops.api.master_data.get_outlet_sub_channels')));
+
+/**
+ * The distributors this agent can sell through, via `get_my_distributors`
+ * ({data: [{id, name, phone}], default_id}). Throws on a backend without it,
+ * which then shows no distributor picker.
+ */
+export const getMyDistributors = async (): Promise<{ distributors: MasterOption[]; defaultId?: string }> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_distributors');
+  const body = data?.message ?? data;
+  const rows = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
+  const distributors = mapMasterOptions(rows);
+  const defaultId = body?.default_id ? String(body.default_id) : undefined;
+  return { distributors, defaultId: defaultId && distributors.some((d) => d.id === defaultId) ? defaultId : undefined };
 };
 
-/** Fetch the master list of outlet sub-channels via `get_outlet_sub_channels`. */
-export const getOutletSubChannels = async (): Promise<string[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.master_data.get_outlet_sub_channels');
-    return unwrapMasterDataList(data).map((r: any) => r?.name).filter(Boolean);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** The outlet's type, channel, sub-channel and distributor, by id. */
+export interface OutletClassificationPayload {
+  /** Outlet Type id, sent as `outlet_type`. */
+  outletTypeId?: string;
+  /** Outlet Channel id, sent as `outlet_channel`. */
+  channelId?: string;
+  /** Outlet Sub Channel id, sent as `outlet_sub_channel`. */
+  subChannelId?: string;
+  /** Distributor (Customer) id, sent as `distributor`. */
+  distributorId?: string;
+}
+
+/** The classification fields of a submit_outlet / update_outlet request. */
+const classificationFields = (payload: OutletClassificationPayload & { type?: string; subChannel?: string }): Record<string, any> => {
+  const fields: Record<string, any> = {};
+  // A draft saved before the pickers kept ids has only `type` (a channel's
+  // name), which the backend still recognises.
+  const outletType = payload.outletTypeId || payload.type;
+  if (outletType) fields.outlet_type = outletType;
+  if (payload.channelId) fields.outlet_channel = payload.channelId;
+  if (payload.subChannelId) fields.outlet_sub_channel = payload.subChannelId;
+  if (payload.distributorId) fields.distributor = payload.distributorId;
+  // The sub-channel's name: what older backends store.
+  if (payload.subChannel) fields.category = payload.subChannel;
+  return fields;
 };
 
-export interface CreateOutletPayload {
+export interface CreateOutletPayload extends OutletClassificationPayload {
   name: string;
-  type: string;
   /**
-   * Sent as `category` — the one free-text field `submit_outlet` actually stores
-   * (`outlet_doc.category = outlet_data.get("category") or ...`), unlike `type`
-   * which the backend force-matches into just Retail/Wholesale/Distributor/Other
-   * (substring match — most real channel names collapse to "Other" server-side,
-   * a backend-side limitation, not something fixable from here).
+   * Sent as `outlet_type` only when there's no `outletTypeId`: a draft saved
+   * before the pickers kept ids carries a channel's name here.
    */
+  type?: string;
+  /** The sub-channel's name, sent as `category` — what older backends store. */
   subChannel?: string;
   address: string;
   phone?: string;
@@ -775,7 +1045,46 @@ export interface CreateOutletPayload {
   photoUri?: string;
   latitude?: number;
   longitude?: number;
+  /** Ask the server to refuse it (POSSIBLE_DUPLICATE) when it looks like an outlet already onboarded. */
+  checkDuplicates?: boolean;
+  /** The agent said it's a different outlet from the ones it looked like. */
+  confirmedNew?: boolean;
 }
+
+/** An outlet already onboarded that a new one looks like (submit_outlet's POSSIBLE_DUPLICATE, or the phone's own check). */
+export interface OutletMatch {
+  outletId: string;
+  outletName: string;
+  address: string;
+  /** Meters between the two; null when either has no location. */
+  distanceM: number | null;
+  /** Same phone number, or near with a similar name. */
+  match: 'phone' | 'nearby_name';
+  onboardedByName?: string;
+  onboardedOn?: string;
+  /** Assigned to this agent or on their routes. */
+  onMyList: boolean;
+  phoneLast4?: string;
+}
+
+const mapOutletMatches = (raw: any): OutletMatch[] =>
+  (Array.isArray(raw) ? raw : [])
+    .filter((m: any) => m?.outlet_id)
+    .map((m: any) => ({
+      outletId: String(m.outlet_id),
+      outletName: String(m.outlet_name || m.outlet_id),
+      address: m.address ? String(m.address) : '',
+      distanceM: m.distance_m === null || m.distance_m === undefined ? null : Number(m.distance_m),
+      match: m.match === 'phone' ? 'phone' : 'nearby_name',
+      onboardedByName: m.onboarded_by_name ? String(m.onboarded_by_name) : undefined,
+      onboardedOn: m.onboarded_on ? String(m.onboarded_on) : undefined,
+      onMyList: !!m.on_my_list,
+      phoneLast4: m.phone_last4 ? String(m.phone_last4) : undefined,
+    }));
+
+/** The outlets submit_outlet says a new one looks like, when it refused it as POSSIBLE_DUPLICATE ([] for any other error). */
+export const possibleDuplicateMatches = (e: any): OutletMatch[] =>
+  e instanceof SoftError && e.code === 'POSSIBLE_DUPLICATE' ? mapOutletMatches(e.data?.matches) : [];
 
 /**
  * Builds the multipart file part for an outlet photo. Since Expo 57 the global
@@ -830,19 +1139,29 @@ export const uploadOutletPhoto = async (outletId: string, photoUri: string): Pro
  */
 export const createOutlet = async (
   campaignId: string,
-  payload: CreateOutletPayload
-): Promise<{ outlet: Outlet; photoUploaded: boolean; photoError?: string }> => {
+  payload: CreateOutletPayload,
+  meta?: ActionMeta
+): Promise<{
+  outlet: Outlet;
+  photoUploaded: boolean;
+  photoError?: string;
+  /** Onboarded, but it looks like an outlet already onboarded: a supervisor will check it. */
+  possibleDuplicate?: { reviewId: string; matches: OutletMatch[] };
+}> => {
   const fields: Record<string, any> = {
     outlet_name: payload.name,
-    outlet_type: payload.type,
+    ...classificationFields(payload),
     address: payload.address,
     phone_number: payload.phone,
     owner_name: payload.ownerName,
     owner_phone: payload.ownerPhone,
+    ...stampFields(meta),
   };
-  if (payload.subChannel) fields.category = payload.subChannel;
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
+  // An older backend ignores both and onboards it as before.
+  if (payload.checkDuplicates) fields.check_duplicates = 1;
+  if (payload.confirmedNew) fields.confirmed_new = 1;
 
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_outlet', {
     method: 'POST',
@@ -868,7 +1187,7 @@ export const createOutlet = async (
         photoError = undefined;
       } catch (e: any) {
         photoError = e?.message || 'The photo upload failed for an unknown reason.';
-        console.log(`[createOutlet] outlet ${outletId} saved but photo upload failed (attempt ${attempt}/2) ->`, photoError, e);
+        debugLog(`[createOutlet] outlet ${outletId} saved but photo upload failed (attempt ${attempt}/2) ->`, photoError, e);
       }
     }
   }
@@ -890,12 +1209,20 @@ export const createOutlet = async (
     // a local device URI with its own scheme (file://, content://, ...), which
     // resolveImageUrl passes through untouched regardless of baseUrl.
   }, campaignId, '');
-  return { outlet, photoUploaded, photoError };
+  const flagged = result?.possible_duplicate;
+  return {
+    outlet,
+    photoUploaded,
+    photoError,
+    possibleDuplicate: flagged?.review_id ? { reviewId: String(flagged.review_id), matches: mapOutletMatches(flagged.matches) } : undefined,
+  };
 };
 
-export interface UpdateOutletPayload {
+export interface UpdateOutletPayload extends OutletClassificationPayload {
   name?: string;
+  /** As CreateOutletPayload's: only from a draft saved before the pickers kept ids. */
   type?: string;
+  /** The sub-channel's name, sent as `category`. */
   subChannel?: string;
   address?: string;
   phone?: string;
@@ -903,26 +1230,51 @@ export interface UpdateOutletPayload {
   ownerPhone?: string;
   notes?: string;
   photoUri?: string;
+  /** Only a newly captured location: the backend makes it a request for a supervisor to approve. */
   latitude?: number;
   longitude?: number;
+  /** That fix's accuracy, in meters. */
+  gpsAccuracy?: number;
+  /** The agent's active campaign: its after-edit survey becomes due for the outlet. */
+  campaign?: string;
 }
 
-/** Update an existing outlet via the RPC contract (`update_outlet`). */
-export const updateOutlet = async (outletId: string, payload: UpdateOutletPayload): Promise<void> => {
+/** What update_outlet says beyond saving the edit. */
+export interface UpdateOutletResult {
+  /** A moved location wasn't applied: it waits for a supervisor's approval. */
+  locationRequest?: { id: string; status: string };
+  /** The campaign's after-edit survey, now due for the outlet. */
+  surveyDue?: SurveyDue;
+}
+
+const mapUpdateOutletResult = (data: any): UpdateOutletResult => {
+  const result = data?.message ?? data?.data ?? data;
+  const request = result?.location_request;
+  return {
+    locationRequest: request?.id ? { id: String(request.id), status: String(request.status || 'Pending') } : undefined,
+    surveyDue: mapSurveyDue(result?.survey_due),
+  };
+};
+
+/**
+ * Update an existing outlet via the RPC contract (`update_outlet`). A
+ * location more than 10 m from the saved one isn't applied by the backend:
+ * it becomes a request a supervisor approves (`locationRequest`). With the
+ * campaign sent, its after-edit survey becomes due for the outlet
+ * (`surveyDue`); while one is due, an edit is refused with
+ * SURVEY_REQUIRED_AFTER_EDIT (a SoftError carrying survey_id, survey_name).
+ */
+export const updateOutlet = async (outletId: string, payload: UpdateOutletPayload, meta?: ActionMeta): Promise<UpdateOutletResult> => {
   const fields: Record<string, any> = {
     // Identity key naming isn't confirmed against a real device log yet — sending both
     // `outlet` and `outlet_id` since those are the two conventions used elsewhere in
     // this contract (record_outlet_visit uses `outlet`, update_lead_stage uses `lead_id`).
     outlet: outletId,
     outlet_id: outletId,
+    ...stampFields(meta),
   };
   if (payload.name !== undefined) fields.outlet_name = payload.name;
-  if (payload.type !== undefined) fields.outlet_type = payload.type;
-  // NOTE: as of the branch this was checked against, update_outlet's Outlet-record
-  // branch never actually reads/persists `category` (unlike submit_outlet, which
-  // does) — sending it anyway in case that's added server-side later, but editing
-  // an existing outlet's sub-channel currently has no effect.
-  if (payload.subChannel !== undefined) fields.category = payload.subChannel;
+  Object.assign(fields, classificationFields(payload));
   if (payload.address !== undefined) fields.address = payload.address;
   if (payload.phone !== undefined) fields.phone_number = payload.phone;
   if (payload.ownerName !== undefined) fields.owner_name = payload.ownerName;
@@ -933,6 +1285,8 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
   // documented naming convention available for outlet geo-fields.
   if (payload.latitude !== undefined) fields.latitude = payload.latitude;
   if (payload.longitude !== undefined) fields.longitude = payload.longitude;
+  if (payload.gpsAccuracy !== undefined) fields.gps_accuracy = payload.gpsAccuracy;
+  if (payload.campaign) fields.campaign = payload.campaign;
 
   if (payload.photoUri) {
     const form = new FormData();
@@ -943,25 +1297,35 @@ export const updateOutlet = async (outletId: string, payload: UpdateOutletPayloa
     // non-jpeg camera URI is handled identically here instead of being sent
     // with a broken part name and a hardcoded mime type.
     form.append('image', buildPhotoPart(payload.photoUri));
-    await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
+    return mapUpdateOutletResult(await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
       method: 'POST',
       body: form,
-    });
-  } else {
-    await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fields),
-    });
+    }));
   }
+  return mapUpdateOutletResult(await authFetch('/api/method/fieldops.api.mobile_api.update_outlet', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  }));
 };
 
-/** Skip an outlet visit via the RPC contract (`skip_outlet_visit`). */
-export const skipOutletVisit = async (outletId: string, campaignId: string, reason: string): Promise<void> => {
+/** Skip an outlet visit via the RPC contract (`skip_outlet_visit`), with where the agent was when there's a fix. */
+export const skipOutletVisit = async (
+  outletId: string,
+  campaignId: string,
+  reason: string,
+  meta?: ActionMeta,
+  coordinates?: { lat: number; lng: number }
+): Promise<void> => {
+  const body: Record<string, any> = { outlet: outletId, outlet_id: outletId, campaign: campaignId, reason, skip_reason: reason, ...stampFields(meta) };
+  if (coordinates) {
+    body.latitude = coordinates.lat;
+    body.longitude = coordinates.lng;
+  }
   await authFetch('/api/method/fieldops.api.mobile_api.skip_outlet_visit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ outlet: outletId, outlet_id: outletId, campaign: campaignId, reason, skip_reason: reason }),
+    body: JSON.stringify(body),
   });
 };
 
@@ -995,6 +1359,51 @@ const resolveImageUrl = (raw: string | undefined, baseUrl: string): string | und
   return `${baseUrl}${raw.startsWith('/') ? '' : '/'}${raw}`;
 };
 
+/**
+ * The units a product sells in, stock unit first, each priced for one of that
+ * unit (`units` from get_items and the inventory endpoints). An older backend
+ * sends none — the product then sells only in its stock unit (see
+ * getProductUnits), so this returns undefined rather than inventing one.
+ */
+const mapUnits = (raw: any): ProductUnit[] | undefined => {
+  if (!Array.isArray(raw?.units)) return undefined;
+  const units = raw.units
+    .filter((u: any) => u?.uom && Number(u?.conversion_factor) > 0)
+    .map((u: any): ProductUnit => ({
+      uom: String(u.uom),
+      conversionFactor: Number(u.conversion_factor),
+      price: Number(u.price) || 0,
+      mustBeWholeNumber: u.must_be_whole_number !== false,
+    }));
+  return units.length > 0 ? units : undefined;
+};
+
+/** The promotions earned by buying a product (get_items' `promotions`; none from an older backend). */
+const mapPromotions = (raw: any): ProductPromotion[] | undefined => {
+  if (!Array.isArray(raw?.promotions)) return undefined;
+  return raw.promotions
+    .filter((p: any) => p?.id && p?.uom && p?.reward_item && Number(p?.buy_quantity) > 0 && Number(p?.free_quantity) > 0)
+    .map((p: any): ProductPromotion => ({
+      id: String(p.id),
+      name: p.name || String(p.id),
+      buyQuantity: Number(p.buy_quantity),
+      uom: String(p.uom),
+      rewardItem: String(p.reward_item),
+      rewardItemName: p.reward_item_name || String(p.reward_item),
+      freeQuantity: Number(p.free_quantity),
+      // The server resolves the unit free goods come in; it falls back to the
+      // promotion's own uom here only if a response ever leaves it out.
+      freeUom: String(p.free_uom || p.uom),
+      requiresCode: Boolean(p.requires_code),
+      validTo: p.valid_to || undefined,
+      // Each offer's reward stock and free unit, for a reward that isn't on
+      // the phone; an older backend sends neither.
+      rewardStockQty: p.reward_stock_qty === undefined || p.reward_stock_qty === null ? undefined : Number(p.reward_stock_qty) || 0,
+      freeConversionFactor: Number(p.free_conversion_factor) > 0 ? Number(p.free_conversion_factor) : undefined,
+      rewardStockUom: p.reward_stock_uom || undefined,
+    }));
+};
+
 const mapItem = (raw: any, baseUrl: string): Product => {
   const price = Number(raw?.rate ?? raw?.standard_rate ?? raw?.selling_price ?? raw?.price) || 0;
   // current_stock/on_hand/qty are the field names the backend documented for get_items/
@@ -1013,6 +1422,13 @@ const mapItem = (raw: any, baseUrl: string): Product => {
     imageUrl: resolveImageUrl(raw?.image || raw?.image_url || undefined, baseUrl),
     description: raw?.description || undefined,
     unit: raw?.stock_uom || raw?.unit || undefined,
+    brand: raw?.brand || undefined,
+    size: raw?.size || undefined,
+    salesUom: raw?.sales_uom || undefined,
+    isMsl: Boolean(raw?.is_msl),
+    stockStatus: raw?.stock_status || undefined,
+    units: mapUnits(raw),
+    promotions: mapPromotions(raw),
   };
 };
 
@@ -1029,28 +1445,125 @@ const flattenInventoryResponse = (raw: any[], baseUrl: string): Product[] => {
   return raw.map((it: any) => mapItem(it, baseUrl));
 };
 
-/** Fetch the product catalog via the RPC contract (`get_items`). Falls back to an empty array on error. */
-export const getItems = async (): Promise<Product[]> => {
-  try {
-    const [data, tenantId] = await Promise.all([
-      authFetch('/api/method/fieldops.api.mobile_api.get_items'),
-      getTenantId(),
-    ]);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map((it: any) => mapItem(it, getBaseUrl(tenantId || "")));
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** Fetch the product catalog via the RPC contract (`get_items`). Throws when it can't be loaded, so the copy on the phone is kept. */
+export const getItems = async (options?: ListOptions): Promise<Product[]> => {
+  const tenantId = await getTenantId();
+  // The whole catalog, 500 at a time (the backend's page is 100): a bigger one was cut off, offline included.
+  const { rows } = await fetchAllPages(
+    async (start, size) => ({ rows: listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_items${pageQuery(start, size)}`)) }),
+    { size: 500, idOf: (it: any) => String(it?.item_code || it?.name || it?.id || ''), onProgress: options?.onProgress },
+  );
+  return rows.map((it: any) => mapItem(it, getBaseUrl(tenantId || '')));
 };
 
 export interface OrderLinePayload {
   itemCode: string;
   itemName?: string;
+  /** Quantity in `uom`. */
   qty: number;
+  /** The unit `qty` counts in — none means the stock unit, as older app versions send. */
+  uom?: string;
+  /** Price for one `uom`: the server prices every line itself and ignores this,
+   *  but an older backend still saves it. */
   rate: number;
 }
+
+/** A line as the server saved it — priced by the server, free goods included. */
+export interface SavedOrderLine {
+  itemCode: string;
+  itemName: string;
+  uom?: string;
+  /** Quantity in `uom`. */
+  qty: number;
+  conversionFactor: number;
+  /** Quantity in stock units. */
+  stockQty: number;
+  /** Price for one `uom` (0 for a free line). */
+  rate: number;
+  amount: number;
+  isFree: boolean;
+  /** The promotion a free line came from. */
+  promotionId?: string;
+  promotionName?: string;
+}
+
+/**
+ * One sale/order line from submit_field_sale, submit_sales_order, get_my_sales
+ * or get_my_orders. Older backends send no uom / conversion_factor / stock_qty:
+ * such a line is in stock units.
+ */
+const mapSavedLine = (raw: any): SavedOrderLine => {
+  const qty = Number(raw?.qty ?? raw?.quantity) || 0;
+  const conversionFactor = Number(raw?.conversion_factor) || 1;
+  const rate = Number(raw?.rate ?? raw?.unit_price) || 0;
+  const itemCode = String(raw?.item_code || raw?.item || raw?.product_id || '');
+  return {
+    itemCode,
+    itemName: raw?.item_name || raw?.product_name || itemCode || 'Item',
+    uom: raw?.uom || undefined,
+    qty,
+    conversionFactor,
+    stockQty: Number(raw?.stock_qty) || qty * conversionFactor,
+    rate,
+    amount: Number(raw?.amount) || rate * qty,
+    isFree: Boolean(raw?.is_free),
+    promotionId: raw?.promotion ? String(raw.promotion) : undefined,
+    promotionName: raw?.promotion_name || undefined,
+  };
+};
+
+/** The agent's free-item choices as a sale or order sends them, or nothing when there are none. */
+const choicesField = (choices?: PromotionChoices): Record<string, any> =>
+  choices && Object.keys(choices).length > 0 ? { promotion_choices: choices } : {};
+
+/** The saved lines and total a submit returns — undefined from a backend that doesn't send them. */
+const mapSubmitResult = (result: any): { items?: SavedOrderLine[]; totalAmount?: number } => {
+  const items = Array.isArray(result?.items) ? result.items.map(mapSavedLine).filter((l: SavedOrderLine) => l.itemCode) : undefined;
+  const total = Number(result?.total_amount);
+  return {
+    items: items && items.length > 0 ? items : undefined,
+    totalAmount: items && items.length > 0 && Number.isFinite(total) ? total : undefined,
+  };
+};
+
+/**
+ * The agent's geofence via `get_my_geofence`: the GPS tolerance and their
+ * active territories, for checking a sale's location on the phone (offline
+ * too). Throws when it can't be loaded; a backend without it means no
+ * territory check.
+ */
+export const getMyGeofence = async (): Promise<GeofenceConfig> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_geofence');
+  const body = data?.message ?? data;
+  const tolerance = Number(body?.tolerance_m);
+  return {
+    toleranceM: Number.isFinite(tolerance) && tolerance > 0 ? tolerance : 100,
+    territories: (Array.isArray(body?.territories) ? body.territories : [])
+      .filter((t: any) => t?.geojson)
+      .map((t: any) => ({ name: String(t?.name || 'Territory'), geojson: t.geojson })),
+    allowedOutside: !!Number(body?.allowed_outside),
+  };
+};
+
+/** How the server judged a sale's location (its re-check is the one recorded). */
+export interface SaleLocationResult {
+  atOutlet: boolean | null;
+  distanceM: number | null;
+  insideTerritory: boolean | null;
+  territory?: string;
+}
+
+const yesNoOrNull = (value: any): boolean | null => (value === null || value === undefined ? null : value === true || Number(value) === 1);
+
+const mapSaleLocationResult = (raw: any): SaleLocationResult | undefined =>
+  raw && typeof raw === 'object'
+    ? {
+        atOutlet: yesNoOrNull(raw.at_outlet),
+        distanceM: raw.distance_m === null || raw.distance_m === undefined ? null : Number(raw.distance_m),
+        insideTerritory: yesNoOrNull(raw.inside_territory),
+        territory: raw.territory || undefined,
+      }
+    : undefined;
 
 /**
  * Submit an immediate, paid transaction via the RPC contract (`submit_field_sale`).
@@ -1062,16 +1575,31 @@ export interface OrderLinePayload {
  * `product_name`/`qty`/`unit_price`/`amount`, plus `total_amount`. The older
  * `outlet`/`campaign`/`item`/`item_code`/`quantity`/`rate` aliases are also accepted
  * per that same spec, so they're kept alongside rather than swapped out.
+ *
+ * `location` is where the sale was recorded: the fix, its accuracy and time,
+ * the agent's reason when it was away from the outlet or outside their
+ * territory, and capturedOffline for a draft synced later. The server checks
+ * it again, records it on the sale, and returns its verdict as `location`.
+ *
+ * `promotionChoices`: the free item the agent chose where a product qualifies
+ * for more than one promotion (promotion_choices). The server gives exactly
+ * that one or refuses the sale (PROMOTION_CHOICE_INVALID); an older backend
+ * ignores it and applies its own rule. The same goes for submitSalesOrder.
  */
 export const submitFieldSale = async (
   outletId: string,
   campaignId: string,
   lines: OrderLinePayload[],
   amountPaid: number,
-  coordinates?: { lat: number; lng: number }
-): Promise<{ ref: string }> => {
+  location?: SaleLocation & { capturedOffline?: boolean },
+  promoCode?: string,
+  meta?: ActionMeta,
+  promotionChoices?: PromotionChoices
+): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number; location?: SaleLocationResult }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
   const body: Record<string, any> = {
+    ...stampFields(meta),
+    ...choicesField(promotionChoices),
     outlet: outletId,
     outlet_id: outletId,
     campaign: campaignId,
@@ -1084,6 +1612,7 @@ export const submitFieldSale = async (
       item_name: l.itemName,
       quantity: l.qty,
       qty: l.qty,
+      ...(l.uom ? { uom: l.uom } : {}),
       rate: l.rate,
       unit_price: l.rate,
       amount: l.qty * l.rate,
@@ -1092,10 +1621,17 @@ export const submitFieldSale = async (
     payment_type: 'Cash',
     amount_paid: amountPaid,
   };
-  if (coordinates) {
-    body.latitude = coordinates.lat;
-    body.longitude = coordinates.lng;
+  if (location) {
+    if (location.lat !== undefined && location.lng !== undefined) {
+      body.latitude = location.lat;
+      body.longitude = location.lng;
+    }
+    if (location.accuracy !== undefined) body.gps_accuracy = location.accuracy;
+    if (location.capturedAt) body.location_captured_at = location.capturedAt;
+    if (location.outsideReason?.trim()) body.outside_reason = location.outsideReason.trim();
+    if (location.capturedOffline) body.captured_offline = 1;
   }
+  if (promoCode?.trim()) body.promo_code = promoCode.trim();
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_field_sale', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1103,7 +1639,7 @@ export const submitFieldSale = async (
   });
   const result = data?.message ?? data?.data ?? data;
   const ref = result?.sale_id || result?.invoice_id || result?.name || result?.id || '';
-  return { ref: String(ref) };
+  return { ref: String(ref), ...mapSubmitResult(result), location: mapSaleLocationResult(result?.location) };
 };
 
 /**
@@ -1120,10 +1656,15 @@ export const submitFieldSale = async (
 export const submitSalesOrder = async (
   outletId: string,
   campaignId: string,
-  lines: OrderLinePayload[]
-): Promise<{ ref: string }> => {
+  lines: OrderLinePayload[],
+  promoCode?: string,
+  meta?: ActionMeta,
+  promotionChoices?: PromotionChoices
+): Promise<{ ref: string; items?: SavedOrderLine[]; totalAmount?: number }> => {
   const totalAmount = lines.reduce((sum, l) => sum + l.qty * l.rate, 0);
-  const body = {
+  const body: Record<string, any> = {
+    ...stampFields(meta),
+    ...choicesField(promotionChoices),
     outletId,
     outlet_id: outletId,
     campaignId,
@@ -1134,12 +1675,14 @@ export const submitSalesOrder = async (
       product_id: l.itemCode,
       product_name: l.itemName,
       qty: l.qty,
+      ...(l.uom ? { uom: l.uom } : {}),
       unitPrice: l.rate,
       unit_price: l.rate,
       amount: l.qty * l.rate,
     })),
     total_amount: totalAmount,
   };
+  if (promoCode?.trim()) body.promo_code = promoCode.trim();
   const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_sales_order', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1147,7 +1690,7 @@ export const submitSalesOrder = async (
   });
   const result = data?.message ?? data?.data ?? data;
   const ref = result?.order_id || result?.name || result?.id || '';
-  return { ref: String(ref) };
+  return { ref: String(ref), ...mapSubmitResult(result) };
 };
 
 /**
@@ -1170,26 +1713,28 @@ const mapOrderDoc = (raw: any): OutletOrder[] => {
       : 'Pending';
   const items = Array.isArray(raw?.items) ? raw.items : [];
 
-  return items.map((item: any, idx: number) => {
-    const qty = Number(item?.qty) || 0;
-    const unitPrice = Number(item?.rate) || 0;
-    return {
-      id: `${ref}-${item?.item_code || idx}`,
-      outletId,
-      campaignId: String(raw?.campaign || ''),
-      productId: item?.item_code || '',
-      productName: item?.item_name || item?.item_code || 'Item',
-      quantity: qty,
-      unitPrice,
-      discount: 0,
-      total: Number(item?.amount) || unitPrice * qty,
-      customerId: outletId,
-      customerName,
-      status,
-      timestamp: String(timestamp),
-      orderRef: ref,
-    };
-  });
+  // Each line in its own unit, free goods included (a line from an older
+  // backend has no uom and is in stock units).
+  return items.map(mapSavedLine).map((line: SavedOrderLine, idx: number) => ({
+    id: `${ref}-${idx}`,
+    outletId,
+    campaignId: String(raw?.campaign || ''),
+    productId: line.itemCode,
+    productName: line.itemName,
+    quantity: line.qty,
+    uom: line.uom,
+    conversionFactor: line.conversionFactor,
+    stockQty: line.stockQty,
+    unitPrice: line.rate,
+    total: line.amount,
+    isFree: line.isFree || undefined,
+    promotionName: line.promotionName,
+    customerId: outletId,
+    customerName,
+    status,
+    timestamp: String(timestamp),
+    orderRef: ref,
+  }));
 };
 
 const mapSaleDoc = (raw: any): OutletSale[] => {
@@ -1199,51 +1744,119 @@ const mapSaleDoc = (raw: any): OutletSale[] => {
   const timestamp = raw?.posting_date || raw?.transaction_date || raw?.creation || '';
   const items = Array.isArray(raw?.items) ? raw.items : [];
 
-  return items.map((item: any, idx: number) => {
-    const qty = Number(item?.qty) || 0;
-    const unitPrice = Number(item?.rate) || 0;
-    return {
-      id: `${ref}-${item?.item_code || idx}`,
-      outletId,
-      campaignId: String(raw?.campaign || ''),
-      productId: item?.item_code || '',
-      productName: item?.item_name || item?.item_code || 'Item',
-      quantity: qty,
-      unitPrice,
-      discount: 0,
-      total: Number(item?.amount) || unitPrice * qty,
-      customerId: outletId,
-      customerName,
-      timestamp: String(timestamp),
-      invoiceRef: ref,
-    };
-  });
+  // Each line in its own unit, free goods included (a line from an older
+  // backend has no uom and is in stock units).
+  return items.map(mapSavedLine).map((line: SavedOrderLine, idx: number) => ({
+    id: `${ref}-${idx}`,
+    outletId,
+    campaignId: String(raw?.campaign || ''),
+    productId: line.itemCode,
+    productName: line.itemName,
+    quantity: line.qty,
+    uom: line.uom,
+    conversionFactor: line.conversionFactor,
+    stockQty: line.stockQty,
+    unitPrice: line.rate,
+    total: line.amount,
+    isFree: line.isFree || undefined,
+    promotionName: line.promotionName,
+    customerId: outletId,
+    customerName,
+    timestamp: String(timestamp),
+    invoiceRef: ref,
+  }));
 };
 
-/** Fetch this agent's orders via the RPC contract (`get_my_orders`). Falls back to an empty array on error. */
-export const getMyOrders = async (): Promise<OutletOrder[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_orders');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.flatMap(mapOrderDoc);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/**
+ * A page of the agent's history, newest first: its records (an order or sale is a record
+ * per line), and how many documents came, which tells whether there may be more.
+ */
+export interface HistoryPage<T> {
+  records: T[];
+  docs: number;
+}
+
+/** How much more history "Load more" asks for at a time. */
+export const HISTORY_PAGE = 50;
+
+/** The page from `start` (`size` documents), or the backend's first page when none is asked for. */
+const historyQuery = (start?: number, size?: number) => (start !== undefined && size ? pageQuery(start, size) : '');
+
+/** A page of this agent's orders via `get_my_orders`; without a page, the newest (the backend's first page, 20). Throws when it can't be loaded. */
+export const getMyOrdersPage = async (start?: number, size?: number): Promise<HistoryPage<OutletOrder>> => {
+  const list = listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_orders${historyQuery(start, size)}`));
+  return { records: list.flatMap(mapOrderDoc), docs: list.length };
 };
 
-/** Fetch this agent's field sales via the RPC contract (`get_my_sales`). Falls back to an empty array on error. */
-export const getMySales = async (): Promise<OutletSale[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_sales');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.flatMap(mapSaleDoc);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** This agent's newest orders (`get_my_orders`). Throws when they can't be loaded, so the copy on the phone is kept. */
+export const getMyOrders = async (): Promise<OutletOrder[]> => (await getMyOrdersPage()).records;
+
+/** A page of this agent's field sales via `get_my_sales`; without a page, the newest (the backend's first page, 50). Throws when it can't be loaded. */
+export const getMySalesPage = async (start?: number, size?: number): Promise<HistoryPage<OutletSale>> => {
+  const list = listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_sales${historyQuery(start, size)}`));
+  return { records: list.flatMap(mapSaleDoc), docs: list.length };
+};
+
+/** This agent's newest field sales (`get_my_sales`). Throws when they can't be loaded, so the copy on the phone is kept. */
+export const getMySales = async (): Promise<OutletSale[]> => (await getMySalesPage()).records;
+
+// ─── Morning download ───────────────────────────────────────────────────────────
+
+/**
+ * The outlets the agent may come across (in their territories, in the zone or
+ * area of an outlet on their list, or on it) via `get_outlet_directory`, for
+ * spotting an outlet that's already onboarded offline. Phone numbers come only
+ * as lowercase hex sha256(phoneHashSalt + number), with their last 4 digits.
+ * Asked for 1,000 at a time; the backend counts them all (`total`), which
+ * decides when they're all in (it keeps its pages to 500). An older backend
+ * sends them all at once. Throws when any page can't be loaded.
+ */
+export const getOutletDirectory = async (options?: ListOptions): Promise<Omit<OutletDirectory, 'savedAt' | 'agentEmail'>> => {
+  let body: any = null;
+  const { rows } = await fetchAllPages(
+    async (start, size) => {
+      const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_outlet_directory${pageQuery(start, size)}`);
+      const page = data?.message ?? data;
+      body = body || page;
+      const total = Number(page?.total);
+      return { rows: Array.isArray(page?.outlets) ? page.outlets : [], total: page?.total !== undefined && Number.isFinite(total) ? total : undefined };
+    },
+    { size: 1000, idOf: (o: any) => String(o?.id || ''), onProgress: options?.onProgress },
+  );
+  const distance = Number(body?.duplicate_distance_m);
+  const number = (value: any) => (value === null || value === undefined || value === '' ? null : Number(value));
+  return {
+    duplicateDistanceM: Number.isFinite(distance) && distance >= 0 ? distance : 50,
+    phoneHashSalt: String(body?.phone_hash_salt || ''),
+    outlets: rows
+      .filter((o: any) => o?.id)
+      .map((o: any) => ({
+        id: String(o.id),
+        name: String(o.name || o.id),
+        address: o.address ? String(o.address) : '',
+        latitude: number(o.latitude),
+        longitude: number(o.longitude),
+        phoneHashes: Array.isArray(o.phone_hashes) ? o.phone_hashes.map(String) : [],
+        phoneLast4: Array.isArray(o.phone_last4) ? o.phone_last4.map(String) : [],
+        onboardedByName: o.onboarded_by_name ? String(o.onboarded_by_name) : undefined,
+        onboardedOn: o.onboarded_on ? String(o.onboarded_on) : undefined,
+        onMyList: !!o.on_my_list,
+      })),
+  };
+};
+
+/**
+ * A fresh access token for the signed-in agent via `renew_access_token`, saved
+ * in place of the old one; the app asks after each clock-in so a login never
+ * runs out mid-shift. Throws when it can't be had (an older backend doesn't
+ * have it: the old token stays).
+ */
+export const renewAccessToken = async (): Promise<void> => {
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.renew_access_token', { method: 'POST' });
+  const body = data?.message ?? data;
+  const token = body?.access_token || data?.access_token;
+  if (!token) throw new Error('No new access token came back.');
+  await setAccessToken(String(token));
 };
 
 // ─── Stock Requests / Reconciliations API ───────────────────────────────────────
@@ -1256,18 +1869,15 @@ export const getMySales = async (): Promise<OutletSale[]> => {
  * does, since the app keeps a single flat product list rather than two parallel ones.
  */
 export const getMyInventory = async (): Promise<Product[]> => {
-  try {
-    const [data, tenantId] = await Promise.all([
-      authFetch('/api/method/fieldops.api.mobile_api.get_my_inventory'),
-      getTenantId(),
-    ]);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  // Every failure is thrown, so My Stock can tell "couldn't load" from "no
+  // stock" (an empty list), which isn't an error.
+  const [data, tenantId] = await Promise.all([
+    authFetch('/api/method/fieldops.api.mobile_api.get_my_inventory'),
+    getTenantId(),
+  ]);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return flattenInventoryResponse(list, getBaseUrl(tenantId || ""));
 };
 
 export interface StockRequestLine {
@@ -1290,9 +1900,11 @@ export interface StockRequestLine {
 export const submitStockRequest = async (
   campaignId: string,
   lines: StockRequestLine[],
-  purpose?: string
+  purpose?: string,
+  meta?: ActionMeta
 ): Promise<{ ref: string }> => {
   const body = {
+    ...stampFields(meta),
     // The documented contract field is `campaign_id` (not `campaign`, which this app
     // uses elsewhere for other endpoints) — sending both since an extra unrecognized
     // key is harmless but a missing required one silently drops the campaign link.
@@ -1340,18 +1952,14 @@ const mapStockRequest = (raw: any): StockRequestSummary => {
   };
 };
 
-/** Fetch this agent's submitted stock requests and their approval status via `get_my_stock_requests`. */
-export const getMyStockRequests = async (): Promise<StockRequestSummary[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_my_stock_requests');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapStockRequest);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+/** A page of this agent's stock requests via `get_my_stock_requests`; without a page, the newest (the backend's first page, 50). Throws when it can't be loaded. */
+export const getMyStockRequestsPage = async (start?: number, size?: number): Promise<HistoryPage<StockRequestSummary>> => {
+  const list = listOf(await authFetch(`/api/method/fieldops.api.mobile_api.get_my_stock_requests${historyQuery(start, size)}`));
+  return { records: list.map(mapStockRequest), docs: list.length };
 };
+
+/** This agent's newest stock requests and their approval status (`get_my_stock_requests`). */
+export const getMyStockRequests = async (): Promise<StockRequestSummary[]> => (await getMyStockRequestsPage()).records;
 
 export interface ReconciliationLine {
   itemCode: string;
@@ -1390,6 +1998,10 @@ export interface SurveyListItem {
   status: string;
   startDate?: string;
   endDate?: string;
+  /** The campaign's survey to fill after an outlet is edited. */
+  afterOutletEdit: boolean;
+  /** Its questions, when they were asked for (includeQuestions) and the backend sends them. */
+  detail?: CampaignSurveyConfig;
 }
 
 const mapSurveyListItem = (raw: any): SurveyListItem => ({
@@ -1398,28 +2010,28 @@ const mapSurveyListItem = (raw: any): SurveyListItem => ({
   status: raw?.status || '',
   startDate: raw?.start_date || undefined,
   endDate: raw?.end_date || undefined,
+  afterOutletEdit: Number(raw?.after_outlet_edit) === 1 || raw?.after_outlet_edit === true,
+  detail: raw?.detail && typeof raw.detail === 'object' ? mapSurveyDetail(raw.detail) : undefined,
 });
 
 /**
- * List surveys assigned to the agent for a campaign via `get_surveys_for_campaign`.
- * Only returns id/name/status/dates (no questions) — call `getSurveyDetail` per survey
- * for the actual form.
+ * List surveys assigned to the agent for a campaign via `get_surveys_for_campaign`:
+ * id/name/status/dates, and with includeQuestions each survey's `detail` (what
+ * get_survey_detail returns), so the morning download needs one request, not one
+ * per survey. An older backend sends no `detail`: call `getSurveyDetail` per survey.
+ * Throws when it can't be loaded, so the copy on the phone is kept.
  */
-export const getSurveysForCampaign = async (campaignId: string): Promise<SurveyListItem[]> => {
-  try {
-    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_surveys_for_campaign?campaign=${encodeURIComponent(campaignId)}`);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapSurveyListItem);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+export const getSurveysForCampaign = async (campaignId: string, options?: { includeQuestions?: boolean }): Promise<SurveyListItem[]> => {
+  const questions = options?.includeQuestions ? '&include_questions=1' : '';
+  const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_surveys_for_campaign?campaign=${encodeURIComponent(campaignId)}${questions}`);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(mapSurveyListItem);
 };
 
 /**
  * The backend sends question_type as a mobile-friendly label (Text/Multiple Choice/
- * Single Choice/Rating/Image) rather than this app's internal QuestionType union.
+ * Single Choice/Rating/Image/Number) rather than this app's internal QuestionType union.
  * "Single Choice" with exactly ["Yes","No"] options already renders as the yes/no
  * toggle in DynamicSurveyForm — that check lives there (q.type === 'choice' + options),
  * so no separate yes/no QuestionType is needed on this side.
@@ -1430,6 +2042,7 @@ const BACKEND_TO_APP_QUESTION_TYPE: Record<string, QuestionType> = {
   'Single Choice': 'choice',
   Rating: 'rating',
   Image: 'photo',
+  Number: 'number',
 };
 const APP_TO_BACKEND_QUESTION_TYPE: Record<QuestionType, string> = {
   text: 'Text',
@@ -1438,7 +2051,7 @@ const APP_TO_BACKEND_QUESTION_TYPE: Record<QuestionType, string> = {
   rating: 'Rating',
   photo: 'Image',
   select: 'Text',
-  number: 'Text',
+  number: 'Number',
   gps: 'Text',
 };
 
@@ -1448,11 +2061,8 @@ const APP_TO_BACKEND_QUESTION_TYPE: Record<QuestionType, string> = {
  * the flat list is wrapped as a single synthetic section rather than inventing section
  * boundaries the backend never sends.
  *
- * Note: as of the branch this was checked against, the backend's `required` field on
- * each question is hardcoded to 0 server-side regardless of how the question was
- * configured (not a client mapping choice) — so client-side required-question
- * validation on these forms won't currently trigger for any fetched survey. Passed
- * through as-is rather than guessed at; flagged to the backend team separately.
+ * `required` comes as 1 / 0. Older backends always sent 0, so no question is
+ * required there and the forms' required checks stay quiet.
  */
 const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
   const questions: DynamicSurveyQuestion[] = Array.isArray(raw?.questions)
@@ -1460,7 +2070,7 @@ const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
         id: q?.name || q?.id || '',
         type: BACKEND_TO_APP_QUESTION_TYPE[q?.question_type] || 'text',
         question: q?.question || q?.question_text || '',
-        required: !!q?.required,
+        required: Number(q?.required) === 1,
         options: Array.isArray(q?.options) && q.options.length > 0 ? q.options : undefined,
       }))
     : [];
@@ -1473,20 +2083,16 @@ const mapSurveyDetail = (raw: any): CampaignSurveyConfig => {
     sections: [{ id: 'section-1', name: 'Questions', questions }],
     description: raw?.description || undefined,
     durationLabel: questions.length > 0 ? `~${Math.max(1, Math.round(questions.length / 3))} min` : undefined,
+    afterOutletEdit: Number(raw?.after_outlet_edit) === 1 || raw?.after_outlet_edit === true,
   };
 };
 
-/** Fetch a survey's full question set via `get_survey_detail`. */
+/** Fetch a survey's full question set via `get_survey_detail`; null for a survey that isn't there. Throws when it can't be loaded. */
 export const getSurveyDetail = async (surveyId: string): Promise<CampaignSurveyConfig | null> => {
-  try {
-    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_survey_detail?survey_id=${encodeURIComponent(surveyId)}`);
-    const raw = data?.message ?? data?.data ?? data;
-    if (!raw || typeof raw !== 'object') return null;
-    return mapSurveyDetail(raw);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return null;
-  }
+  const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_survey_detail?survey_id=${encodeURIComponent(surveyId)}`);
+  const raw = data?.message ?? data?.data ?? data;
+  if (!raw || typeof raw !== 'object') return null;
+  return mapSurveyDetail(raw);
 };
 
 export interface SurveyResponsePayload {
@@ -1503,34 +2109,35 @@ export interface SurveyRespondent {
 }
 
 /**
- * Submit answers via the RPC contract (`submit_survey_response`).
- *
- * IMPORTANT (flagged, not silently worked around): the backend dedupes an existing
- * response by `{survey, agent, status in [Draft, Submitted]}` only — there is no
- * outlet dimension. So submitting the same survey for a second outlet on the same day
- * updates/overwrites the agent's one existing response for that survey rather than
- * creating a second record. This app still tracks completion per-outlet locally
- * (OutletSurvey.outletId) for UI purposes, but that per-outlet distinction is NOT
- * preserved server-side under this contract — needs backend confirmation if outlet-
- * scoped survey responses are actually required.
- *
- * Also: 'photo' (Image) question answers are sent as the local file URI string since
- * this endpoint has no documented multipart/file-upload path — the photo itself is not
- * confirmed to reach the server through this call.
+ * Submit a survey via the RPC contract (`submit_survey_response`), its photos
+ * in the same request: the server refuses a survey with any question
+ * unanswered, photo questions included (REQUIRED_ANSWERS_MISSING), so a photo
+ * can't follow later. With photos (question id -> local file) the request is
+ * multipart, each photo a file part named by its question id; the answers go
+ * as they do in JSON, a photo question's answer empty, since the device's
+ * file path means nothing to the server. A survey without photos is sent as
+ * JSON. Resubmitting a survey for the same outlet on the same day updates the
+ * agent's earlier response.
  */
 export const submitSurveyResponse = async (
   surveyId: string,
   responses: SurveyResponsePayload[],
   coordinates?: { lat: number; lng: number },
   respondent?: SurveyRespondent,
-  outletId?: string
+  outletId?: string,
+  photos?: Record<string, string>,
+  meta?: ActionMeta
 ): Promise<{ responseId: string }> => {
   const body: Record<string, any> = {
+    ...stampFields(meta),
     survey: surveyId,
     responses: responses.map((r) => ({
       question: r.questionId,
       question_type: APP_TO_BACKEND_QUESTION_TYPE[r.questionType] || 'Text',
-      answer: Array.isArray(r.answer) ? r.answer.join(', ') : r.answer,
+      // A number goes cleaned ("12." as "12", ".5" as "0.5"); it's kept as typed on the phone.
+      answer: r.questionType === 'photo' ? ''
+        : r.questionType === 'number' ? cleanNumberAnswer(r.answer)
+        : Array.isArray(r.answer) ? r.answer.join(', ') : r.answer,
     })),
   };
   if (coordinates) {
@@ -1550,13 +2157,48 @@ export const submitSurveyResponse = async (
     body.customer = outletId;
   }
 
-  const data = await authFetch('/api/method/fieldops.api.mobile_api.submit_survey_response', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const photoParts = Object.entries(photos || {}).filter(([, uri]) => !!uri);
+  let data: any;
+  if (photoParts.length > 0) {
+    const form = new FormData();
+    Object.entries(body).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) form.append(key, typeof value === 'string' ? value : JSON.stringify(value));
+    });
+    // Same part builder as the other photo uploads: throws, before anything
+    // is sent, for a photo whose file is no longer on the device.
+    photoParts.forEach(([questionId, uri]) => form.append(questionId, buildPhotoPart(uri)));
+    data = await authFetch('/api/method/fieldops.api.mobile_api.submit_survey_response', {
+      method: 'POST',
+      body: form,
+    });
+  } else {
+    data = await authFetch('/api/method/fieldops.api.mobile_api.submit_survey_response', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
   const result = data?.message ?? data?.data ?? data;
   return { responseId: String(result?.response_id || '') };
+};
+
+/**
+ * Attaches a photo to a survey response that's already on the server, via
+ * `upload_survey_photo` (multipart: response_id, question_id, photo) — the
+ * response itself carries an empty answer for the question, see
+ * submitSurveyResponse. The file part is built the same way as outlet photos.
+ */
+export const uploadSurveyPhoto = async (responseId: string, questionId: string, photoUri: string): Promise<{ fileUrl: string }> => {
+  const form = new FormData();
+  form.append('response_id', responseId);
+  form.append('question_id', questionId);
+  form.append('photo', buildPhotoPart(photoUri));
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.upload_survey_photo', {
+    method: 'POST',
+    body: form,
+  });
+  const result = data?.message ?? data?.data ?? data;
+  return { fileUrl: String(result?.file_url || '') };
 };
 
 export interface MySurveyResponseSummary {
@@ -1564,6 +2206,10 @@ export interface MySurveyResponseSummary {
   surveyId: string;
   status: string;
   submissionDate?: string;
+  /** Every id the response names its outlet by (outlet, outlet_id, customer, customer_id) — empty from an older backend. */
+  outletIds: string[];
+  /** The lead it was for (lead_id), where the backend sends it. */
+  leadId?: string;
 }
 
 const mapMySurveyResponse = (raw: any): MySurveyResponseSummary => ({
@@ -1571,20 +2217,21 @@ const mapMySurveyResponse = (raw: any): MySurveyResponseSummary => ({
   surveyId: raw?.survey || '',
   status: raw?.status || '',
   submissionDate: raw?.submission_date || undefined,
+  outletIds: Array.from(new Set([raw?.outlet, raw?.outlet_id, raw?.customer, raw?.customer_id].filter(Boolean).map(String))),
+  leadId: raw?.lead_id ? String(raw.lead_id) : undefined,
 });
 
-/** Fetch this agent's own submitted survey responses via `get_my_surveys`, optionally scoped to a campaign. */
+/**
+ * Fetch this agent's own submitted survey responses via `get_my_surveys`, optionally scoped to a campaign.
+ * Asks for up to 500: the backend's default page is 20, and a survey counts as done per outlet or
+ * lead, so an older response left off the page would show its survey as not done.
+ */
 export const getMySurveys = async (campaignId?: string): Promise<MySurveyResponseSummary[]> => {
-  try {
-    const qs = campaignId ? `?campaign=${encodeURIComponent(campaignId)}` : '';
-    const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_my_surveys${qs}`);
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapMySurveyResponse);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const qs = `?limit_page_length=500${campaignId ? `&campaign=${encodeURIComponent(campaignId)}` : ''}`;
+  const data = await authFetch(`/api/method/fieldops.api.mobile_api.get_my_surveys${qs}`);
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(mapMySurveyResponse);
 };
 
 // ─── Journey Maps / Beat Plans API ───────────────────────────────────────────────
@@ -1604,15 +2251,10 @@ const mapBeat = (raw: any): RouteAssignment => ({
 
 /** Fetch this agent's day-by-day route/beat assignments via `get_agent_beats`. */
 export const getAgentBeats = async (): Promise<RouteAssignment[]> => {
-  try {
-    const data = await authFetch('/api/method/fieldops.api.mobile_api.get_agent_beats');
-    const raw = data?.message ?? data?.data ?? data;
-    const list = Array.isArray(raw) ? raw : [];
-    return list.map(mapBeat).filter((a: RouteAssignment) => a.date);
-  } catch (e: any) {
-    if (e instanceof AuthError || e instanceof NetworkError) throw e;
-    return [];
-  }
+  const data = await authFetch('/api/method/fieldops.api.mobile_api.get_agent_beats');
+  const raw = data?.message ?? data?.data ?? data;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(mapBeat).filter((a: RouteAssignment) => a.date);
 };
 
 // ─── Notifications API ──────────────────────────────────────────────────────────

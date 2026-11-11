@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -6,7 +6,8 @@ import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
-import { getSurveysForCampaign, getSurveyDetail, getMySurveys } from '../services/api';
+import { getMySurveys, MySurveyResponseSummary } from '../services/api';
+import { loadCampaignSurveys } from '../utils/afterEditSurvey';
 import { RouteName, Lead, CampaignSurveyConfig } from '../types';
 
 interface LeadSurveysScreenProps {
@@ -17,13 +18,19 @@ interface LeadSurveysScreenProps {
 export const LeadSurveysScreen: React.FC<LeadSurveysScreenProps> = ({ onNavigate, leadData }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { state, getLeadSurveyResponse } = useFieldStore();
+  const { state, dispatch, getLeadSurveyResponse } = useFieldStore();
+  // The surveys kept on the device, for when they can't be loaded (offline);
+  // read through a ref so keeping them doesn't reload the list.
+  const keptSurveys = useRef(state.campaignSurveys);
+  keptSurveys.current = state.campaignSurveys;
   const lead = leadData;
   const activeCampaign = state.activeCampaign;
 
-  const [surveys, setSurveys] = useState<CampaignSurveyConfig[]>([]);
-  const [submittedSurveyIds, setSubmittedSurveyIds] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(true);
+  // What's saved on the phone shows straight away; the server's copy replaces it when it loads.
+  const [surveys, setSurveys] = useState<CampaignSurveyConfig[]>(state.campaignSurveys[activeCampaign?.id || ''] || []);
+  // Which surveys are done where: saved (the day's download fetches it), refreshed here.
+  const submittedResponses: MySurveyResponseSummary[] = state.surveyResponses.filter((r) => r.status === 'Submitted');
+  const [loading, setLoading] = useState(!state.campaignSurveys[activeCampaign?.id || '']);
   const [error, setError] = useState('');
 
   const fetchSurveys = useCallback(async () => {
@@ -32,18 +39,22 @@ export const LeadSurveysScreen: React.FC<LeadSurveysScreenProps> = ({ onNavigate
       setLoading(false);
       return;
     }
-    setLoading(true);
+    // The saved surveys stay on screen while they're refreshed.
+    setLoading(!keptSurveys.current[activeCampaign.id]);
     setError('');
     try {
-      const [list, mySurveys] = await Promise.all([
-        getSurveysForCampaign(activeCampaign.id),
+      const [surveys, mySurveys] = await Promise.all([
+        loadCampaignSurveys(activeCampaign.id, dispatch),
         getMySurveys(activeCampaign.id),
       ]);
-      const details = await Promise.all(list.map((s) => getSurveyDetail(s.id)));
-      setSurveys(details.filter((d): d is CampaignSurveyConfig => !!d));
-      setSubmittedSurveyIds(new Set(mySurveys.filter((r) => r.status === 'Submitted').map((r) => r.surveyId)));
+      setSurveys(surveys);
+      dispatch({ type: 'SET_SURVEY_RESPONSES', responses: mySurveys });
     } catch (e: any) {
-      setError(e?.message || 'Could not load surveys.');
+      // Offline: the surveys kept on the device still open (what was
+      // submitted on other devices isn't known until it's back online).
+      const kept = keptSurveys.current[activeCampaign.id];
+      if (kept) setSurveys(kept);
+      else setError(e?.message || 'Could not load surveys.');
     } finally {
       setLoading(false);
     }
@@ -67,11 +78,12 @@ export const LeadSurveysScreen: React.FC<LeadSurveysScreenProps> = ({ onNavigate
 
   const rows = surveys.map((survey) => {
     const questionCount = survey.sections?.reduce((sum, s) => sum + s.questions.length, 0) ?? survey.questions.length;
-    // A lead survey response is completed if the backend has one for this survey
-    // (agent+survey scoped) or a local record ties it to this specific lead — the
-    // backend's Survey Response has no lead-level uniqueness, so the local record is
-    // what actually distinguishes "done for this lead" per submitSurveyResponse's note.
-    const completed = submittedSurveyIds.has(survey.id) || !!getLeadSurveyResponse(lead.id, survey.id);
+    // Completed for THIS lead only: a submitted response that names this lead
+    // (lead_id), or a local record for it. Any response for the survey used to
+    // count, so one lead's survey showed as done for every lead. A backend that
+    // doesn't send lead_id leaves only the local records.
+    const completed = submittedResponses.some((r) => r.surveyId === survey.id && r.leadId === lead.id)
+      || !!getLeadSurveyResponse(lead.id, survey.id);
     return { survey, questionCount, completed };
   });
   const pendingCount = rows.filter((r) => !r.completed).length;

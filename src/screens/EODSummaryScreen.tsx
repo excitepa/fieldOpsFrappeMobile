@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -11,6 +11,8 @@ import { useFieldStore } from '../store/useFieldStore';
 import { clockOut, submitEodReport, getLeads, getMySales, getMyOrders, NetworkError } from '../services/api';
 import { parseAppTimestamp, localDateStr } from '../utils/timestamp';
 import { getOutletIdsVisitedToday } from '../utils/outletVisits';
+import { queueState, queuedActionLabel, syncNow } from '../utils/offlineSync';
+import { isMine } from '../utils/queue';
 import { RouteName, Lead } from '../types';
 
 interface EODSummaryScreenProps {
@@ -32,6 +34,8 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
   const theme = useTheme();
   const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const isClockedIn = !!state.attendanceStatus?.clockedIn;
 
   const [note, setNote] = useState('');
@@ -46,33 +50,23 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // App.tsx's `leadsList` prop is only ever appended to locally right after a lead
-  // is created in THIS session — it's never persisted or re-fetched, so it reads
-  // empty on a fresh app launch even though real leads exist on the server. This
-  // fetches the real list directly (same as Pipeline's own leads fetch) so "Leads
-  // created today" reflects what actually happened today, not just this session.
-  const [liveLeads, setLiveLeads] = useState<Lead[]>(leadsList);
+  // The agent's leads, saved on the phone and brought up to date here, so
+  // "Leads created today" counts today's whichever device they were made on.
+  const liveLeads = state.leads;
   const fetchLeads = useCallback(async () => {
     if (!state.activeCampaign?.id) return;
     try {
-      const fetched = await getLeads(state.activeCampaign.id);
-      setLiveLeads(fetched);
+      dispatch({ type: 'SET_LEADS', leads: await getLeads(state.activeCampaign.id) });
     } catch {
       // Non-fatal: keep showing whatever's already there rather than blocking EOD.
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.activeCampaign?.id]);
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
-  useEffect(() => {
-    setLiveLeads((prev) => {
-      const mergeMap = new Map(prev.map((l) => [l.id, l]));
-      leadsList.forEach((l) => { if (!mergeMap.has(l.id)) mergeMap.set(l.id, l); });
-      return Array.from(mergeMap.values());
-    });
-  }, [leadsList]);
 
   const todayIso = localDateStr();
   // Real, server-derived visited-today set — see outletVisits.ts.
-  const visitedTodayIds = getOutletIdsVisitedToday(state.sales, state.orders);
+  const visitedTodayIds = getOutletIdsVisitedToday(state.sales, state.orders, state.drafts);
   const outletsVisited = state.outlets.filter((o) => visitedTodayIds.has(o.id)).length;
   const salesToday = state.sales.filter((s) => isToday(s.timestamp));
   const salesTotal = salesToday.reduce((sum, s) => sum + s.total, 0);
@@ -86,8 +80,45 @@ export const EODSummaryScreen: React.FC<EODSummaryScreenProps> = ({ onNavigate, 
     { icon: 'clipboard-list', label: 'Surveys completed', value: `${surveysToday}`, tint: theme.colors.tintGray, tintIcon: theme.colors.tintGrayIcon },
   ];
 
+  // What this agent still has on the phone that isn't on the server, a line each.
+  const whatsLeft = (): string[] => {
+    const s = stateRef.current;
+    const mine = <T extends { agentEmail?: string }>(items: T[]) => items.filter((i) => isMine(i, s.user.email));
+    const why = (error?: string) => (error ? `: ${error}` : '');
+    return [
+      ...mine(s.outletDrafts).map((d) => `${d.mode === 'create' ? 'New outlet' : 'Outlet edit'} ${d.name}${why(d.syncError)}`),
+      ...mine(s.drafts).map((d) => `${d.mode === 'sale' ? 'Sale' : 'Order'} at ${d.outletName}${d.syncError ? why(d.syncError) : d.ready ? '' : ' (saved to finish later)'}`),
+      ...mine(s.surveys.filter((x) => x.isDraft)).map((x) => `Survey ${x.surveyName || ''}${why(x.syncError)}`.trim()),
+      ...mine(s.leadDrafts).map((d) => `Lead ${d.name}${why(d.syncError)}`),
+      ...mine(s.queuedActions).map((a) => `${queuedActionLabel(a)}${why(a.syncError)}`),
+      ...(s.pendingSurveyPhotos.length > 0 ? [`${s.pendingSurveyPhotos.length} survey photo${s.pendingSurveyPhotos.length === 1 ? '' : 's'}`] : []),
+    ];
+  };
+
   const handleSubmit = async () => {
     setSubmitting(true);
+
+    // The day closes only once everything is on the server: what's waiting
+    // goes first, and anything that can't (no connection, refused by the
+    // server, or a cart saved to finish later) keeps the day open.
+    await syncNow({ getState: () => stateRef.current, dispatch }).catch(() => null);
+    // The sync's changes reach the screen on its next render.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (queueState(stateRef.current).waiting > 0) {
+      setSubmitting(false);
+      const left = whatsLeft();
+      const listed = left.slice(0, 8).map((l) => `• ${l}`).join('\n');
+      const more = left.length > 8 ? `\n…and ${left.length - 8} more` : '';
+      Alert.alert(
+        "Your Day Can't Close Yet",
+        `These haven't reached the server. Connect to send them; one that was refused has to be fixed, turned into an order, or deleted on the Drafts page.\n\n${listed}${more}`,
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Open Drafts', onPress: () => onNavigate('draftsList') },
+        ],
+      );
+      return;
+    }
 
     if (isClockedIn) {
       try {

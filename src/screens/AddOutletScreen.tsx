@@ -11,50 +11,46 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeContext';
+import { typography } from '../theme/typography';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
-import { OptionPickerSheet } from '../components/OptionPickerSheet';
+import { SelectField } from '../components/SelectField';
+import { DuplicateOutletSheet } from '../components/DuplicateOutletSheet';
 import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
-import { createOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
+import { useOutletFormOptions } from '../hooks/useOutletFormOptions';
+import { createOutlet, NetworkError, OutletMatch, possibleDuplicateMatches } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
+import { OutletPicks, listPlaceholder, missingPick, pickChannel, pickSubChannel, pickedName, subChannelsOf, typePlaceholder, typesOf } from '../utils/outletForm';
+import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, keepPhotoForDraft, streetAddressFromPlace } from '../utils/photoStamp';
-import { RouteName, Outlet, OutletDraft } from '../types';
+import { newStamp } from '../utils/queue';
+import { findLocalMatches } from '../utils/outletDuplicates';
+import { loadOutletDirectory } from '../utils/outletDirectory';
+import { RouteName, Outlet, OutletDraft, ActionStamp } from '../types';
 
 interface AddOutletScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
 }
-
-// Fallback lists used only if the live `get_outlet_channels`/`get_outlet_sub_channels`
-// fetch fails or returns nothing (e.g. offline) — so the picker is never empty.
-const FALLBACK_OUTLET_CHANNELS = [
-  'Supermarket', 'Mini Mart', 'Kiosk', 'Pharmacy', 'Open Market Stall', 'Wholesaler',
-  'Distributor', 'Convenience Store', 'Provision Store', 'Cosmetics Shop',
-  'Restaurant', 'Bar / Lounge', 'Hotel', 'Bakery', 'Fuel Station Shop',
-  'Beauty Salon', 'Electronics Shop', 'Mobile Money Agent', 'POS Agent', 'Filling Station',
-  'School Canteen', 'Hospital Store', 'Cold Room', 'Poultry Shop', 'Table Top Seller',
-];
-const FALLBACK_OUTLET_SUB_CHANNELS = ['Modern Trade', 'Traditional Trade', 'Wholesale', 'Distributor', 'Pharmacy', 'HORECA', 'Key Account'];
 
 export const AddOutletScreen: React.FC<AddOutletScreenProps> = ({ onNavigate }) => {
 const theme = useTheme();  const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
   const activeCampaignId = state.activeCampaign?.id || 'c2';
 
-  const [outletType, setOutletType] = useState('Supermarket');
-  const [showChannelPicker, setShowChannelPicker] = useState(false);
-  const [subChannel, setSubChannel] = useState('');
-  const [showSubChannelPicker, setShowSubChannelPicker] = useState(false);
-  const [outletChannels, setOutletChannels] = useState<string[]>(FALLBACK_OUTLET_CHANNELS);
-  const [outletSubChannels, setOutletSubChannels] = useState<string[]>(FALLBACK_OUTLET_SUB_CHANNELS);
-
-  useEffect(() => {
-    getOutletChannels().then((list) => { if (list.length > 0) setOutletChannels(list); }).catch(() => {});
-    getOutletSubChannels().then((list) => { if (list.length > 0) setOutletSubChannels(list); }).catch(() => {});
-  }, []);
+  // Channel > Sub Channel > Outlet Type, kept by id, each picked from under
+  // the one above. The lists come from the backend (kept on the device for
+  // offline use); nothing is picked for the agent.
+  const { options, loading: optionsLoading } = useOutletFormOptions();
+  const [{ channelId, subChannelId, outletTypeId }, setPicks] = useState<OutletPicks>({});
+  const picks = { channelId, subChannelId, outletTypeId };
+  const channelSubChannels = subChannelsOf(options, channelId);
+  const subChannelTypes = typesOf(options, picks);
+  // The agent's own distributor, shown and sent as it is: not theirs to choose.
+  const distributorId = options.defaultDistributorId;
   // These previously defaulted to real-looking demo text ('QuickShop Express',
   // etc.) as the actual field VALUE, not just a placeholder — an agent who
   // didn't touch a field would silently submit that fake data as if it were
@@ -65,6 +61,8 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [ownerName, setOwnerName] = useState('');
   const [ownerMobile, setOwnerMobile] = useState('');
   const [address, setAddress] = useState('');
+  const [phoneProblem, setPhoneProblem] = useState<string>();
+  const [ownerMobileProblem, setOwnerMobileProblem] = useState<string>();
 
   // Location Auto-Captured
   const [gpsLocation, setGpsLocation] = useState('');
@@ -83,6 +81,13 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [photoAspect, setPhotoAspect] = useState(3 / 4);
   const photoViewRef = useRef<View>(null);
   const [submitting, setSubmitting] = useState(false);
+  // This outlet's one-time ID and when it was onboarded, from the first Save:
+  // a second Save after one that got no answer is the same outlet to the server.
+  const stampRef = useRef<ActionStamp | null>(null);
+  // The outlets this one looks like (the sheet is open while set), and
+  // whether the agent has said it's a different outlet from them.
+  const [duplicates, setDuplicates] = useState<OutletMatch[] | null>(null);
+  const confirmedNewRef = useRef(false);
 
   useEffect(() => {
     autoCaptureGps();
@@ -175,6 +180,11 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
+    const missing = missingPick(options, picks);
+    if (missing) {
+      Alert.alert('Required', missing);
+      return;
+    }
     if (!outletName.trim()) {
       Alert.alert('Required', 'Please enter an outlet name.');
       return;
@@ -183,29 +193,80 @@ const theme = useTheme();  const styles = createStyles(theme);
       Alert.alert('Required', 'Please enter the outlet address.');
       return;
     }
+    // The outlet's own phone is optional; the owner's mobile is required.
+    const nextPhoneProblem = phoneError(phone, false);
+    const nextOwnerMobileProblem = phoneError(ownerMobile, true);
+    setPhoneProblem(nextPhoneProblem);
+    setOwnerMobileProblem(nextOwnerMobileProblem);
+    if (nextPhoneProblem || nextOwnerMobileProblem) return;
+    const outletPhone = normalizePhone(phone) || undefined;
+    const ownerPhone = normalizePhone(ownerMobile);
+
+    const typeName = pickedName(options.types, outletTypeId);
+    const subChannelName = pickedName(options.subChannels, subChannelId);
+    const classification = {
+      outletTypeId,
+      outletTypeName: typeName,
+      channelId,
+      channelName: pickedName(options.channels, channelId),
+      subChannelId,
+      subChannelName,
+      distributorId,
+      distributorName: pickedName(options.distributors, distributorId),
+    };
+
+    // An outlet already onboarded, spotted before it's saved: among the
+    // agent's outlets and the territory list from the morning download (an
+    // older backend has no list: the agent's own outlets, then). Offline too.
+    if (!confirmedNewRef.current) {
+      setSubmitting(true);
+      const directory = await loadOutletDirectory();
+      const me = state.user.email?.trim().toLowerCase();
+      const theirs = directory && (!directory.agentEmail || directory.agentEmail === me) ? directory : null;
+      const matches = await findLocalMatches(
+        { name: outletName.trim(), phones: [outletPhone, ownerPhone], latitude: gpsCoords?.lat, longitude: gpsCoords?.lng },
+        state.outlets,
+        theirs,
+      ).catch(() => []);
+      setSubmitting(false);
+      if (matches.length > 0) {
+        setDuplicates(matches);
+        return;
+      }
+    }
 
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
     // The watermarked snapshot, not the raw camera file, is what gets uploaded
     // (or kept for an offline draft) — same as the attendance selfie.
     const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
     try {
-      const { outlet: created, photoUploaded, photoError } = await createOutlet(activeCampaignId, {
+      const { outlet: created, photoUploaded, photoError, possibleDuplicate } = await createOutlet(activeCampaignId, {
         name: outletName.trim(),
-        type: outletType,
-        subChannel: subChannel || undefined,
+        outletTypeId,
+        channelId,
+        subChannelId,
+        distributorId,
+        subChannel: subChannelName,
         address: address.trim(),
-        phone: phone.trim() || undefined,
+        phone: outletPhone,
         ownerName: ownerName.trim() || undefined,
-        ownerPhone: ownerMobile.trim() || undefined,
+        ownerPhone,
         photoUri: uploadPhotoUri || undefined,
         latitude: gpsCoords?.lat,
         longitude: gpsCoords?.lng,
-      });
+        // The server checks it against every outlet and asks first (POSSIBLE_DUPLICATE),
+        // unless the agent has already said it's a different one.
+        checkDuplicates: true,
+        confirmedNew: confirmedNewRef.current,
+      }, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
 
       // Enrich with fields the API doesn't return/accept yet
       const newOutlet: Outlet = {
         ...created,
-        category: subChannel || undefined,
+        ...classification,
+        type: typeName || created.type,
+        category: subChannelName,
         area: address.includes('Oniru') ? 'Oniru' : address.includes('Ikoyi') ? 'Ikoyi' : 'Lekki Phase 1',
         distance: '',
         gps: gpsLocation,
@@ -213,6 +274,12 @@ const theme = useTheme();  const styles = createStyles(theme);
 
       dispatch({ type: 'ADD_OUTLET', outlet: newOutlet });
       setSubmitting(false);
+      if (possibleDuplicate) {
+        Alert.alert('Outlet Saved', `Your supervisor will check whether ${newOutlet.name} is a duplicate.`, [
+          { text: 'OK', onPress: () => onNavigate('outlets') },
+        ]);
+        return;
+      }
       // The outlet itself is saved either way — only say something if the photo
       // specifically didn't make it, so the agent knows to re-add it rather
       // than assuming the whole onboarding failed.
@@ -243,13 +310,14 @@ const theme = useTheme();  const styles = createStyles(theme);
         const optimisticOutlet: Outlet = {
           id: draftId,
           name: outletName.trim(),
-          type: outletType,
-          category: subChannel || undefined,
+          ...classification,
+          type: typeName || '',
+          category: subChannelName,
           area: address.includes('Oniru') ? 'Oniru' : address.includes('Ikoyi') ? 'Ikoyi' : 'Lekki Phase 1',
           address: address.trim(),
-          phone: phone.trim(),
+          phone: outletPhone || '',
           ownerName: ownerName.trim() || undefined,
-          ownerPhone: ownerMobile.trim() || undefined,
+          ownerPhone,
           isOpen: true,
           distance: '',
           status: 'pending',
@@ -258,19 +326,26 @@ const theme = useTheme();  const styles = createStyles(theme);
           campaignId: activeCampaignId,
         };
         const outletDraft: OutletDraft = {
+          ...stamp,
           id: draftId,
           mode: 'create',
           campaignId: activeCampaignId,
           name: outletName.trim(),
-          type: outletType,
-          subChannel: subChannel || undefined,
+          type: typeName || '',
+          subChannel: subChannelName,
+          outletTypeId,
+          channelId,
+          subChannelId,
+          distributorId,
           address: address.trim(),
-          phone: phone.trim() || undefined,
+          phone: outletPhone,
           ownerName: ownerName.trim() || undefined,
-          ownerPhone: ownerMobile.trim() || undefined,
+          ownerPhone,
           photoUri: draftPhotoUri,
           latitude: gpsCoords?.lat,
           longitude: gpsCoords?.lng,
+          // Sent with it, so the server checks it but never refuses it.
+          confirmedNew: confirmedNewRef.current || undefined,
           createdAt: new Date().toISOString(),
           pendingSync: true,
         };
@@ -278,9 +353,12 @@ const theme = useTheme();  const styles = createStyles(theme);
         dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft });
         Alert.alert(
           'Saved Locally',
-          'No connection — this outlet has been saved on this device and will upload automatically from the Sync page once you\'re back online.',
+          "No connection, so this outlet is saved on this phone. It's sent automatically once you're back online, and you can sell and survey there meanwhile.",
         );
         onNavigate('outlets');
+      } else if (possibleDuplicateMatches(e).length > 0) {
+        // The server found an outlet it looks like: the agent decides.
+        setDuplicates(possibleDuplicateMatches(e));
       } else {
         // The request reached the server and was rejected — this will never
         // succeed on retry, so don't disguise it as an offline save.
@@ -322,25 +400,48 @@ const theme = useTheme();  const styles = createStyles(theme);
             )}
           </Pressable>
 
-          {/* Outlet Channel Dropdown */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Outlet Channel</Text>
-            <Pressable onPress={() => setShowChannelPicker(true)} style={styles.dropdownBtn}>
-              <Text style={styles.dropdownText}>{outletType}</Text>
-              <Icon name="chevron-down" size={18} color={theme.colors.textMuted} />
-            </Pressable>
-          </View>
+          <SelectField
+            label="Outlet Channel"
+            title="Select outlet channel"
+            options={options.channels || []}
+            value={channelId}
+            placeholder={listPlaceholder(options.channels, optionsLoading, 'Select outlet channel')}
+            onChange={(id) => setPicks(pickChannel(options, picks, id))}
+          />
 
-          {/* Outlet Sub-channel Dropdown */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Outlet sub-channel</Text>
-            <Pressable onPress={() => setShowSubChannelPicker(true)} style={styles.dropdownBtn}>
-              <Text style={[styles.dropdownText, !subChannel && styles.dropdownPlaceholder]}>
-                {subChannel || 'Select outlet sub-channel'}
-              </Text>
-              <Icon name="chevron-down" size={18} color={theme.colors.textMuted} />
-            </Pressable>
-          </View>
+          <SelectField
+            label="Outlet Sub Channel"
+            title="Select outlet sub channel"
+            options={channelSubChannels}
+            value={subChannelId}
+            placeholder={
+              options.subChannels === undefined ? listPlaceholder(undefined, optionsLoading, '')
+                : !channelId ? 'Select a channel first'
+                : channelSubChannels.length === 0 ? 'None for this channel'
+                : 'Select outlet sub channel'
+            }
+            onChange={(id) => setPicks(pickSubChannel(options, picks, id))}
+          />
+
+          <SelectField
+            label="Outlet Type"
+            title="Select outlet type"
+            options={subChannelTypes}
+            value={outletTypeId}
+            placeholder={typePlaceholder(options, picks, optionsLoading)}
+            onChange={(id) => setPicks({ ...picks, outletTypeId: id })}
+          />
+
+          <SelectField
+            label="Distributor"
+            title="Distributor"
+            options={[]}
+            value={distributorId}
+            valueName={pickedName(options.distributors, distributorId)}
+            placeholder="None"
+            onChange={() => {}}
+            disabled
+          />
 
           <Input
             label="Outlet Name"
@@ -361,10 +462,11 @@ const theme = useTheme();  const styles = createStyles(theme);
           <Input
             label="Phone Number"
             value={phone}
-            onChangeText={setPhone}
-            placeholder="+234 801 000 0000"
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
             keyboardType="phone-pad"
             variant="field"
+            error={phoneProblem}
           />
 
           <Input
@@ -378,10 +480,11 @@ const theme = useTheme();  const styles = createStyles(theme);
           <Input
             label="Owner's Mobile"
             value={ownerMobile}
-            onChangeText={setOwnerMobile}
-            placeholder="+234 802 000 0000"
+            onChangeText={(text) => { setOwnerMobile(normalizePhone(text)); setOwnerMobileProblem(undefined); }}
+            placeholder="08012345678"
             keyboardType="phone-pad"
             variant="field"
+            error={ownerMobileProblem}
           />
 
           {/* Auto-Captured GPS Box — real device location, reverse-geocoded when possible */}
@@ -412,24 +515,19 @@ const theme = useTheme();  const styles = createStyles(theme);
         />
       </ScrollView>
 
-      <OptionPickerSheet
-        visible={showChannelPicker}
-        title="Select outlet channel"
-        options={outletChannels}
-        selected={outletType}
-        searchable
-        searchPlaceholder="Search outlet channel"
-        onConfirm={(v) => setOutletType(v as string)}
-        onClose={() => setShowChannelPicker(false)}
-      />
-
-      <OptionPickerSheet
-        visible={showSubChannelPicker}
-        title="Select outlet category"
-        options={outletSubChannels}
-        selected={subChannel || null}
-        onConfirm={(v) => setSubChannel(v as string)}
-        onClose={() => setShowSubChannelPicker(false)}
+      <DuplicateOutletSheet
+        matches={duplicates}
+        canOpen={(m) => m.onMyList && state.outlets.some((o) => o.id === m.outletId)}
+        onOpen={(m) => {
+          setDuplicates(null);
+          onNavigate('outletDetail', { outletId: m.outletId });
+        }}
+        onDifferent={() => {
+          setDuplicates(null);
+          confirmedNewRef.current = true;
+          handleSubmit();
+        }}
+        onCancel={() => setDuplicates(null)}
       />
     </SafeAreaView>
   );
@@ -440,19 +538,6 @@ const createStyles = (theme: any) => StyleSheet.create({
   scroll: { padding: theme.spacing.lg, gap: theme.spacing.md, paddingBottom: 60 },
   flex1: { flex: 1 },
   sectionCard: { gap: theme.spacing.md },
-  fieldGroup: { gap: 6 },
-  label: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textDark },
-  dropdownBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: theme.colors.fieldFill,
-    borderRadius: theme.radius.md,
-    height: 52,
-    paddingHorizontal: theme.spacing.md,
-  },
-  dropdownText: { fontFamily: theme.fonts.regular, fontSize: 15, color: theme.colors.textDark },
-  dropdownPlaceholder: { color: theme.colors.textMuted },
   autoCapturedBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -464,9 +549,9 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   pinCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
   autoCapturedTextCol: { flex: 1, gap: 2 },
-  autoCapturedTag: { fontFamily: theme.fonts.bold, fontSize: 10, color: theme.colors.navy, letterSpacing: 0.8 },
-  autoCapturedCoords: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.textDark },
-  autoCapturedTime: { fontFamily: theme.fonts.regular, fontSize: 11, color: theme.colors.textMuted },
+  autoCapturedTag: { ...typography.fieldLabel, color: theme.colors.navy },
+  autoCapturedCoords: { ...typography.body, color: theme.colors.textDark },
+  autoCapturedTime: { ...typography.caption, color: theme.colors.textMuted },
   retryBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
   photoBox: {
     width: '100%',
@@ -478,7 +563,7 @@ const createStyles = (theme: any) => StyleSheet.create({
   },
   captureRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.md },
   captureIconBox: { width: 48, height: 48, borderRadius: theme.radius.md, backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center' },
-  captureTitle: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },
-  captureSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
+  captureTitle: { ...typography.title, color: theme.colors.textDark },
+  captureSub: { ...typography.caption, color: theme.colors.textMuted, marginTop: 1 },
   saveBtn: { marginTop: theme.spacing.sm },
 });

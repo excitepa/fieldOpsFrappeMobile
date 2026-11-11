@@ -1,19 +1,6 @@
-import { Lead, LeadStage } from '../types';
+import { Lead, LeadStage, LeadStageInfo } from '../types';
 import { localDateStr } from './timestamp';
-
-export const STAGE_PROBABILITY: Record<LeadStage, number> = {
-  New: 0.1,
-  Contacted: 0.25,
-  Qualified: 0.5,
-  'Proposal Sent': 0.6,
-  Negotiation: 0.8,
-  Converted: 1.0,
-  Lost: 0,
-};
-
-/** Ordered funnel — "Lost" is a terminal exit, not a forward step, so it's excluded from ordering/progression math. */
-export const FUNNEL_STAGES: LeadStage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Negotiation', 'Converted'];
-export const PIPELINE_STAGES: LeadStage[] = [...FUNNEL_STAGES, 'Lost'];
+import { funnelStages, isConvertedStage, isExitStage, leadStageList, stageProbability } from './leadStages';
 
 /** Leads store value as a formatted string like "₦180,000" — parse back to a number. */
 export function parseLeadValue(value: string): number {
@@ -33,7 +20,7 @@ export function getTotalPipelineValue(leads: Lead[]): number {
 }
 
 export function getWeightedPipelineValue(leads: Lead[]): number {
-  return leads.reduce((acc, l) => acc + parseLeadValue(l.value) * STAGE_PROBABILITY[l.stage], 0);
+  return leads.reduce((acc, l) => acc + parseLeadValue(l.value) * stageProbability(l.stage), 0);
 }
 
 /** A lead is overdue when it has a nextActionDate strictly before today. */
@@ -57,6 +44,8 @@ export function getAvgAgeDays(leads: Lead[]): number {
 
 export interface StageBreakdownEntry {
   stage: LeadStage;
+  /** Along the funnel rather than out of it (Lost, Archived) or a stage not in the list. */
+  inFunnel: boolean;
   count: number;
   value: number;
   avgAgeDays: number;
@@ -68,27 +57,35 @@ export interface StageBreakdownEntry {
 /**
  * "% to next stage" = share of leads currently at-or-past this stage that have
  * already moved beyond it — i.e. how much of the remaining funnel pool has
- * progressed past this point. Lost leads are excluded from the funnel pool.
+ * progressed past this point. Lost and Archived leads are excluded from the
+ * funnel pool. Every stage an agent can set is listed; a web-only stage
+ * (Customer, Archived) or one not in the list only when a lead is in it.
  */
-export function getStageBreakdown(leads: Lead[]): StageBreakdownEntry[] {
-  const funnelLeads = leads.filter((l) => l.stage !== 'Lost');
+export function getStageBreakdown(leads: Lead[], listed: LeadStageInfo[] = leadStageList()): StageBreakdownEntry[] {
+  const funnel = funnelStages(listed);
+  const funnelLeads = leads.filter((l) => !isExitStage(l.stage));
+  const stagesShown = [
+    ...listed.filter((s) => s.agentCanSet || leads.some((l) => l.stage === s.name)).map((s) => s.name),
+    ...Array.from(new Set(leads.map((l) => l.stage))).filter((stage) => !listed.some((s) => s.name === stage)),
+  ];
 
-  return PIPELINE_STAGES.map((stage) => {
+  return stagesShown.map((stage) => {
     const stageLeads = leads.filter((l) => l.stage === stage);
     const avgAgeDays = stageLeads.length
       ? Math.round(stageLeads.reduce((sum, l) => sum + getDaysSince(l.createdAt), 0) / stageLeads.length)
       : 0;
 
     let pctToNextStage = 0;
-    const stageIndex = FUNNEL_STAGES.indexOf(stage);
+    const stageIndex = funnel.indexOf(stage);
     if (stageIndex >= 0) {
-      const atOrPast = funnelLeads.filter((l) => FUNNEL_STAGES.indexOf(l.stage) >= stageIndex).length;
-      const past = funnelLeads.filter((l) => FUNNEL_STAGES.indexOf(l.stage) > stageIndex).length;
+      const atOrPast = funnelLeads.filter((l) => funnel.indexOf(l.stage) >= stageIndex).length;
+      const past = funnelLeads.filter((l) => funnel.indexOf(l.stage) > stageIndex).length;
       pctToNextStage = atOrPast > 0 ? past / atOrPast : 0;
     }
 
     return {
       stage,
+      inFunnel: stageIndex >= 0,
       count: stageLeads.length,
       value: getTotalPipelineValue(stageLeads),
       avgAgeDays,
@@ -99,9 +96,9 @@ export function getStageBreakdown(leads: Lead[]): StageBreakdownEntry[] {
   });
 }
 
-/** Share of leads that have reached Converted. */
+/** Share of leads that are won (or already customers). */
 export function getConversionRate(leads: Lead[]): number {
   if (leads.length === 0) return 0;
-  const converted = leads.filter((l) => l.stage === 'Converted').length;
+  const converted = leads.filter((l) => isConvertedStage(l.stage)).length;
   return converted / leads.length;
 }

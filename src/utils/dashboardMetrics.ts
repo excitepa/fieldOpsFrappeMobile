@@ -3,6 +3,7 @@ import {
   AttendanceRecord, DashboardWidgetId, OutletPhotoCapture, Draft,
 } from '../types';
 import { getConversionRate, getWeightedPipelineValue, getTotalPipelineValue, getStageBreakdown } from './pipelineMetrics';
+import { firstStage, isConvertedStage } from './leadStages';
 import { groupSalesByInvoice, groupOrdersByRef } from './transactions';
 import { parseAppTimestamp, localDateStr } from './timestamp';
 import { getOutletIdsVisitedToday } from './outletVisits';
@@ -63,7 +64,7 @@ export function getTodayPerformanceRows(ctx: DashboardContext): PerformanceRow[]
   const { campaign } = ctx;
   // Real, server-derived visited-today set — see outletVisits.ts for why this
   // replaced the local-only outlet.status flag.
-  const visitedTodayIds = getOutletIdsVisitedToday(ctx.sales, ctx.orders);
+  const visitedTodayIds = getOutletIdsVisitedToday(ctx.sales, ctx.orders, ctx.drafts);
   const visitedTodayCount = ctx.outlets.filter((o) => visitedTodayIds.has(o.id)).length;
 
   if (isMerchandisingTemplate(campaign)) {
@@ -135,7 +136,7 @@ export function getMtdRingPct(ctx: DashboardContext): { label: string; pct: numb
     return { label: 'Customer Performance', pct: getConversionRate(ctx.leads) };
   }
   const total = ctx.outlets.length;
-  const visitedTodayIds = getOutletIdsVisitedToday(ctx.sales, ctx.orders);
+  const visitedTodayIds = getOutletIdsVisitedToday(ctx.sales, ctx.orders, ctx.drafts);
   const visited = ctx.outlets.filter((o) => visitedTodayIds.has(o.id)).length;
   if (total === 0) return { label: 'No outlets yet', pct: 0 };
   return { label: 'Outlet Performance', pct: visited / total };
@@ -250,12 +251,12 @@ export function getWidgetData(id: DashboardWidgetId, ctx: DashboardContext): Wid
       return { id, title: 'Total Leads', value: `${leads.length}`, supportingText: 'All leads captured under this campaign' };
 
     case 'new-leads':
-      return { id, title: 'New Leads', value: `${leads.filter((l) => l.stage === 'New').length}`, supportingText: 'Awaiting first contact' };
+      return { id, title: 'New Leads', value: `${leads.filter((l) => l.stage === firstStage()).length}`, supportingText: `Still at ${firstStage()}` };
 
     case 'conversion-rate': {
       const rate = getConversionRate(leads);
-      const converted = leads.filter((l) => l.stage === 'Converted').length;
-      return { id, title: 'Conversion Rate', value: `${Math.round(rate * 100)}%`, supportingText: `${converted} converted of ${leads.length}`, progress: rate };
+      const converted = leads.filter((l) => isConvertedStage(l.stage)).length;
+      return { id, title: 'Conversion Rate', value: `${Math.round(rate * 100)}%`, supportingText: `${converted} won of ${leads.length}`, progress: rate };
     }
 
     case 'pipeline-value':
@@ -278,7 +279,7 @@ export function getWidgetData(id: DashboardWidgetId, ctx: DashboardContext): Wid
     case 'outlets-visited':
     case 'outlet-visits': {
       // Real, server-derived visited-today set — see outletVisits.ts.
-      const visitedTodayIds = getOutletIdsVisitedToday(sales, orders);
+      const visitedTodayIds = getOutletIdsVisitedToday(sales, orders, drafts);
       const visited = outlets.filter((o) => visitedTodayIds.has(o.id)).length;
       return {
         id, title: id === 'outlet-visits' ? 'Outlet Visits' : 'Outlets Visited',
@@ -306,7 +307,8 @@ export function getWidgetData(id: DashboardWidgetId, ctx: DashboardContext): Wid
     }
 
     case 'products-sold': {
-      const units = sales.reduce((sum, s) => sum + s.quantity, 0);
+      // In stock units: sales lines can be cartons and packs as well as units.
+      const units = sales.reduce((sum, s) => sum + (s.stockQty ?? s.quantity), 0);
       return { id, title: 'Products Sold', value: `${units}`, supportingText: 'Units moved this campaign' };
     }
 

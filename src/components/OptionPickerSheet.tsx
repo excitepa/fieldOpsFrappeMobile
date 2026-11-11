@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Modal, Pressable, TextInput, TouchableWithoutFeedback } from 'react-native';
+import { View, Text, StyleSheet, Modal, Pressable, TextInput, TouchableWithoutFeedback, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
 import { Icon } from './Icon';
@@ -89,7 +89,14 @@ export const OptionPickerSheet: React.FC<OptionPickerSheetProps> = ({
                 </View>
               )}
 
-              <View style={styles.optionsList}>
+              {/* Scrolls once the options outgrow the sheet (it stops at 80% of
+                  the screen); a plain View cut the rest off. Taps go through
+                  while the search keyboard is up. */}
+              <ScrollView
+                style={styles.optionsScroll}
+                contentContainerStyle={styles.optionsList}
+                keyboardShouldPersistTaps="handled"
+              >
                 {visibleOptions.map((option) => {
                   const isSelected = multiple
                     ? draftSelection.includes(option)
@@ -113,7 +120,8 @@ export const OptionPickerSheet: React.FC<OptionPickerSheetProps> = ({
                     </Pressable>
                   );
                 })}
-              </View>
+                {visibleOptions.length === 0 && <Text style={styles.noMatches}>Nothing matches your search.</Text>}
+              </ScrollView>
 
               {multiple && (
                 <Button
@@ -163,7 +171,9 @@ const createStyles = (theme: any) => StyleSheet.create({
     paddingHorizontal: theme.spacing.md, height: 46,
   },
   searchInput: { flex: 1, fontFamily: theme.fonts.regular, fontSize: 14, color: theme.colors.textDark },
+  optionsScroll: { flexShrink: 1 },
   optionsList: { gap: theme.spacing.sm },
+  noMatches: { fontFamily: theme.fonts.regular, fontSize: 14, color: theme.colors.textMuted, textAlign: 'center', paddingVertical: theme.spacing.lg },
   optionRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Pressable, KeyboardTypeOptions, TextInputProps } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
+import { typography } from '../theme/typography';
 import { Icon, IconName } from './Icon';
 
 interface InputProps {
@@ -20,6 +21,10 @@ interface InputProps {
   variant?: 'default' | 'field';
   autoCapitalize?: TextInputProps['autoCapitalize'];
   autoCorrect?: boolean;
+  /** Shown under the field, which is outlined in red while it's set. */
+  error?: string;
+  /** Passed to TextInput. Not for phone numbers: see normalizePhone. */
+  maxLength?: number;
 }
 
 export const Input: React.FC<InputProps> = ({
@@ -36,6 +41,8 @@ export const Input: React.FC<InputProps> = ({
   variant = 'default',
   autoCapitalize,
   autoCorrect,
+  error,
+  maxLength,
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
@@ -55,6 +62,7 @@ export const Input: React.FC<InputProps> = ({
           isField && styles.inputWrapperField,
           isFocused && (isField ? styles.focusedField : dark ? styles.focusedDark : styles.focusedLight),
           multiline && styles.multilineWrapper,
+          !!error && styles.inputWrapperError,
         ]}
       >
         {leftIcon && (
@@ -77,6 +85,7 @@ export const Input: React.FC<InputProps> = ({
           keyboardType={keyboardType}
           autoCapitalize={autoCapitalize}
           autoCorrect={autoCorrect}
+          maxLength={maxLength}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           style={[
@@ -99,6 +108,7 @@ export const Input: React.FC<InputProps> = ({
           </Pressable>
         )}
       </View>
+      {!!error && <Text style={styles.errorText}>{error}</Text>}
     </View>
   );
 };
@@ -117,11 +127,8 @@ const createStyles = (theme: any) => StyleSheet.create({
     color: theme.colors.darkText,
   },
   labelField: {
-    fontFamily: theme.fonts.bold,
-    fontSize: 11,
+    ...typography.fieldLabel,
     color: theme.colors.textMuted,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
   },
   required: {
     color: theme.colors.red,
@@ -156,13 +163,21 @@ const createStyles = (theme: any) => StyleSheet.create({
   focusedField: {
     borderColor: theme.colors.navy,
   },
+  inputWrapperError: {
+    borderColor: theme.colors.red,
+  },
+  errorText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    color: theme.colors.red,
+    marginTop: 4,
+  },
   leftIconContainer: {
     marginRight: theme.spacing.sm,
   },
   input: {
     flex: 1,
-    fontFamily: theme.fonts.regular,
-    fontSize: 15,
+    ...typography.inputText,
     color: theme.colors.textDark,
     paddingVertical: theme.spacing.sm,
   },

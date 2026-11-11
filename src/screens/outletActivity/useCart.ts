@@ -1,42 +1,46 @@
 import { useState } from 'react';
-import { CartLine, Product, PromoDiscount } from '../../types';
-import { addLine, removeLine, updateLineQty, getCartSubtotal, getCartDiscount, getCartTotal, getCartItemCount } from '../../utils/cart';
+import { CartLine, Product, ProductUnit, PromotionChoices } from '../../types';
+import { setLineQty, removeLine, getCartTotal } from '../../utils/cart';
+import { FreeGoodsLine, keepValidChoices } from '../../utils/promotions';
 
-export function useCart(initial: CartLine[] = []) {
+export function useCart(initial: CartLine[] = [], initialChoices: PromotionChoices = {}) {
   const [cart, setCart] = useState<CartLine[]>(initial);
+  // The free item chosen for each product that qualifies for more than one
+  // promotion (see previewFreeGoods): kept with the cart, cleared with it.
+  const [choices, setChoices] = useState<PromotionChoices>(initialChoices);
 
-  const addProduct = (product: Product, qty: number, promo: PromoDiscount) =>
-    setCart((prev) => addLine(prev, product, qty, promo));
+  // Sets the product's quantity in one unit outright (adding the line if it
+  // doesn't exist yet) — used by the per-unit steppers, which know the
+  // absolute quantity they want rather than a delta to add.
+  const setQty = (product: Product, unit: ProductUnit, qty: number) =>
+    setCart((prev) => setLineQty(prev, product, unit, qty));
 
-  const updateQty = (productId: string, qty: number) =>
-    setCart((prev) => updateLineQty(prev, productId, qty));
+  const remove = (key: string) =>
+    setCart((prev) => removeLine(prev, key));
 
-  // Sets a line's total quantity outright (adding the line if it doesn't
-  // exist yet) — used by the per-product Cases/Units steppers, which know
-  // the absolute quantity they want rather than a delta to add.
-  const setQty = (product: Product, qty: number) =>
-    setCart((prev) => {
-      if (qty <= 0) return removeLine(prev, product.id);
-      const existing = prev.find((l) => l.productId === product.id);
-      return existing ? updateLineQty(prev, product.id, qty) : addLine(prev, product, qty, { label: '', pct: 0 });
-    });
+  const clear = () => {
+    setCart([]);
+    setChoices({});
+  };
 
-  const remove = (productId: string) =>
-    setCart((prev) => removeLine(prev, productId));
+  const choose = (productId: string, promotionId: string) =>
+    setChoices((prev) => ({ ...prev, [productId]: promotionId }));
 
-  const clear = () => setCart([]);
+  // Drops the choices that are no longer one of their product's offers (a
+  // quantity change, a promo code taken away); unchanged, nothing re-renders.
+  const keepChoices = (offers: Map<string, FreeGoodsLine[]>) =>
+    setChoices((prev) => keepValidChoices(prev, offers));
 
   return {
     cart,
     setCart,
-    addProduct,
-    updateQty,
     setQty,
     remove,
     clear,
-    subtotal: getCartSubtotal(cart),
-    discount: getCartDiscount(cart),
     total: getCartTotal(cart),
-    itemCount: getCartItemCount(cart),
+    choices,
+    setChoices,
+    choose,
+    keepChoices,
   };
 }

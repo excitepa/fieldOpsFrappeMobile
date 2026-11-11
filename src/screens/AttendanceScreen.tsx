@@ -13,6 +13,7 @@ import { clockIn } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { localDateStr } from '../utils/timestamp';
 import { RouteName, Campaign } from '../types';
+import { debugLog } from '../utils/logger';
 
 interface AttendanceScreenProps {
   campaignData?: Campaign;
@@ -165,7 +166,7 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
           uploadUri = await captureRef(selfieViewRef, { format: 'jpg', quality: 0.85 });
           break;
         } catch (e) {
-          console.log('[Attendance] watermark capture failed, attempt', attempt + 1, e);
+          debugLog('[Attendance] watermark capture failed, attempt', attempt + 1, e);
           if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
           // Second failure: non-fatal — fall back to the unwatermarked photo
           // rather than blocking the whole clock-in over a snapshot failure.

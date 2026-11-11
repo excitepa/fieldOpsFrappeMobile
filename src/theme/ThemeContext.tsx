@@ -1,55 +1,16 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
-import { Theme, ThemeMode, buildTheme } from './theme';
+import React, { createContext, useContext, ReactNode } from 'react';
+import { Theme, theme } from './theme';
 
-let AsyncStorage: any = null;
-try {
-  AsyncStorage = require('@react-native-async-storage/async-storage').default;
-} catch (e) {
-  const memoryStore = new Map<string, string>();
-  AsyncStorage = {
-    getItem: async (key: string) => memoryStore.get(key) || null,
-    setItem: async (key: string, val: string) => { memoryStore.set(key, val); },
-  };
-}
+// The app is light-only (dark mode was removed). The provider is kept so every
+// screen keeps reading the theme through useTheme(). Any dark-mode choice a
+// user saved before (AsyncStorage '@fieldops:themeMode') is simply ignored.
+const ThemeContext = createContext<Theme | null>(null);
 
-const STORAGE_KEY = '@fieldops:themeMode';
+export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) => (
+  <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>
+);
 
-interface ThemeContextValue extends Theme {
-  setMode: (mode: ThemeMode) => void;
-  toggleMode: () => void;
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null);
-
-export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [mode, setModeState] = useState<ThemeMode>('light');
-
-  useEffect(() => {
-    // Light is the app default; dark only applies once the user has explicitly switched to it.
-    AsyncStorage.getItem(STORAGE_KEY).then((saved: string | null) => {
-      if (saved === 'light' || saved === 'dark') {
-        setModeState(saved);
-      }
-    }).catch(() => {});
-  }, []);
-
-  const setMode = (next: ThemeMode) => {
-    setModeState(next);
-    AsyncStorage.setItem(STORAGE_KEY, next).catch(() => {});
-  };
-
-  const toggleMode = () => setMode(mode === 'dark' ? 'light' : 'dark');
-
-  const value = useMemo<ThemeContextValue>(() => ({
-    ...buildTheme(mode),
-    setMode,
-    toggleMode,
-  }), [mode]);
-
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
-};
-
-export const useTheme = (): ThemeContextValue => {
+export const useTheme = (): Theme => {
   const ctx = useContext(ThemeContext);
   if (!ctx) throw new Error('useTheme must be used inside <ThemeProvider>');
   return ctx;

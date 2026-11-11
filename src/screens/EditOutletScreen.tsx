@@ -13,67 +13,75 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeContext';
+import { typography } from '../theme/typography';
 import { Header } from '../components/Header';
 import { Card } from '../components/Card';
 import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
-import { OptionPickerSheet } from '../components/OptionPickerSheet';
+import { SelectField } from '../components/SelectField';
 import { StampedPhoto } from '../components/StampedPhoto';
 import { useFieldStore } from '../store/useFieldStore';
-import { updateOutlet, getOutletChannels, getOutletSubChannels, NetworkError } from '../services/api';
+import { useOutletFormOptions } from '../hooks/useOutletFormOptions';
+import { updateOutlet, NetworkError, SoftError } from '../services/api';
+import { afterEditSurvey, dueSurveyConfig, loadCampaignSurveys } from '../utils/afterEditSurvey';
 import { parseGps } from '../utils/geo';
 import { blockIfDayLocked } from '../utils/dayLock';
+import {
+  OutletPicks, classificationChanged, listPlaceholder, missingPick, pickChannel, pickSubChannel, pickedName, subChannelsOf, typePlaceholder, typesOf,
+} from '../utils/outletForm';
+import { normalizePhone, phoneError } from '../utils/phone';
 import { buildStampLines, burnStampIntoPhoto, getStampLocation, keepPhotoForDraft } from '../utils/photoStamp';
-import { RouteName, Outlet, OutletDraft } from '../types';
+import { newStamp } from '../utils/queue';
+import { RouteName, Outlet, OutletDraft, SurveyDue, ActionStamp } from '../types';
 
 interface EditOutletScreenProps {
   routeData?: { outletId?: string };
   onNavigate: (route: RouteName, data?: any) => void;
 }
 
-// Fallback lists used only if the live `get_outlet_channels`/`get_outlet_sub_channels`
-// fetch fails or returns nothing (e.g. offline) — so the picker is never empty.
-const FALLBACK_OUTLET_CHANNELS = [
-  'Supermarket', 'Mini Mart', 'Kiosk', 'Pharmacy', 'Open Market Stall', 'Wholesaler',
-  'Distributor', 'Convenience Store', 'Provision Store', 'Cosmetics Shop',
-  'Restaurant', 'Bar / Lounge', 'Hotel', 'Bakery', 'Fuel Station Shop',
-  'Beauty Salon', 'Electronics Shop', 'Mobile Money Agent', 'POS Agent', 'Filling Station',
-  'School Canteen', 'Hospital Store', 'Cold Room', 'Poultry Shop', 'Table Top Seller',
-];
-const FALLBACK_OUTLET_SUB_CHANNELS = ['Modern Trade', 'Traditional Trade', 'Wholesale', 'Distributor', 'Pharmacy', 'HORECA', 'Key Account'];
-
 export const EditOutletScreen: React.FC<EditOutletScreenProps> = ({ routeData, onNavigate }) => {
 const theme = useTheme();  const styles = createStyles(theme);
   const { state, dispatch } = useFieldStore();
   const outletId = routeData?.outletId;
   const outlet = state.outlets.find((o) => o.id === outletId) || state.outlets[0];
+  const campaignId = state.activeCampaign?.id || '';
+
+  // The campaign's surveys, kept on the device, so its after-edit survey can
+  // open straight after a save, offline too.
+  useEffect(() => {
+    if (campaignId) loadCampaignSurveys(campaignId, dispatch).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId]);
 
   const [outletName, setOutletName] = useState(outlet?.name || '');
-  const [outletType, setOutletType] = useState(outlet?.type || 'Supermarket');
-  const [subChannel, setSubChannel] = useState(outlet?.category || '');
-  const [showChannelPicker, setShowChannelPicker] = useState(false);
-  const [showSubChannelPicker, setShowSubChannelPicker] = useState(false);
-  const [outletChannels, setOutletChannels] = useState<string[]>(FALLBACK_OUTLET_CHANNELS);
-  const [outletSubChannels, setOutletSubChannels] = useState<string[]>(FALLBACK_OUTLET_SUB_CHANNELS);
 
-  useEffect(() => {
-    getOutletChannels().then((list) => { if (list.length > 0) setOutletChannels(list); }).catch(() => {});
-    getOutletSubChannels().then((list) => { if (list.length > 0) setOutletSubChannels(list); }).catch(() => {});
-  }, []);
-  const [phone, setPhone] = useState(outlet?.phone || '');
+  // Channel > Sub Channel > Outlet Type, pre-filled from what the backend
+  // says the outlet has, even where that doesn't fit the hierarchy: only a
+  // change is checked. An older backend sends none of these, so they start
+  // empty there. The distributor is shown as it is and never sent.
+  const { options, loading: optionsLoading } = useOutletFormOptions();
+  const saved: OutletPicks = { channelId: outlet?.channelId, subChannelId: outlet?.subChannelId, outletTypeId: outlet?.outletTypeId };
+  const [{ channelId, subChannelId, outletTypeId }, setPicks] = useState<OutletPicks>(saved);
+  const picks = { channelId, subChannelId, outletTypeId };
+  const channelSubChannels = subChannelsOf(options, channelId);
+  const subChannelTypes = typesOf(options, picks);
+  // Saved numbers in another format (+234 801 ..., 0801-234-...) start tidied.
+  const [phone, setPhone] = useState(normalizePhone(outlet?.phone || ''));
   const [ownerName, setOwnerName] = useState(outlet?.ownerName || '');
-  const [ownerPhone, setOwnerPhone] = useState(outlet?.ownerPhone || '');
+  const [ownerPhone, setOwnerPhone] = useState(normalizePhone(outlet?.ownerPhone || ''));
+  const [phoneProblem, setPhoneProblem] = useState<string>();
+  const [ownerPhoneProblem, setOwnerPhoneProblem] = useState<string>();
   const [address, setAddress] = useState(outlet?.address || '');
   const [notes, setNotes] = useState(outlet?.notes || '');
   const [submitting, setSubmitting] = useState(false);
-  // `coords` is what actually gets submitted — it starts at the outlet's
-  // already-saved location so Save doesn't silently wipe it if the agent
-  // never touches this button. `justUpdated` is separate and always starts
-  // false: it only tracks whether *this button* was manually tapped in this
-  // session, so the label never claims a capture that didn't happen — no
-  // auto-updating on screen open just because a location was saved before.
+  // `coords` starts at the outlet's saved location. Only a location captured
+  // here (justUpdated: Update Location was tapped this session) is sent, and
+  // the backend makes it a request a supervisor approves — the outlet keeps
+  // its saved location until then, so an agent can't re-pin an outlet to
+  // wherever they're standing.
   const [coords, setCoords] = useState(parseGps(outlet?.gps));
+  const [coordsAccuracy, setCoordsAccuracy] = useState<number>();
   const [justUpdated, setJustUpdated] = useState(false);
   const [capturingLocation, setCapturingLocation] = useState(false);
   // Only a photo taken in this session — the outlet's existing image is shown
@@ -86,6 +94,9 @@ const theme = useTheme();  const styles = createStyles(theme);
   // apart from `coords`, so taking a photo never moves the outlet's saved location.
   const [photoLocation, setPhotoLocation] = useState<Awaited<ReturnType<typeof getStampLocation>>>(null);
   const photoViewRef = useRef<View>(null);
+  // This edit's one-time ID, from the first Save: a second Save after one
+  // that got no answer is the same edit to the server.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const handleTakePhoto = async () => {
     try {
@@ -123,6 +134,7 @@ const theme = useTheme();  const styles = createStyles(theme);
       }
       const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       setCoords({ lat: position.coords.latitude, lng: position.coords.longitude });
+      setCoordsAccuracy(position.coords.accuracy ?? undefined);
       setJustUpdated(true);
     } catch (e) {
       Alert.alert('Location Error', 'Could not read the device location. Check GPS and try again.');
@@ -131,51 +143,125 @@ const theme = useTheme();  const styles = createStyles(theme);
     }
   };
 
+  // The campaign's after-edit survey for this outlet: until it's filled, the
+  // outlet can't be edited again. Without its questions on the device (and
+  // none to load) the outlet's details show it's due instead.
+  const openDueSurvey = async (due: SurveyDue, message?: string) => {
+    const survey = await dueSurveyConfig(due, state.campaignSurveys[campaignId]);
+    if (!survey) {
+      onNavigate('outletDetail', { outletId: outlet.id });
+      return;
+    }
+    if (message) Alert.alert('Survey Required', message);
+    onNavigate('outletSurveyForm', { outletId: outlet.id, survey });
+  };
+
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
+    const missing = classificationChanged(saved, picks) ? missingPick(options, picks) : null;
+    if (missing) {
+      Alert.alert('Required', missing);
+      return;
+    }
     if (!outletName.trim()) {
       Alert.alert('Required', 'Please enter an outlet name.');
       return;
     }
+    // The outlet's own phone is optional; the owner's mobile is required.
+    const nextPhoneProblem = phoneError(phone, false);
+    const nextOwnerPhoneProblem = phoneError(ownerPhone, true);
+    setPhoneProblem(nextPhoneProblem);
+    setOwnerPhoneProblem(nextOwnerPhoneProblem);
+    if (nextPhoneProblem || nextOwnerPhoneProblem) return;
+    const outletPhone = normalizePhone(phone);
+    const ownerMobile = normalizePhone(ownerPhone);
+
+    const typeName = pickedName(options.types, outletTypeId, outlet.outletTypeId, outlet.outletTypeName);
+    const subChannelName = pickedName(options.subChannels, subChannelId, outlet.subChannelId, outlet.subChannelName);
+    const classification = {
+      outletTypeId,
+      outletTypeName: typeName,
+      channelId,
+      channelName: pickedName(options.channels, channelId, outlet.channelId, outlet.channelName),
+      subChannelId,
+      subChannelName,
+    };
 
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
     // The watermarked snapshot, not the raw camera file, is what gets uploaded
     // (or kept for an offline draft) — same as the attendance selfie.
     const uploadPhotoUri = photoUri ? await burnStampIntoPhoto(photoViewRef, photoUri) : null;
+    // A new location goes for approval: only one captured here is sent.
+    const newLocation = justUpdated && coords ? coords : null;
     try {
-      await updateOutlet(outlet.id, {
+      const { locationRequest, surveyDue } = await updateOutlet(outlet.id, {
         name: outletName.trim(),
-        type: outletType,
-        subChannel: subChannel || undefined,
+        outletTypeId,
+        channelId,
+        subChannelId,
+        subChannel: subChannelName,
         address: address.trim(),
-        phone: phone.trim(),
+        phone: outletPhone,
         ownerName: ownerName.trim() || undefined,
-        ownerPhone: ownerPhone.trim() || undefined,
+        ownerPhone: ownerMobile,
         notes: notes.trim() || undefined,
         photoUri: uploadPhotoUri || undefined,
-        latitude: coords?.lat,
-        longitude: coords?.lng,
-      });
+        latitude: newLocation?.lat,
+        longitude: newLocation?.lng,
+        gpsAccuracy: newLocation ? coordsAccuracy : undefined,
+        campaign: campaignId || undefined,
+      }, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
 
       const updatedOutlet: Outlet = {
         ...outlet,
+        ...classification,
         photoUri: uploadPhotoUri || outlet.photoUri,
         name: outletName.trim(),
-        type: outletType,
-        category: subChannel || undefined,
-        phone: phone.trim(),
+        type: typeName || outlet.type,
+        category: subChannelName,
+        phone: outletPhone,
         ownerName: ownerName.trim(),
-        ownerPhone: ownerPhone.trim(),
+        ownerPhone: ownerMobile,
         address: address.trim(),
         notes: notes.trim(),
-        gps: coords ? `${coords.lat}, ${coords.lng}` : outlet.gps,
+        // A moved location waiting for approval leaves the saved one in place
+        // (a backend without approvals applies it straight away).
+        gps: newLocation && !locationRequest ? `${newLocation.lat}, ${newLocation.lng}` : outlet.gps,
+        pendingLocationRequest: newLocation && locationRequest
+          ? { id: locationRequest.id, latitude: newLocation.lat, longitude: newLocation.lng, requestedOn: new Date().toISOString() }
+          : outlet.pendingLocationRequest,
+        surveyDue: surveyDue ?? outlet.surveyDue,
       };
       dispatch({ type: 'UPDATE_OUTLET', outlet: updatedOutlet });
       setSubmitting(false);
+      const locationNote = newLocation && locationRequest
+        ? 'Location change sent for approval. The outlet keeps its saved location until a supervisor approves it.'
+        : '';
+      // The campaign's after-edit survey is filled straight after the edit.
+      if (surveyDue) {
+        await openDueSurvey(surveyDue, `Fill in ${surveyDue.surveyName} to finish editing ${outlet.name}.${locationNote ? `\n\n${locationNote}` : ''}`);
+        return;
+      }
+      if (locationNote) {
+        Alert.alert('Location Sent for Approval', locationNote, [
+          { text: 'OK', onPress: () => onNavigate('outletDetail', { outletId: outlet.id }) },
+        ]);
+        return;
+      }
       onNavigate('outletDetail', { outletId: outlet.id });
     } catch (e: any) {
       setSubmitting(false);
       if (e instanceof NetworkError) {
+        // The campaign's after-edit survey has to be filled straight after the
+        // edit, which offline needs its questions on the device. Without
+        // them it isn't known whether one is due, so the edit waits.
+        const keptSurveys = state.campaignSurveys[campaignId];
+        if (campaignId && !keptSurveys) {
+          Alert.alert('Connect to Edit', "Connect to the internet to edit this outlet. You'll need to fill in its survey right after.");
+          return;
+        }
+        const afterEdit = afterEditSurvey(keptSurveys);
         // Genuine connectivity failure, not a rejection — apply the edit
         // locally (so it shows right away, same as the optimistic update on
         // success) plus a queued draft to actually push once back online,
@@ -183,43 +269,67 @@ const theme = useTheme();  const styles = createStyles(theme);
         const draftPhotoUri = uploadPhotoUri ? keepPhotoForDraft(uploadPhotoUri) : undefined;
         const updatedOutlet: Outlet = {
           ...outlet,
+          ...classification,
           photoUri: draftPhotoUri || outlet.photoUri,
           name: outletName.trim(),
-          type: outletType,
-          category: subChannel || undefined,
-          phone: phone.trim(),
+          type: typeName || outlet.type,
+          category: subChannelName,
+          phone: outletPhone,
           ownerName: ownerName.trim(),
-          ownerPhone: ownerPhone.trim(),
+          ownerPhone: ownerMobile,
           address: address.trim(),
           notes: notes.trim(),
-          gps: coords ? `${coords.lat}, ${coords.lng}` : outlet.gps,
+          // The new location is sent for approval when the draft syncs; the
+          // saved one stays until a supervisor approves it.
+          pendingLocationRequest: newLocation
+            ? { id: '', latitude: newLocation.lat, longitude: newLocation.lng, requestedOn: new Date().toISOString() }
+            : outlet.pendingLocationRequest,
+          // Due on the device until the edit syncs and the server makes it due.
+          surveyDue: afterEdit ? { surveyId: afterEdit.id, surveyName: afterEdit.name, since: new Date().toISOString() } : outlet.surveyDue,
         };
         const outletDraft: OutletDraft = {
-          id: `od_${Date.now()}`,
+          ...stamp,
+          id: `oe_${Date.now()}`,
           mode: 'edit',
           outletId: outlet.id,
-          campaignId: outlet.campaignId,
+          // update_outlet's campaign at sync: its after-edit survey becomes due.
+          campaignId: campaignId || outlet.campaignId,
           name: outletName.trim(),
-          type: outletType,
-          subChannel: subChannel || undefined,
+          type: typeName || '',
+          subChannel: subChannelName,
+          outletTypeId,
+          channelId,
+          subChannelId,
           address: address.trim(),
-          phone: phone.trim(),
+          phone: outletPhone,
           ownerName: ownerName.trim() || undefined,
-          ownerPhone: ownerPhone.trim() || undefined,
+          ownerPhone: ownerMobile,
           notes: notes.trim() || undefined,
           photoUri: draftPhotoUri,
-          latitude: coords?.lat,
-          longitude: coords?.lng,
+          latitude: newLocation?.lat,
+          longitude: newLocation?.lng,
+          gpsAccuracy: newLocation ? coordsAccuracy : undefined,
           createdAt: new Date().toISOString(),
           pendingSync: true,
         };
         dispatch({ type: 'UPDATE_OUTLET', outlet: updatedOutlet });
         dispatch({ type: 'SAVE_OUTLET_DRAFT', outletDraft });
-        Alert.alert(
-          'Saved Locally',
-          'No connection — these changes have been saved on this device and will upload automatically from the Sync page once you\'re back online.',
-        );
+        const savedNote = `No connection, so these changes are saved on this phone. They're sent automatically once you're back online.${newLocation ? ' The new location will then be sent for a supervisor\'s approval.' : ''}`;
+        if (afterEdit) {
+          Alert.alert('Saved Locally', `${savedNote}\n\nFill in ${afterEdit.name} to finish editing ${outlet.name}.`);
+          onNavigate('outletSurveyForm', { outletId: outlet.id, survey: afterEdit });
+          return;
+        }
+        Alert.alert('Saved Locally', savedNote);
         onNavigate('outletDetail', { outletId: outlet.id });
+      } else if (e instanceof SoftError && e.code === 'SURVEY_REQUIRED_AFTER_EDIT') {
+        // The survey from the last edit hasn't been filled yet.
+        const due: SurveyDue = { surveyId: String(e.data?.survey_id || ''), surveyName: String(e.data?.survey_name || 'the survey') };
+        dispatch({ type: 'UPDATE_OUTLET', outlet: { ...outlet, surveyDue: due } });
+        Alert.alert('Survey Required', e.message, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Fill in survey', onPress: () => { openDueSurvey(due); } },
+        ]);
       } else {
         // The request reached the server and was rejected — this will never
         // succeed on retry, so don't disguise it as an offline save.
@@ -283,23 +393,51 @@ const theme = useTheme();  const styles = createStyles(theme);
             )}
           </View>
 
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Outlet Channel</Text>
-            <Pressable onPress={() => setShowChannelPicker(true)} style={styles.dropdownBtn}>
-              <Text style={styles.dropdownText}>{outletType}</Text>
-              <Icon name="chevron-down" size={18} color={theme.colors.textMuted} />
-            </Pressable>
-          </View>
+          <SelectField
+            label="Outlet Channel"
+            title="Select outlet channel"
+            options={options.channels || []}
+            value={channelId}
+            valueName={channelId === outlet.channelId ? outlet.channelName : undefined}
+            placeholder={listPlaceholder(options.channels, optionsLoading, 'Select outlet channel')}
+            onChange={(id) => setPicks(pickChannel(options, picks, id))}
+          />
 
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Outlet sub-channel</Text>
-            <Pressable onPress={() => setShowSubChannelPicker(true)} style={styles.dropdownBtn}>
-              <Text style={[styles.dropdownText, !subChannel && styles.dropdownPlaceholder]}>
-                {subChannel || 'Select outlet sub-channel'}
-              </Text>
-              <Icon name="chevron-down" size={18} color={theme.colors.textMuted} />
-            </Pressable>
-          </View>
+          <SelectField
+            label="Outlet Sub Channel"
+            title="Select outlet sub channel"
+            options={channelSubChannels}
+            value={subChannelId}
+            valueName={subChannelId === outlet.subChannelId ? outlet.subChannelName : undefined}
+            placeholder={
+              options.subChannels === undefined ? listPlaceholder(undefined, optionsLoading, '')
+                : !channelId ? 'Select a channel first'
+                : channelSubChannels.length === 0 ? 'None for this channel'
+                : 'Select outlet sub channel'
+            }
+            onChange={(id) => setPicks(pickSubChannel(options, picks, id))}
+          />
+
+          <SelectField
+            label="Outlet Type"
+            title="Select outlet type"
+            options={subChannelTypes}
+            value={outletTypeId}
+            valueName={outletTypeId === outlet.outletTypeId ? outlet.outletTypeName : undefined}
+            placeholder={typePlaceholder(options, picks, optionsLoading)}
+            onChange={(id) => setPicks({ ...picks, outletTypeId: id })}
+          />
+
+          <SelectField
+            label="Distributor"
+            title="Distributor"
+            options={[]}
+            value={outlet.distributorId}
+            valueName={outlet.distributorName || pickedName(options.distributors, outlet.distributorId)}
+            placeholder="None"
+            onChange={() => {}}
+            disabled
+          />
 
           <Input
             label="Outlet Name"
@@ -320,10 +458,11 @@ const theme = useTheme();  const styles = createStyles(theme);
           <Input
             label="Phone Number"
             value={phone}
-            onChangeText={setPhone}
-            placeholder="+234 801 000 0000"
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
             keyboardType="phone-pad"
             variant="field"
+            error={phoneProblem}
           />
 
           <Input
@@ -332,6 +471,16 @@ const theme = useTheme();  const styles = createStyles(theme);
             onChangeText={setOwnerName}
             placeholder="Mr. Emeka Obi"
             variant="field"
+          />
+
+          <Input
+            label="Owner's Mobile"
+            value={ownerPhone}
+            onChangeText={(text) => { setOwnerPhone(normalizePhone(text)); setOwnerPhoneProblem(undefined); }}
+            placeholder="08012345678"
+            keyboardType="phone-pad"
+            variant="field"
+            error={ownerPhoneProblem}
           />
 
           <Input
@@ -355,9 +504,16 @@ const theme = useTheme();  const styles = createStyles(theme);
               <Icon name="map-pin" size={16} color={theme.colors.navy} />
             )}
             <Text style={styles.updateLocationText}>
-              {capturingLocation ? 'Locating…' : justUpdated ? 'Location Updated' : 'Update Location'}
+              {capturingLocation ? 'Locating…' : justUpdated ? 'Location captured' : 'Update Location'}
             </Text>
           </Pressable>
+          <Text style={styles.locationNote}>
+            {outlet.pendingLocationRequest
+              ? 'Location change waiting for approval.'
+              : justUpdated
+                ? 'The new location is sent for a supervisor\'s approval when you save.'
+                : 'A new location needs a supervisor\'s approval.'}
+          </Text>
         </Card>
 
         <Button
@@ -370,25 +526,6 @@ const theme = useTheme();  const styles = createStyles(theme);
         />
       </ScrollView>
 
-      <OptionPickerSheet
-        visible={showChannelPicker}
-        title="Select outlet channel"
-        options={outletChannels}
-        selected={outletType}
-        searchable
-        searchPlaceholder="Search outlet channel"
-        onConfirm={(v) => setOutletType(v as string)}
-        onClose={() => setShowChannelPicker(false)}
-      />
-
-      <OptionPickerSheet
-        visible={showSubChannelPicker}
-        title="Select outlet category"
-        options={outletSubChannels}
-        selected={subChannel || null}
-        onConfirm={(v) => setSubChannel(v as string)}
-        onClose={() => setShowSubChannelPicker(false)}
-      />
     </SafeAreaView>
   );
 };
@@ -402,38 +539,30 @@ const createStyles = (theme: any) => StyleSheet.create({
   sectionCard: { gap: theme.spacing.md },
   imageRow: { gap: 6 },
   photoBox: {
+    width: '100%',
+    minHeight: 88,
     backgroundColor: theme.colors.fieldFill,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
     overflow: 'hidden',
+    justifyContent: 'center',
   },
   photoPreview: { width: '100%', height: 140, resizeMode: 'cover' },
   captureRow: {
-    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.md,
   },
   captureIconBox: {
-    width: 64, height: 64, borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.fieldFill, alignItems: 'center', justifyContent: 'center',
+    width: 48, height: 48, borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.cardWhite, alignItems: 'center', justifyContent: 'center',
   },
-  captureTitle: { fontFamily: theme.fonts.bold, fontSize: 15, color: theme.colors.textDark },
-  captureSub: { fontFamily: theme.fonts.regular, fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
-  fieldGroup: { gap: 6 },
-  label: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textDark },
-  dropdownBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: theme.colors.fieldFill,
-    borderRadius: theme.radius.md,
-    height: 52,
-    paddingHorizontal: theme.spacing.md,
-  },
-  dropdownText: { fontFamily: theme.fonts.regular, fontSize: 15, color: theme.colors.textDark },
-  dropdownPlaceholder: { color: theme.colors.textMuted },
+  captureTitle: { ...typography.title, color: theme.colors.textDark },
+  captureSub: { ...typography.caption, color: theme.colors.textMuted, marginTop: 1 },
+  label: { ...typography.fieldLabel, color: theme.colors.textMuted },
   updateLocationBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-end',
     backgroundColor: theme.colors.fieldFill, borderRadius: theme.radius.full,
     paddingHorizontal: theme.spacing.md, paddingVertical: 10, marginTop: 4,
   },
-  updateLocationText: { fontFamily: theme.fonts.bold, fontSize: 13, color: theme.colors.navy },
+  updateLocationText: { ...typography.body, color: theme.colors.navy },
+  locationNote: { ...typography.caption, color: theme.colors.textMuted, textAlign: 'right', marginTop: -4 },
   saveBtn: { marginTop: theme.spacing.sm },
 });

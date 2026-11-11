@@ -7,7 +7,10 @@ import { Card } from '../components/Card';
 import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 import { mockLeads } from '../services/mockService';
+import { getLeads, updateLead, NetworkError } from '../services/api';
+import { useFieldStore } from '../store/useFieldStore';
 import { parseLeadValue } from '../utils/pipelineMetrics';
+import { normalizePhone, phoneError } from '../utils/phone';
 import { RouteName, Lead } from '../types';
 
 interface EditLeadScreenProps {
@@ -22,10 +25,12 @@ const SOURCE_OPTIONS = ['Walk-In', 'Referral', 'Cold Call', 'Outlet Visit', 'Cam
 export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, leadData, onUpdateLead }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+  const { state } = useFieldStore();
   const l = leadData || mockLeads[0];
 
   const [fullName, setFullName] = useState(l.name);
-  const [phone, setPhone] = useState(l.phone);
+  const [phone, setPhone] = useState(normalizePhone(l.phone || ''));
+  const [phoneProblem, setPhoneProblem] = useState<string>();
   const [email, setEmail] = useState(l.email || '');
   const [parentCompany, setParentCompany] = useState(l.parentCompany || '');
   const [outlet, setOutlet] = useState(l.company);
@@ -34,18 +39,22 @@ export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, lead
   const [pipeline, setPipeline] = useState(PIPELINE_OPTIONS.includes(l.pipeline || '') ? l.pipeline! : PIPELINE_OPTIONS[0]);
   const [source, setSource] = useState(SOURCE_OPTIONS.includes(l.source || '') ? l.source! : SOURCE_OPTIONS[0]);
   const [notes, setNotes] = useState(l.notes || '');
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!fullName.trim() || !phone.trim() || !outlet.trim()) {
       Alert.alert('Required Fields', 'Full name, phone, and outlet are required.');
       return;
     }
+    const nextPhoneProblem = phoneError(phone, true);
+    setPhoneProblem(nextPhoneProblem);
+    if (nextPhoneProblem) return;
 
     const numericValue = parseFloat(estValue) || 0;
     const updated: Lead = {
       ...l,
       name: fullName.trim(),
-      phone: phone.trim(),
+      phone: normalizePhone(phone),
       email: email.trim() || undefined,
       parentCompany: parentCompany.trim() || undefined,
       company: outlet.trim(),
@@ -56,8 +65,43 @@ export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, lead
       notes: notes.trim() || undefined,
     };
 
-    onUpdateLead(updated);
-    onNavigate('leadDetail', updated);
+    // Saved on the server first, and the lead then shown as the server has
+    // it — these edits used to stay on the device and vanish on the next
+    // reload.
+    setSaving(true);
+    try {
+      await updateLead(l.id, {
+        name: updated.name,
+        company: updated.company,
+        phone: updated.phone,
+        email: updated.email,
+        address: updated.address,
+        source: updated.source,
+        notes: updated.notes,
+        value: numericValue > 0 ? numericValue : undefined,
+      });
+    } catch (e: any) {
+      setSaving(false);
+      if (e instanceof NetworkError) {
+        Alert.alert('Not Saved', 'No connection, so your changes weren\'t saved. Try again when you\'re back online.');
+      } else if (/failed to get method|has no attribute/i.test(e?.message || '')) {
+        Alert.alert('Not Saved', 'Editing leads isn\'t available on this server yet.');
+      } else {
+        Alert.alert('Could Not Save', e?.message || 'The server rejected these changes.');
+      }
+      return;
+    }
+
+    let saved = updated;
+    try {
+      const fresh = (await getLeads(state.activeCampaign?.id || '')).find((x) => x.id === l.id);
+      if (fresh) saved = { ...updated, ...fresh };
+    } catch {
+      // Saved either way — the list catches up on its next load.
+    }
+    setSaving(false);
+    onUpdateLead(saved);
+    onNavigate('leadDetail', saved);
   };
 
   return (
@@ -67,7 +111,16 @@ export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, lead
         <Card style={styles.formCard}>
           <Text style={styles.sectionTitle}>LEAD INFORMATION</Text>
           <Input label="Full Name" value={fullName} onChangeText={setFullName} required variant="field" />
-          <Input label="Phone" value={phone} onChangeText={setPhone} keyboardType="phone-pad" required variant="field" />
+          <Input
+            label="Phone"
+            value={phone}
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
+            keyboardType="phone-pad"
+            required
+            variant="field"
+            error={phoneProblem}
+          />
           <Input label="Email" value={email} onChangeText={setEmail} placeholder="ada@example.com" keyboardType="email-address" variant="field" />
           <Input label="Company" value={parentCompany} onChangeText={setParentCompany} placeholder="QuickShop Ltd." variant="field" />
           <Input label="Outlet" value={outlet} onChangeText={setOutlet} required variant="field" />
@@ -101,7 +154,15 @@ export const EditLeadScreen: React.FC<EditLeadScreenProps> = ({ onNavigate, lead
 
         <Input label="Notes" value={notes} onChangeText={setNotes} placeholder="Interested in the ₦250k tier..." multiline variant="field" />
 
-        <Button title="Save Changes" onPress={handleSave} variant="navy" size="large" style={styles.saveBtn} />
+        <Button
+          title={saving ? 'Saving...' : 'Save Changes'}
+          onPress={handleSave}
+          variant="navy"
+          size="large"
+          loading={saving}
+          disabled={saving}
+          style={styles.saveBtn}
+        />
       </ScrollView>
     </SafeAreaView>
   );

@@ -8,6 +8,7 @@ import { Button } from '../components/Button';
 import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { groupSalesByInvoice } from '../utils/transactions';
+import { formatUnitQty } from '../utils/units';
 import { RouteName } from '../types';
 
 interface SaleReceiptScreenProps {
@@ -57,19 +58,16 @@ export const SaleReceiptScreen: React.FC<SaleReceiptScreenProps> = ({ routeData,
             <Text style={styles.val}>{transaction?.customerName}</Text>
           </View>
 
-          {transaction?.lines.map((line) => (
-            <View key={line.productId} style={styles.sectionRow}>
-              <Text style={styles.label}>{line.productName} × {line.quantity}</Text>
-              <Text style={styles.val}>₦{line.total.toLocaleString()}</Text>
+          {/* The server's lines: free goods a promotion added are their own line, at no charge. */}
+          {transaction?.lines.map((line, idx) => (
+            <View key={`${line.productId}-${idx}`} style={styles.sectionRow}>
+              <View style={styles.lineLabelCol}>
+                <Text style={styles.label}>{line.productName} × {formatUnitQty(line.quantity, line.uom)}</Text>
+                {line.isFree && line.promotionName ? <Text style={styles.freeNote}>{line.promotionName}</Text> : null}
+              </View>
+              <Text style={line.isFree ? styles.freeVal : styles.val}>{line.isFree ? 'Free' : `₦${line.total.toLocaleString()}`}</Text>
             </View>
           ))}
-
-          {transaction && transaction.discount > 0 ? (
-            <View style={styles.sectionRow}>
-              <Text style={styles.label}>Discount{transaction.promoLabel ? ` (${transaction.promoLabel})` : ''}</Text>
-              <Text style={styles.discountVal}>-₦{transaction.discount.toLocaleString()}</Text>
-            </View>
-          ) : null}
 
           <View style={styles.divider} />
 
@@ -117,7 +115,9 @@ const createStyles = (theme: any) => StyleSheet.create({
   sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   label: { fontFamily: theme.fonts.regular, fontSize: 14, color: theme.colors.darkMuted },
   val: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.darkText },
-  discountVal: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.emerald },
+  lineLabelCol: { flex: 1, paddingRight: theme.spacing.sm },
+  freeNote: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.emerald, marginTop: 1 },
+  freeVal: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.emerald },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { fontFamily: theme.fonts.bold, fontSize: 14, color: theme.colors.darkText },
   totalVal: { fontFamily: theme.fonts.display, fontSize: 22, color: theme.colors.emerald },

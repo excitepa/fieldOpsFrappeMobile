@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -10,7 +10,10 @@ import { Icon } from '../components/Icon';
 import { useFieldStore } from '../store/useFieldStore';
 import { submitSurveyResponse, NetworkError } from '../services/api';
 import { blockIfDayLocked } from '../utils/dayLock';
-import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer } from '../types';
+import { discardSurveyPhotos, lostPhotosMessage, lostSurveyPhotos, surveyPhotoFiles } from '../utils/surveyPhotos';
+import { missingQuestionIds, requireAllAnswered, surveyRejectionMessage } from '../utils/surveyAnswers';
+import { newStamp } from '../utils/queue';
+import { RouteName, Lead, CampaignSurveyConfig, LeadSurveyAnswer, ActionStamp } from '../types';
 
 interface LeadSurveyReviewScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -37,13 +40,45 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
   const answers = routeData?.answers || {};
   const photoUris = routeData?.photoUris || {};
   const [submitting, setSubmitting] = useState(false);
+  // This survey's one-time ID and when it was filled in, from the first
+  // Submit: a second Submit after one that got no answer is the same survey.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const allQuestions = (survey?.sections || []).flatMap((s) => s.questions);
+
+  // Back to the form with the answers and photos as they are; missingIds are
+  // the questions to mark there, and retakeIds photos to take again.
+  const editAnswers = (missingIds?: string[], retakeIds: string[] = []) => {
+    const keep = ([id]: [string, unknown]) => !retakeIds.includes(id);
+    onNavigate('leadSurveyForm', {
+      lead,
+      survey,
+      answers: Object.fromEntries(Object.entries(answers).filter(keep)),
+      photoUris: Object.fromEntries(Object.entries(photoUris).filter(keep)),
+      missingIds,
+    });
+  };
 
   const handleSubmit = async () => {
     if (!lead || !survey) return;
     if (blockIfDayLocked(state.dayLockedUntil)) return;
+    // Only a complete survey reaches review; checked again, since nothing
+    // incomplete may be sent.
+    const left = requireAllAnswered(allQuestions, answers);
+    if (left.length > 0) {
+      editAnswers(left.map((q) => q.id));
+      return;
+    }
+    // The photos go up with the survey, so each must still be on the phone.
+    const photos = surveyPhotoFiles(allQuestions, photoUris);
+    const lost = lostSurveyPhotos(allQuestions, photos);
+    if (lost.length > 0) {
+      Alert.alert('Take the Photo Again', lostPhotosMessage(lost));
+      editAnswers(lost.map((q) => q.id), lost.map((q) => q.id));
+      return;
+    }
     setSubmitting(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
 
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -61,7 +96,10 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
         survey.id,
         allQuestions.map((q) => ({ questionId: q.id, questionType: q.type, answer: answers[q.id] ?? null })),
         coordinates,
-        { leadId: lead.id, firstName, lastName, phone: lead.phone || undefined }
+        { leadId: lead.id, firstName, lastName, phone: lead.phone || undefined },
+        undefined,
+        photos,
+        { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt }
       );
 
       const surveyAnswers: LeadSurveyAnswer[] = allQuestions.map((q) => ({
@@ -80,6 +118,10 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
           submittedAt: new Date().toISOString(),
         },
       });
+
+      // Accepted with its photos, so the phone's copies can go.
+      discardSurveyPhotos(photos);
+
       setSubmitting(false);
       Alert.alert('Survey Submitted', `${survey.name} has been recorded for ${lead.name}.`, [
         { text: 'OK', onPress: () => onNavigate('leadSurveys', lead) },
@@ -89,7 +131,12 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
       if (e instanceof NetworkError) {
         Alert.alert('No Connection', 'Could not reach the server. Check your connection and try again.');
       } else {
-        Alert.alert('Could Not Submit', e?.message || 'The server rejected this survey. Please try again.');
+        const missing = missingQuestionIds(e);
+        Alert.alert(
+          'Could Not Submit',
+          surveyRejectionMessage(e),
+          missing.length > 0 ? [{ text: 'Fix answers', onPress: () => editAnswers(missing) }] : undefined,
+        );
       }
     }
   };
@@ -112,7 +159,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
         title="Review Answers"
         subtitle={survey.name}
         onNavigate={onNavigate}
-        onBackPress={() => onNavigate('leadSurveyForm', { lead, survey })}
+        onBackPress={() => editAnswers()}
       />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {allQuestions.map((q, idx) => (
@@ -127,7 +174,7 @@ export const LeadSurveyReviewScreen: React.FC<LeadSurveyReviewScreenProps> = ({ 
         ))}
 
         <View style={styles.actionsRow}>
-          <Button title="Edit Answers" onPress={() => onNavigate('leadSurveyForm', { lead, survey })} variant="outline" style={styles.editBtn} />
+          <Button title="Edit Answers" onPress={() => editAnswers()} variant="outline" style={styles.editBtn} />
           <Button
             title={submitting ? 'Submitting...' : 'Submit Survey'}
             onPress={handleSubmit}

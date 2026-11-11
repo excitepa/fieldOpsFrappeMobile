@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeContext';
@@ -10,7 +10,10 @@ import { createLead, NetworkError } from '../services/api';
 import { useFieldStore } from '../store/useFieldStore';
 import { blockIfDayLocked } from '../utils/dayLock';
 import { localDateStr } from '../utils/timestamp';
-import { RouteName, Lead, LeadDraft } from '../types';
+import { normalizePhone, phoneError } from '../utils/phone';
+import { firstStage, stageScore } from '../utils/leadStages';
+import { newStamp } from '../utils/queue';
+import { RouteName, Lead, LeadDraft, ActionStamp } from '../types';
 
 interface LeadFormScreenProps {
   onNavigate: (route: RouteName, data?: any) => void;
@@ -26,6 +29,7 @@ const theme = useTheme();  const styles = createStyles(theme);
   const campaignId = state.activeCampaign?.id || '';
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [phoneProblem, setPhoneProblem] = useState<string>();
   const [email, setEmail] = useState('');
   const [parentCompany, setParentCompany] = useState('');
   const [outlet, setOutlet] = useState('');
@@ -35,6 +39,9 @@ const theme = useTheme();  const styles = createStyles(theme);
   const [pipeline, setPipeline] = useState(PIPELINE_OPTIONS[0]);
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
+  // This lead's one-time ID and when it was captured, from the first Save: a
+  // second Save after one that got no answer is the same lead to the server.
+  const stampRef = useRef<ActionStamp | null>(null);
 
   const handleSubmit = async () => {
     if (blockIfDayLocked(state.dayLockedUntil)) return;
@@ -42,7 +49,14 @@ const theme = useTheme();  const styles = createStyles(theme);
       Alert.alert('Required Information', 'Full name, phone, and outlet are required.');
       return;
     }
+    const nextPhoneProblem = phoneError(phone, true);
+    setPhoneProblem(nextPhoneProblem);
+    if (nextPhoneProblem) return;
+    const leadPhone = normalizePhone(phone);
     setLoading(true);
+    const stamp = stampRef.current || (stampRef.current = newStamp(state.user.email));
+    // An offline lead goes by its draft's id until it reaches the server.
+    const draftId = `ld_${Date.now()}`;
 
     let newLead: Lead;
     try {
@@ -50,13 +64,13 @@ const theme = useTheme();  const styles = createStyles(theme);
       newLead = await createLead(campaignId, {
         name,
         company: outlet,
-        phone,
+        phone: leadPhone,
         email: email || undefined,
         address: address || undefined,
         source,
         notes: notes || undefined,
         value: numericValue > 0 ? numericValue : undefined,
-      });
+      }, { clientRef: stamp.clientRef, happenedAt: stamp.happenedAt });
       // Enrich with fields the API doesn't return yet
       newLead = {
         ...newLead,
@@ -77,15 +91,15 @@ const theme = useTheme();  const styles = createStyles(theme);
       // Genuine connectivity failure — build a local optimistic lead so the UI doesn't go blank
       const numericValue = parseFloat(leadValue) || 0;
       newLead = {
-        id: `l_${Date.now()}`,
+        id: draftId,
         name,
-        phone,
+        phone: leadPhone,
         email: email || undefined,
         parentCompany: parentCompany || undefined,
         company: outlet,
         address: address || undefined,
-        stage: 'New',
-        score: 20,
+        stage: firstStage(),
+        score: stageScore(firstStage()),
         next: 'Follow up within 48 hours',
         value: numericValue > 0 ? `₦${numericValue.toLocaleString()}` : '',
         source,
@@ -97,11 +111,12 @@ const theme = useTheme();  const styles = createStyles(theme);
 
       // Persist to offline sync queue
       const leadDraft: LeadDraft = {
-        id: `ld_${Date.now()}`,
+        ...stamp,
+        id: draftId,
         campaignId,
         name,
         company: outlet,
-        phone,
+        phone: leadPhone,
         email: email || undefined,
         address: address || undefined,
         source,
@@ -116,7 +131,7 @@ const theme = useTheme();  const styles = createStyles(theme);
 
       Alert.alert(
         'Saved Locally',
-        `Lead saved on this device. It will appear in the Sync page for later upload.\n\n(${e?.message || 'Network error'})`,
+        "No connection, so this lead is saved on this phone. It's sent automatically once you're back online.",
       );
     } finally {
       setLoading(false);
@@ -128,12 +143,21 @@ const theme = useTheme();  const styles = createStyles(theme);
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="Capture Lead" subtitle={`${pipeline} · starts at New`} onNavigate={onNavigate} />
+      <Header title="Capture Lead" subtitle={`${pipeline} · starts at ${firstStage()}`} onNavigate={onNavigate} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Card style={styles.formCard}>
           <Text style={styles.sectionTitle}>LEAD INFORMATION</Text>
           <Input label="Full Name" value={name} onChangeText={setName} placeholder="Ada Obi" required variant="field" />
-          <Input label="Phone" value={phone} onChangeText={setPhone} placeholder="+234 803 000 0000" keyboardType="phone-pad" required variant="field" />
+          <Input
+            label="Phone"
+            value={phone}
+            onChangeText={(text) => { setPhone(normalizePhone(text)); setPhoneProblem(undefined); }}
+            placeholder="08012345678"
+            keyboardType="phone-pad"
+            required
+            variant="field"
+            error={phoneProblem}
+          />
           <Input label="Email" value={email} onChangeText={setEmail} placeholder="ada@example.com" keyboardType="email-address" variant="field" />
           <Input label="Company" value={parentCompany} onChangeText={setParentCompany} placeholder="QuickShop Ltd." variant="field" />
           <Input label="Outlet" value={outlet} onChangeText={setOutlet} placeholder="QuickShop Express" required variant="field" />
